@@ -33,8 +33,11 @@ polygon come from beside the file actually served, since Geofabrik is moving cou
 folders of their own. The source must be at most 14 days old. Source and release artifacts
 are kept 14 days.
 
-The geometry job then completes the area roots from the same dated Europe export (300
-minutes, a 130-minute download step), and the bundle job joins the four countries, checks
+The geometry job then completes the area roots from the same dated Europe export (350
+minutes, a 185-minute download step). The 35 GB export has taken from 42 minutes to over 2
+hours, so a transfer that stops, or stays under 1 MB/s for 5 minutes, goes on from where it
+stopped on a new connection, for up to 3 hours. Four tries in a row that add no bytes end
+it, so a refused runner still fails soon and is re-run. The bundle job joins the four countries, checks
 every overlapping original object, and reads every country's sample roads from the combined
 release. **geometry-candidate**, with an earlier build's run ID in **release**, reuses its
 verified country artifacts and builds only the geometry.

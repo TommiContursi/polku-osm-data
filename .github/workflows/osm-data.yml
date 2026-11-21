@@ -213,7 +213,7 @@ jobs:
     needs: build
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && (needs.build.result == 'success' || (github.event_name == 'workflow_dispatch' && inputs.operation == 'geometry-candidate')) }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 300
+    timeout-minutes: 350
     outputs:
       run_id: ${{ steps.source.outputs.run_id }}
     steps:
@@ -277,11 +277,21 @@ jobs:
           assert size>0 and free>=size+25*1024**3, 'Insufficient reference download/staging disk on this runner'
           PYCODE
       - name: Download dated reference and checksum
-        timeout-minutes: 130
+        timeout-minutes: 185
         env:
           SOURCE_URL: https://download.geofabrik.de/europe-${{ steps.reference.outputs.stamp }}.osm.pbf
         run: |
-          source=$(curl --fail --location --retry 3 --retry-all-errors --retry-delay 30 --retry-max-time 300 --connect-timeout 30 --max-time 7200 --write-out '%{url_effective}' "$SOURCE_URL" -o osm-build/europe.osm.pbf)
+          # The 35 GB export has taken 42 minutes to over 2 hours, so a stopped or stalled transfer goes on from where it
+          # stopped, on a new connection, within 3 hours. curl's own --retry would start again from nothing. Four tries in a
+          # row that add no bytes end it, so a refused runner still fails soon and is re-run on a new one (#1043).
+          deadline=$((SECONDS + 10800)) have=0 idle=0
+          until source=$(curl --fail --location --continue-at - --connect-timeout 30 --speed-limit 1000000 --speed-time 300 --max-time $((deadline - SECONDS)) --write-out '%{url_effective}' "$SOURCE_URL" -o osm-build/europe.osm.pbf); do
+            size=0; [ ! -f osm-build/europe.osm.pbf ] || size=$(($(wc -c < osm-build/europe.osm.pbf)))
+            if [ "$size" -gt "$have" ]; then idle=0; else idle=$((idle + 1)); fi
+            have=$size
+            if [ "$idle" -ge 4 ] || [ $((deadline - SECONDS)) -lt 120 ]; then echo "The Europe export stopped at $have bytes"; exit 1; fi
+            echo "Going on from $have bytes"; sleep 30
+          done
           echo "Downloaded $source"
           curl --fail --location --retry 3 --retry-all-errors --retry-delay 30 --max-time 60 "$source.md5" -o osm-build/europe.md5
           df -h .
