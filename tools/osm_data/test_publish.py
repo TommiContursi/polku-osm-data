@@ -359,8 +359,75 @@ class PublishTests(unittest.TestCase):
         self.assertEqual(len(requests), 7, 'the snapshot check, three country downloads, the reference size and its two downloads')
         for line in requests:
             with self.subTest(line=line.strip()[:90]):
-                # the snapshot check reads a 404 as a date not ready yet, so it retries only a refusal
-                self.assertIn('--retry-connrefused' if '$osm_region' in line else '--retry-all-errors', line)
+                # the snapshot check reads a 404 as a date not ready yet, so it retries only a refusal; the Europe
+                # download retries in its own loop, which goes on from where it stopped
+                self.assertIn('--retry-connrefused' if '$osm_region' in line else 'until source=$(curl' if '--continue-at -' in line else '--retry-all-errors', line)
+
+    def test_europe_download_goes_on_from_where_it_stopped(self):
+        # Geofabrik's 35 GB export stopped at 91 % on 2026-11-21 after 2 hours, and curl's own --retry starts again from nothing
+        workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/osm-data.yml').read_text()
+        step = workflow.split('      - name: Download dated reference and checksum\n', 1)[1].split('\n      - name:', 1)[0]
+        script = dedent(step.split('        run: |\n', 1)[1])
+        export = bytes(range(256)) * 4096
+        requests = []
+        failing = []
+
+        class Geofabrik(BaseHTTPRequestHandler):
+            def do_GET(self):
+                requests.append((self.path, self.headers.get('Range')))
+                if failing:
+                    self.send_error(503)
+                    return
+                if self.path.endswith('.md5'):
+                    body = hashlib.md5(export).hexdigest().encode() + b'  europe-261120.osm.pbf\n'
+                    self.send_response(200)
+                    self.send_header('Content-Length', str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                start = int(self.headers['Range'][6:].split('-')[0]) if self.headers.get('Range') else 0
+                self.send_response(206 if start else 200)
+                self.send_header('Content-Length', str(len(export) - start))
+                if start:
+                    self.send_header('Content-Range', f'bytes {start}-{len(export) - 1}/{len(export)}')
+                self.end_headers()
+                # the first two transfers stop part of the way, as a dropped or stalled connection does
+                self.wfile.write(export[start:start + 300000] if len(requests) <= 2 else export[start:])
+                self.close_connection = True
+
+            def log_message(self, *args):
+                pass
+
+        with HTTPServer(('127.0.0.1', 0), Geofabrik) as server, tempfile.TemporaryDirectory() as tmp:
+            worker = Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            try:
+                bin = Path(tmp) / 'bin'
+                bin.mkdir()
+                (bin / 'sleep').write_text('#!/bin/sh\n')
+                (bin / 'sleep').chmod(0o755)
+                url = f'http://127.0.0.1:{server.server_port}/europe-261120.osm.pbf'
+                env = dict(os.environ, SOURCE_URL=url, PATH=f'{bin}:{os.defpath}', NO_PROXY='127.0.0.1', no_proxy='127.0.0.1')
+                for case, fail in [('stopped twice', False), ('never answered', True)]:
+                    with self.subTest(case):
+                        build = Path(tmp) / case
+                        (build / 'osm-build').mkdir(parents=True)
+                        requests.clear()
+                        failing[:] = [True] if fail else []
+                        result = subprocess.run(['bash', '-e', '-c', script], cwd=build, env=env, capture_output=True, text=True, timeout=30)
+                        if fail:
+                            self.assertEqual(result.returncode, 1, result)
+                            self.assertIn('The Europe export stopped at 0 bytes', result.stdout)
+                            self.assertEqual(len(requests), 4, 'four tries that add no bytes end it')
+                        else:
+                            self.assertEqual(result.returncode, 0, result)
+                            self.assertEqual((build / 'osm-build/europe.osm.pbf').read_bytes(), export)
+                            self.assertEqual(requests, [('/europe-261120.osm.pbf', None), ('/europe-261120.osm.pbf', 'bytes=300000-'),
+                                                        ('/europe-261120.osm.pbf', 'bytes=600000-'), ('/europe-261120.osm.pbf.md5', None)])
+                            self.assertIn(f'Downloaded {url}', result.stdout)
+            finally:
+                server.shutdown()
+                worker.join()
 
     def test_snapshot_retries_temporary_failure_and_requires_one_complete_date(self):
         workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/osm-data.yml').read_text()
@@ -469,15 +536,13 @@ class PublishTests(unittest.TestCase):
         workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/osm-data.yml').read_text()
         geometry = workflow.split('\n  geometry:\n', 1)[1].split('\n  bundle:', 1)[0]
         download = geometry.split('      - name: Download dated reference and checksum', 1)[1].split('\n      - name:', 1)[0]
-        curl = next(line for line in download.splitlines() if '-o osm-build/europe.osm.pbf' in line).split()
-        transfer = int(curl[curl.index('--max-time') + 1])
-        self.assertGreaterEqual(transfer, 100 * 60, 'the measured Europe transfer rate needs about 94 minutes')
-        retries = int(curl[curl.index('--retry-max-time') + 1])
+        transfer = int(download.split('deadline=$((SECONDS + ', 1)[1].split(')', 1)[0])
+        self.assertGreaterEqual(transfer, 150 * 60, 'the Europe transfer has needed over 2 hours (2026-11-21)')
         step = int(download.split('timeout-minutes: ', 1)[1].splitlines()[0])
         job = int(geometry.split('timeout-minutes: ', 1)[1].splitlines()[0])
-        self.assertGreater(retries, 0, 'a stalled reference transfer must not restart late')
-        self.assertLess(transfer + retries, step * 60, 'leave time for the checksum')
+        self.assertLess(transfer, step * 60, 'leave time for the checksum')
         self.assertGreaterEqual(job - step, 160, 'leave a separate compilation and artifact budget')
+        self.assertLessEqual(job, 360, "GitHub's hosted runners stop a job after 6 hours")
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
