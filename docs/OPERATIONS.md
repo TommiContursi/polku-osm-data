@@ -25,7 +25,8 @@ minutes, with a 40-minute download step: each PBF transfer gets 30 minutes and r
 in its first five. Every Geofabrik download after the snapshot step retries any error, a
 404 included, three times 30 seconds apart. Nothing gets past a refused connection:
 Geofabrik refuses whole /24 networks, two of GitHub's runner networks among them, and a job
-keeps its runner's address. So when every failed job of a build on `main` was refused,
+keeps its runner's address. Some it leaves unanswered: a request times out with no bytes
+received. So when every failed job of a build on `main` was refused or unanswered,
 **Polku OSM alerts** re-runs the failed jobs on new runners, up to 15 attempts in all,
 unless a newer build exists. A re-run that succeeds goes on to upload. The checksum and
 polygon come from beside the file actually served, since Geofabrik is moving countries into
