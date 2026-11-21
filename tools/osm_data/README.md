@@ -83,6 +83,8 @@ The same stage emits trail/barrier nodes and ways at z13, winter ways at z12 (in
 
 These optional datasets are additive to schema 1; old clients continue reading ways/lighting, and new clients fall back when a product has not been published.
 
+The trails product keeps every `highway=cycleway` (`TRAIL_HIGHWAYS` in the builder), and its dataset record says so with `"cycleways": true`, set from that same set. A client may draw cycle paths from the trails product in place of other sources only when its record has the flag; a record without it makes no such claim. The flag is additive: older clients ignore it.
+
 The z14 inspection product adds all highways and the existing amenity/tourism/leisure/natural/barrier/ford/man_made/historic object classes. It preserves type/ID and complete way nodes/geometry; relation members stay descriptive original references. Missing generic relation members are recorded with `incomplete:true`, and dataset `nearby_complete:false` prevents falsely complete proximity queries. Missing overnight relation members still fail the build.
 
 ## Four-country candidate

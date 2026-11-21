@@ -26,6 +26,7 @@ WAYS = '''
 <way id="24"><nd ref="1"/><nd ref="2"/><tag k="highway" v="track"/><tag k="snowplowing" v="no"/><tag k="access" v="private"/></way>
 <way id="25"><nd ref="1"/><nd ref="2"/><tag k="highway" v="track"/></way>
 <way id="28"><nd ref="1"/><nd ref="2"/><tag k="waterway" v="rapids"/></way>
+<way id="29"><nd ref="1"/><nd ref="2"/><tag k="highway" v="cycleway"/></way>
 '''
 REL = '''<relation id="200"><member type="way" ref="23" role="outer"/>
 <tag k="tourism" v="camp_site"/><tag k="custom:tag" v="full tags"/></relation>'''
@@ -49,7 +50,7 @@ class ProductTests(unittest.TestCase):
         text = OSM.replace('  <way id="10">', EXTRA + '  <way id="10">')
         text = text.replace('  <relation id="100">', WAYS + '  <relation id="100">').replace('</osm>', REL + '</osm>')
         out, manifest = self.build(text)
-        for name, zoom, ids in [('trails', 13, [4, 5, 10, 20, 24, 25]), ('winter', 12, [21, 24]),
+        for name, zoom, ids in [('trails', 13, [4, 5, 10, 20, 24, 25, 29]), ('winter', 12, [21, 24]),
                                 ('hazards', 11, [6, 12, 22, 28]), ('places', 12, [7, 23, 200])]:
             self.assertIn(name, manifest['datasets'])
             self.assertEqual(manifest['datasets'][name]['zoom'], zoom)
@@ -57,6 +58,8 @@ class ProductTests(unittest.TestCase):
             self.assertEqual(sorted(e['id'] for e in els), ids)
             if name == 'trails':
                 self.assertEqual(next(e for e in els if e['id'] == 4)['tags']['locked'], 'yes')
+                # every cycleway, with nothing else to show, and the record says so
+                self.assertIs(manifest['datasets'][name]['cycleways'], True)
             if name == 'winter':
                 self.assertEqual(next(e for e in els if e['id'] == 24)['tags']['access'], 'private')
             if name == 'places':
