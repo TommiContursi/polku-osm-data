@@ -98,7 +98,7 @@ LICENSE = {
     'name': 'Open Database License 1.0',
     'url': 'https://opendatacommons.org/licenses/odbl/1-0/',
 }
-PRODUCT_ZOOMS = {'trails': 13, 'winter': 12, 'hazards': 11, 'places': 12, 'inspection': 14, 'wetlands': 12}
+PRODUCT_ZOOMS = {'trails': 13, 'winter': 12, 'hazards': 11, 'places': 12, 'inspection': 14, 'wetlands': 12, 'points': 12}
 BARRIERS = set(('gate lift_gate swing_gate sliding_gate wicket_gate hampshire_gate bump_gate chain rope bar block '
                 'stile kissing_gate turnstile horse_stile full-height_turnstile cycle_barrier motorcycle_barrier '
                 'log fallen_tree windfall debris').split())
@@ -111,6 +111,13 @@ def is_stay(tags):
 
 def is_reedbed(tags):
     return tags.get('natural') == 'wetland' and tags.get('wetland') == 'reedbed'
+
+
+def is_point(tags):
+    """Polku's points with icons of their own (Polku #1179): fire places, springs, cave entrances, bunkers and tar kilns,
+    and anything with a fire place (a shelter's card says it has one)."""
+    return (tags.get('leisure') == 'firepit' or tags.get('amenity') == 'bbq' or tags.get('natural') in {'spring', 'cave_entrance'} or
+            tags.get('military') == 'bunker' or tags.get('historic') == 'tar_kiln' or tags.get('fireplace') == 'yes')
 
 
 class ReedbedWays:
@@ -151,6 +158,8 @@ def products(kind, tags):
         result.append('hazards')
     if is_stay(tags):
         result.append('places')
+    if is_point(tags):
+        result.append('points')
     if h or inspectable(tags) or result:
         result.append('inspection')
     return result
@@ -208,6 +217,9 @@ do not promise coverage outside the declared extract clipping polygons.
 
 Wetland records are natural=wetland + wetland=reedbed areas, assembled
 from closed ways and multipolygons by osmium, with only their wetland tag.
+
+Point records are fire places, springs, cave entrances, bunkers, tar kilns
+and anything with fireplace=yes: nodes, and ways with their centre.
 
 Road/path relation records contain only the eligible way members present in each tile. Overnight place records retain their original member references and roles.
 member_count is the original relation member count; each member's index is
@@ -340,13 +352,14 @@ class Stager(osmium.SimpleHandler):
         tiles = set()
         for a, b in zip(projected, projected[1:]):
             tiles.update(segment_tiles(a, b))
-        if ('w', way.id) in self.needed or 'places' in names or 'inspection' in names:
+        point = 'places' in names or 'inspection' in names or 'points' in names
+        if ('w', way.id) in self.needed or point:
             bounds = [min(p['lon'] for p in geometry), min(p['lat'] for p in geometry),
                       max(p['lon'] for p in geometry), max(p['lat'] for p in geometry)]
             if ('w', way.id) in self.needed:
                 self.member_bounds['w', way.id] = bounds
         element = json.loads(body)
-        if 'places' in names or 'inspection' in names:
+        if point:
             element['center'] = {'lon': round((bounds[0] + bounds[2]) / 2, 7), 'lat': round((bounds[1] + bounds[3]) / 2, 7)}
             # A way's centre can be away from its edges; nearby searches index both.
             p = tile_point(element['center']['lon'], element['center']['lat'])

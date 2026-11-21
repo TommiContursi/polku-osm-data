@@ -1,7 +1,8 @@
 # Polku's OpenStreetMap data
 
 The build behind the OpenStreetMap data that [Polku](https://polku.si) reads: complete roads,
-paths, lighting, trail details, winter ways, water hazards, overnight places, reedbeds,
+paths, lighting, trail details, winter ways, water hazards, overnight places, reedbeds, points
+(fire places, springs, cave entrances, bunkers and tar kilns),
 full-tag inspection and area geometry for Finland, Sweden, Norway and Estonia, as static
 PMTiles archives at `https://ducksoft.fi/polku-osm/`.
 
