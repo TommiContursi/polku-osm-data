@@ -27,7 +27,7 @@ JAR, PATH = os.environ.get('BROUTER_JAR'), os.environ.get('PATH', '')
 
 
 def square(seed, created, size=5000, version=11):
-    """A square's layout: 25 parts, BRouter's top checksum, its creation time and elevation type."""
+    """A square's layout: its index, BRouter's top checksum and creation time."""
     ends = [200 + size * (i + 1) // 25 for i in range(25)]
     header = struct.pack('>25q', *[(version if i == 0 else 2) << 48 | end for i, end in enumerate(ends)])
     top = ~zlib.crc32(header) & 0xffffffff ^ 2
@@ -113,7 +113,8 @@ class RoutingTests(unittest.TestCase):
         self.big, self.small = square(1, T0), square(2, T0, size=1000)
         self.host.publish_square('E20_N60.rd5', self.big)
         self.host.publish_square('E25_N70.rd5', self.small)
-        self.host.publish_square('E20_N55.rd5', square(3, T0))
+        self.south = square(3, T0)
+        self.host.publish_square('E20_N55.rd5', self.south)
         self.host.files[BASE + '/.htaccess'] = b'installed by hand'
 
     def run_mirror(self, now=T0, initial=False):
@@ -126,24 +127,25 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(self.host.files[f"{BASE}/releases/{manifest['release']}/manifest.json"], raw)
         return manifest
 
-    def test_first_run_downloads_the_north_once_and_names_the_candidate(self):
+    def test_first_run_downloads_every_square_once_and_names_the_candidate(self):
         report = self.run_mirror(initial=True)
-        self.assertEqual(report['initial'], ['E20_N60.rd5', 'E25_N70.rd5'])
-        self.assertEqual(self.host.requests, [('GET', ''), ('GET', 'E20_N60.rd5'), ('HEAD', f'diff/E20_N60/{md5(self.big)}.df5'),
-                                              ('GET', 'E25_N70.rd5')], 'one file at a time, nothing south of 60°N')
+        self.assertEqual(report['initial'], ['E20_N55.rd5', 'E20_N60.rd5', 'E25_N70.rd5'])
+        self.assertEqual(self.host.requests, [('GET', ''), ('GET', 'E20_N55.rd5'), ('HEAD', f'diff/E20_N55/{md5(self.south)}.df5'),
+                                              ('GET', 'E20_N60.rd5'), ('HEAD', f'diff/E20_N60/{md5(self.big)}.df5'),
+                                              ('GET', 'E25_N70.rd5')], 'one file at a time')
         manifest = self.candidate()
         squares = {s['path']: s for s in manifest['squares']}
-        self.assertEqual(set(squares), {'E20_N60.rd5', 'E25_N70.rd5'})
+        self.assertEqual(set(squares), {'E20_N55.rd5', 'E20_N60.rd5', 'E25_N70.rd5'})
         big = squares['E20_N60.rd5']
         self.assertEqual((big['bytes'], big['sha256'], big['md5']), (len(self.big), hashlib.sha256(self.big).hexdigest(), md5(self.big)))
-        self.assertEqual(big['parts'][0], [200, 400])
-        self.assertEqual(big['parts'][24], [5000, 5200])
-        self.assertEqual((big['created'], big['downloaded'], big['version'], big['elevation_type']),
-                         ('2026-11-22T09:00:00Z', '2026-11-22T09:00:00Z', 11, 1))
+        self.assertEqual(set(big), {'path', 'bytes', 'sha256', 'md5', 'created', 'downloaded', 'version'})
+        self.assertEqual((big['created'], big['downloaded'], big['version']), ('2026-11-22T09:00:00Z', '2026-11-22T09:00:00Z', 11))
         self.assertIn('OpenStreetMap contributors', manifest['attribution'])
+        self.assertIn('Hole-filled seamless SRTM data V4', manifest['attribution'], "CIAT's citation, as its terms ask")
         self.assertEqual(self.host.files[f"{BASE}/releases/{manifest['release']}/E20_N60.rd5"], self.big)
         self.assertEqual(sorted(p.removeprefix(BASE) for p in self.host.files),
-                         ['/.htaccess', '/candidates/current.json', f"/releases/{manifest['release']}/E20_N60.rd5",
+                         ['/.htaccess', '/candidates/current.json', f"/releases/{manifest['release']}/E20_N55.rd5",
+                          f"/releases/{manifest['release']}/E20_N60.rd5",
                           f"/releases/{manifest['release']}/E25_N70.rd5", f"/releases/{manifest['release']}/manifest.json"])
         self.assertNotIn(BASE + '/staging', self.host.dirs)
         self.assertEqual(routing.check(PUBLIC, T0 + timedelta(days=1)), [manifest['release']])
@@ -161,8 +163,10 @@ class RoutingTests(unittest.TestCase):
         self.host.publish_square('E25_N70.rd5', square(2, T0 + timedelta(days=7), size=1000))
         self.host.publish_square('E30_N60.rd5', square(4, T0))
         report = self.run_mirror(T0 + timedelta(days=7))
-        self.assertEqual((report['diff'], report['kept'], report['waiting'], report['small']), (1, ['E25_N70.rd5'], ['E30_N60.rd5'], 0))
-        self.assertEqual(self.host.requests, [('GET', ''), ('GET', f'diff/E20_N60/{md5(self.big)}.df5'),
+        self.assertEqual((report['diff'], report['unchanged'], report['kept'], report['waiting'], report['small']),
+                         (1, 1, ['E25_N70.rd5'], ['E30_N60.rd5'], 0))
+        self.assertEqual(self.host.requests, [('GET', ''), ('GET', f'diff/E20_N55/{md5(self.south)}.df5'),
+                                              ('GET', f'diff/E20_N60/{md5(self.big)}.df5'),
                                               ('HEAD', f'diff/E20_N60/{md5(newer)}.df5')], 'no full download')
         manifest = self.candidate()
         squares = {s['path']: s for s in manifest['squares']}
@@ -191,7 +195,7 @@ class RoutingTests(unittest.TestCase):
         report = self.run_mirror(T0 + timedelta(hours=1), initial=True)
         self.assertEqual(report['initial'], ['E25_N70.rd5'])
         self.assertNotIn(('GET', 'E20_N60.rd5'), self.host.requests)
-        self.assertEqual(len(self.candidate()['squares']), 2)
+        self.assertEqual(len(self.candidate()['squares']), 3)
 
     def test_a_new_lookup_version_or_a_copy_brouter_doesnt_know_stops(self):
         self.run_mirror(initial=True)
@@ -206,12 +210,29 @@ class RoutingTests(unittest.TestCase):
 
     def test_the_daily_check_needs_fresh_squares_and_public_ranges(self):
         self.run_mirror(initial=True)
-        with self.assertRaisesRegex(ValueError, 'E20_N60.rd5 is 15 days old'):
+        with self.assertRaisesRegex(ValueError, 'E20_N55.rd5 is 15 days old'):
             routing.check(PUBLIC, T0 + timedelta(days=15))
         self.assertTrue(routing.check(PUBLIC, T0 + timedelta(days=13)))
         self.host.release_headers['Access-Control-Allow-Origin'] = 'https://other.example'
         with self.assertRaisesRegex(ValueError, 'wildcard CORS'):
             routing.check(PUBLIC, T0 + timedelta(days=1))
+        self.host.release_headers['Access-Control-Allow-Origin'] = '*'
+        release = self.candidate()['release']
+        good = self.host.files[f'{BASE}/releases/{release}/E20_N60.rd5']
+        self.host.files[f'{BASE}/releases/{release}/E20_N60.rd5'] = bytes(200) + good[200:]
+        with self.assertRaisesRegex(ValueError, 'no valid index: E20_N60.rd5'):
+            routing.check(PUBLIC, T0 + timedelta(days=1))
+
+    def test_a_manifest_needs_each_squares_size_hashes_and_version(self):
+        self.run_mirror(initial=True)
+        manifest = self.candidate()
+        routing.validate(manifest)
+        for change in [{'bytes': 311}, {'version': '11'}, {'md5': 'x'}, {'path': '../E20_N60.rd5'}]:
+            with self.subTest(change):
+                broken = json.loads(json.dumps(manifest))
+                broken['squares'][0].update(change)
+                with self.assertRaises(ValueError):
+                    routing.validate(broken)
 
     def test_hosting_is_installed_once_and_never_replaced(self):
         del self.host.files[BASE + '/.htaccess']

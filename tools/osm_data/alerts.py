@@ -48,7 +48,7 @@ def update_incident(api,repository,incident):
               +'The '+incident['operation']+' operation needs attention: '+incident['reason']+'.\n\n'
               +'Latest run: '+incident['url']+'\n\n'
               +'Open the failed job for diagnostics. A failed build or upload leaves the live release as it is; Polku promotes only a verified candidate. '
-              +('Polku routes on brouter.de when its own routing data is missing. ' if kind.startswith('routing') else
+              +('' if kind.startswith('routing') else
                 'A health failure can affect users; Polku retains cached/Overpass fallback and explicit missing-data states. ')
               +'This issue updates on repeated failure and closes after the corresponding successful recovery. A healthy old release does not clear a failed update.')
         if issue:

@@ -221,22 +221,15 @@ completeness, size and publication checks remain.
 
 ## Routing data
 
-`routing.py` mirrors brouter.de's BRouter squares (docs/OPERATIONS.md). Each release is
-`polku-routing/releases/<release>/`, with the squares as brouter.de serves them and `manifest.json`:
+`routing.py` mirrors brouter.de's squares (docs/OPERATIONS.md). Each release is `polku-routing/releases/<release>/`:
+the squares as brouter.de serves them, and `manifest.json`:
 
 ```json
 {"schema": 1, "release": "20261122T101500Z", "built_at": "2026-11-22T10:20:31Z",
  "source": "https://brouter.de/brouter/segments4/", "engine": "BRouter 1.7.10", "attribution": "Routing data © OpenStreetMap contributors, …",
  "squares": [{"path": "E25_N60.rd5", "bytes": 38812345, "sha256": "…", "md5": "…",
-              "created": "2026-11-22T02:44:23Z", "downloaded": "2026-11-22T10:01:12Z",
-              "version": 11, "elevation_type": 1, "parts": [[200, 1048816], [1048816, 2010000], …]}]}
+              "created": "2026-11-22T02:44:23Z", "downloaded": "2026-11-22T10:01:12Z", "version": 11}]}
 ```
 
-- `parts` are the square's 25 1° parts as `[start, end)` byte ranges, in BRouter's order (`tileIndex = lonMod5 * 5 +
-  latMod5`), from the 200-byte index at the file's start. An empty part has `start == end`. A browser reads one by
-  Range; the file's last 113 bytes after part 24 hold BRouter's checksums.
-- `created` is when brouter.de built the square (its own `creationTime`), a few hours after the OSM snapshot.
-  `downloaded` is our last full download of it.
-- `md5` names brouter.de's next change file for the square; `version` is BRouter's lookup version, the same in every
-  square of a release.
-- `candidates/current.json` holds the candidate's manifest bytes, and so will `current.json` once Polku promotes one.
+`created` is brouter.de's build of the square, `downloaded` our last full download of it, and `version` BRouter's
+lookup version. `candidates/current.json` holds the candidate's manifest.

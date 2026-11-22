@@ -176,11 +176,11 @@ class AlertTests(unittest.TestCase):
         def routing(operation,conclusion='failure'):
             return alerts.classify(event(operation,conclusion,workflow='routing-data.yml',prefix='Routing data / '),REPO)
         self.assertEqual([routing(o)['kind'] for o in ('initial','update','check')],['routing-update','routing-update','routing-health'])
-        self.assertIsNone(routing('space'))
+        self.assertIsNone(routing('install-hosting'))
         self.assertIsNone(alerts.classify(event('update',workflow='routing-data.yml'),REPO),'the OSM prefix is not the routing one')
         api=API();alerts.update_incident(api,REPO,alerts.classify(event(),REPO));alerts.update_incident(api,REPO,routing('update'))
         self.assertEqual([i['title'] for i in api.issues],['OSM data update failed','Routing data update failed'])
-        self.assertIn('brouter.de',api.issues[1]['body'])
+        self.assertNotIn('Overpass',api.issues[1]['body'])
         alerts.update_incident(api,REPO,routing('update','success'))
         self.assertEqual([i['state'] for i in api.issues],['open','closed'],'a routing recovery closes only its own')
 
