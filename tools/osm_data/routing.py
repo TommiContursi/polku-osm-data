@@ -9,6 +9,7 @@ import argparse
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import hashlib
+import http.client
 import io
 import json
 import os
@@ -125,7 +126,7 @@ class Source:
                 if error.code == 404:
                     return None
                 failure = error
-            except (OSError, ValueError) as error:
+            except (OSError, ValueError, http.client.HTTPException) as error:  # a body cut short too
                 failure = error
             if attempt == 1:
                 print(f'brouter.de {path}: {failure}; one retry in {BACK_OFF} s', flush=True)
@@ -145,7 +146,8 @@ class Source:
                     seen += len(chunk)
                     if (ahead := seen / RATE / 1000 - (self.clock() - start)) > 0:
                         self.sleep(ahead)
-            require(seen == length, f'Short download: {seen} of {length} bytes')
+            # brouter.de sends its index without a length; squares and change files have one
+            require(length < 0 or seen == length, f'Short download: {seen} of {length} bytes')
             self.bytes += seen
             return target
 
