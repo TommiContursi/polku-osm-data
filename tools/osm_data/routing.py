@@ -93,7 +93,13 @@ def validate(manifest):
                 and re.fullmatch('[a-f0-9]{64}', square.get('sha256', '')) and re.fullmatch('[a-f0-9]{32}', square.get('md5', '')),
                 'Invalid routing square ' + square['path'])
         when(square['created']), when(square['downloaded'])
+        publish.place(manifest['release'], square)  # checks its url
     return manifest
+
+
+def shared(entry):
+    """The square's record, with the url of its place among the shared files."""
+    return entry | {'url': '../../' + publish.shared(entry)}
 
 
 class Source:
@@ -188,19 +194,19 @@ def remove_tree(ftp, base):
 
 
 def staging(ftp, base, now):
-    """Resume the staging of the same base, or start one. _run.json names its release and base, and each verified
-    square has its record beside it."""
+    """Resume the staging of the same base, or start one. _run.json names its release and base, and each square done
+    has its record here once its file is among the shared files."""
     if STAGE in maintenance.children(ftp):
         require(ftp.kind(STAGE) == 'directory', 'staging needs a real directory')
         names = maintenance.children(ftp, STAGE)
         run = json.loads(publish.retrieve(ftp, STAGE + '/_run.json')) if '_run.json' in names else {}
         if run and run.get('base') == base:
-            done = {}
+            done, have = {}, maintenance.shared(ftp)
             for name in names:
                 square = name[1:-5]
-                if name.startswith('_') and SQUARE.fullmatch(square) and square in names:
+                if name.startswith('_') and SQUARE.fullmatch(square):
                     entry = json.loads(publish.retrieve(ftp, f'{STAGE}/{name}'))
-                    if ftp.size(f'{STAGE}/{square}') == entry['bytes']:
+                    if have.get(publish.place(run['release'], entry)) == entry['bytes']:
                         done[square] = entry
             print(f"Resume {run['release']} with {len(done)} verified squares", flush=True)
             return run['release'], done
@@ -211,21 +217,32 @@ def staging(ftp, base, now):
     return release, {}
 
 
-def put(ftp, path, local, entry):
-    """Upload and read back: the host's copy must hash to the record."""
+def put(ftp, release, local, entry, have):
+    """Into the shared files, unless they hold it: uploaded, read back against its record, then moved into place.
+    Whether it was sent."""
+    target = publish.place(release, entry)
+    if target in have:
+        require(have[target] == entry['bytes'], 'Shared square differs: ' + target)
+        return False
+    path = f"{STAGE}/{entry['path']}"
     with open(local, 'rb') as body:
         ftp.storbinary('STOR ' + path, body)
     sha256 = hashlib.sha256()
     ftp.retrbinary('RETR ' + path, sha256.update)
     require(ftp.size(path) == entry['bytes'] and sha256.hexdigest() == entry['sha256'], 'Uploaded square differs: ' + path)
+    if publish.SHARED not in maintenance.children(ftp):
+        ftp.mkd(publish.SHARED)
+    ftp.rename(path, target)
+    have[target] = entry['bytes']
+    return True
 
 
 def probe(url, manifest, raw):
     """Public: the immutable manifest, and every square's index by Range, with CORS and without compression."""
-    base = f"{url}/releases/{manifest['release']}"
-    require(publish.get(base + '/manifest.json', immutable=True) == raw, 'Public routing manifest differs')
+    require(publish.get(f"{url}/releases/{manifest['release']}/manifest.json", immutable=True) == raw,
+            'Public routing manifest differs')
     for square in manifest['squares']:
-        head = publish.get(f"{base}/{square['path']}", (0, 200, square['bytes']), True)
+        head = publish.get(f"{url}/{publish.place(manifest['release'], square)}", (0, 200, square['bytes']), True)
         ends = [value & 0xffffffffffff for value in struct.unpack('>25q', head)]
         require(200 <= ends[0] and ends == sorted(ends) and ends[24] + 112 <= square['bytes'],
                 'Public square has no valid index: ' + square['path'])
@@ -236,7 +253,7 @@ def mirror(jar, initial=False, now=None, source=None, brouter=None):
     and its quarter is up (a new square only with initial), and upload the result as the new candidate."""
     now, source = now or datetime.now(timezone.utc), source or Source()
     require(os.environ.get('OSM_ALLOW_PUBLISH') == 'true', 'Publication requires approved OSM_ALLOW_PUBLISH=true')
-    report = {'initial': [], 'diff': 0, 'unchanged': 0, 'quarterly': [], 'small': 0, 'kept': [], 'waiting': []}
+    report = {'initial': [], 'diff': 0, 'unchanged': 0, 'quarterly': [], 'small': 0, 'kept': [], 'waiting': [], 'shared': 0}
     with tempfile.TemporaryDirectory() as tmp, routing_host() as (ftp, url):
         work = Path(tmp)
         require('.htaccess' in maintenance.children(ftp), 'polku-routing has no .htaccess: run install-hosting first')
@@ -249,6 +266,7 @@ def mirror(jar, initial=False, now=None, source=None, brouter=None):
         names = sorted(listed)
         previous = {square['path']: square for square in base['squares']} if base else {}
         release, done = staging(ftp, base and base['release'], now)
+        have = maintenance.shared(ftp)
         incoming = sum(listed[name] for name in names if name not in done)
         print(json.dumps({'release': release, 'squares': len(names), 'to_do': len(names) - len(done),
                           'incoming_bytes': incoming}), flush=True)
@@ -266,7 +284,7 @@ def mirror(jar, initial=False, now=None, source=None, brouter=None):
             else:
                 copy = work / ('base-' + name)
                 with open(copy, 'wb') as body:
-                    ftp.retrbinary(f"RETR releases/{base['release']}/{name}", body.write)
+                    ftp.retrbinary(f"RETR {publish.place(base['release'], old)}", body.write)
                 copy_entry = record(copy, name, old['downloaded'])
                 require(copy_entry['sha256'] == old['sha256'], 'Our copy differs: ' + name)
                 change = old['bytes'] >= SMALL and source.get(f"diff/{name[:-4]}/{old['md5']}.df5", work / 'change.df5')
@@ -280,13 +298,14 @@ def mirror(jar, initial=False, now=None, source=None, brouter=None):
                     kind, new = 'kept', copy
             if kind != 'kept':
                 brouter('check', new)
-            entry = copy_entry if kind == 'kept' else record(new, name, downloaded)
+            entry = shared(copy_entry if kind == 'kept' else record(new, name, downloaded))
             require(not old or entry['version'] == old['version'],
                     f"brouter.de's lookup version changed on {name}; stopped before publishing it")
             if kind not in {'kept', 'unchanged'} and entry['bytes'] >= SMALL:
                 # Next week's change file is named by this MD5: brouter.de names its newest copy with an empty one
                 require(source.get(f"diff/{name[:-4]}/{entry['md5']}.df5"), f'brouter.de has no change file for our new {name}')
-            put(ftp, f'{STAGE}/{name}', new, entry)
+            if not put(ftp, release, new, entry, have):
+                report['shared'] += 1
             ftp.storbinary(f'STOR {STAGE}/_{name}.json', io.BytesIO(json.dumps(entry).encode()))
             done[name] = entry
             if isinstance(report[kind], list):
@@ -307,8 +326,7 @@ def mirror(jar, initial=False, now=None, source=None, brouter=None):
             if name.startswith('_') and name != '_run.json':
                 ftp.remove(f'{STAGE}/{name}')
         ftp.remove(f'{STAGE}/_run.json')
-        require(set(maintenance.children(ftp, STAGE)) == {square['path'] for square in squares} | {'manifest.json'},
-                'Unexpected files in staging')
+        require(maintenance.children(ftp, STAGE) == ['manifest.json'], 'Unexpected files in staging')
         if 'releases' not in maintenance.children(ftp):
             ftp.mkd('releases')
         ftp.rename(STAGE, f'releases/{release}')
@@ -321,6 +339,10 @@ def mirror(jar, initial=False, now=None, source=None, brouter=None):
         for folder in maintenance.children(ftp, 'releases'):
             if folder not in {release, live and live['release']}:
                 remove_tree(ftp, 'releases/' + folder)
+        # then the shared squares neither of them names
+        named = {publish.place(m['release'], square) for m in (manifest, live) if m for square in m['squares'] if 'url' in square}
+        for path in sorted(maintenance.shared(ftp).keys() - named):
+            ftp.remove(path)
     report |= {'release': release, 'dropped': sorted(set(previous) - set(names)), 'squares': len(squares), 'bytes': sum(square['bytes'] for square in squares),
                'brouter_requests': source.requests, 'brouter_bytes': source.bytes}
     summary = json.dumps(report, sort_keys=True)

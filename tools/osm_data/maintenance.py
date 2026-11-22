@@ -105,6 +105,34 @@ def upload_record(ftp, base, release, now):
     return record,stamp
 
 
+def own_files(manifest, raw):
+    """What a release's own folder holds, by size: its manifest, and its files from before the shared files."""
+    return {f['path']:f['bytes'] for f in manifest['files'] if 'url' not in f} | {'manifest.json':len(raw)}
+
+
+def shared(ftp):
+    """The shared files, {path: bytes}. Anything else among them stops the run."""
+    if p.SHARED not in children(ftp): return {}
+    p.require(ftp.kind(p.SHARED)=='directory', 'Shared files need a real directory')
+    result={}
+    for name in children(ftp,p.SHARED):
+        path=p.SHARED+'/'+name
+        p.require(p.STORED.fullmatch(name) and ftp.kind(path)=='file', 'Unexpected shared file '+path)
+        result[path]=ftp.size(path)
+    return result
+
+
+def named_by(ftp, release):
+    """The shared files the manifest in a release's folder names, or None when there's no manifest this code reads."""
+    base='releases/'+release
+    if 'manifest.json' not in children(ftp,base) or ftp.kind(base+'/manifest.json')!='file': return None
+    try:
+        m=p.validate(json.loads(p.retrieve(ftp,base+'/manifest.json')))
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return None
+    return {p.place(release,f) for f in m['files'] if 'url' in f} if m['release']==release else None
+
+
 def validate_files(ftp,base,expected,partial=False):
     names=children(ftp,base)
     p.require(set(names)<=set(expected), 'Unexpected files in retained release')
@@ -118,10 +146,11 @@ def validate_files(ftp,base,expected,partial=False):
 
 
 
-def prune(ftp, apply=False, incoming_bytes=0, now=None, incoming_release=None):
+def prune(ftp, apply=False, incoming_bytes=0, now=None, incoming=None):
+    """incoming is the manifest an upload is putting on the host: its release and the shared files it names stay."""
     now=now or datetime.now(timezone.utc)
     p.require(type(incoming_bytes) is int and incoming_bytes>=0,'Invalid incoming byte budget')
-    p.require(incoming_release is None or p.NAME.fullmatch(incoming_release),'Unsafe incoming release')
+    incoming_release=incoming and p.validate(incoming)['release']
     p.require(ftp.kind('current.json')=='file','Live pointer needs a regular file')
     before=p.retrieve(ftp,'current.json')
     live=p.validate(json.loads(before),pointed=True)
@@ -180,7 +209,7 @@ def prune(ftp, apply=False, incoming_bytes=0, now=None, incoming_release=None):
             m,body=manifests[release]
             if m is None:
                 remove[base]=0;continue
-            expected={f['path']:f['bytes'] for f in m['files']} | {'manifest.json':len(body)}
+            expected=own_files(m,body)
             if UPLOAD in children(ftp,base):
                 upload_record(ftp,base,release,now);expected[UPLOAD]=ftp.size(base+'/'+UPLOAD)
             remove[base]=validate_files(ftp,base,expected,partial=True)
@@ -200,6 +229,18 @@ def prune(ftp, apply=False, incoming_bytes=0, now=None, incoming_release=None):
         record,stamp=upload_record(ftp,stage,match[1],now)
         if now-stamp<=timedelta(days=7): keep[stage]='staging within 7 days';continue
         remove[stage]=validate_files(ftp,stage,record['files'] | {UPLOAD:ftp.size(stage+'/'+UPLOAD)},partial=True)
+    # A shared file goes once no release that stays, nor the incoming one, names it; only when all of them can be read
+    named,sweep=set(),live['release'] in records
+    for release in releases:
+        if 'releases/'+release in remove: continue
+        found=named_by(ftp,release)
+        sweep=sweep and found is not None
+        named|=found or set()
+    named|={p.place(incoming_release,f) for f in (incoming or {}).get('files',[]) if 'url' in f}
+    for path,size in shared(ftp).items():
+        if path in named: continue
+        if sweep: remove[path]=size
+        else: keep[p.SHARED]='a release that stays has no manifest to read, or the live receipt is unavailable'
     used=usage(ftp)
     after=used-sum(remove.values())
     p.require(after+incoming_bytes+4096<=BUDGET,'OSM storage budget exceeded (80 GiB); retain live data and inspect storage')
@@ -208,8 +249,11 @@ def prune(ftp, apply=False, incoming_bytes=0, now=None, incoming_release=None):
     if apply:
         p.require(p.retrieve(ftp,'current.json')==before,'Live pointer changed before retention')
         if pending: record_publication(ftp,json.loads(raw),raw,None,now=now)
-        for base in result['delete']:
+        # Releases before the shared files they named, so a stopped run leaves no release missing its files
+        for base in sorted(result['delete'],key=lambda path:path.startswith(p.SHARED+'/')):
             p.require(p.retrieve(ftp,'current.json')==before,'Live pointer changed during retention')
+            if base.startswith(p.SHARED+'/'):
+                ftp.remove(base);continue
             # Keep ownership metadata until payload deletion finishes, so interruption is recoverable.
             last='manifest.json' if base.startswith('releases/') and base.split('/')[-1] in records else UPLOAD
             for name in sorted(children(ftp,base),key=lambda name:name==last):
@@ -227,8 +271,10 @@ def test_retention(ftp):
         files=[{'path':name,'bytes':len(body),'sha256':hashlib.sha256(body).hexdigest()} for name,body in content.items()]
         m=p.validate({'schema':1,'release':release,'source':{'timestamp':now.isoformat()},'files':files,
                       'datasets':{'ways':{'url':'ways.pmtiles','bytes':files[0]['bytes'],'sha256':files[0]['sha256']}}})
+        if release=='live':
+            m=p.validate(p.stored(m));ftp.mkd(p.SHARED)
         raw=json.dumps(m,sort_keys=True).encode();base='releases/'+release;ftp.mkd(base)
-        for name,body in content.items(): ftp.storbinary('STOR '+base+'/'+name,io.BytesIO(body))
+        for f in m['files']: ftp.storbinary('STOR '+p.place(release,f),io.BytesIO(content[f['path']]))
         ftp.storbinary('STOR '+base+'/manifest.json',io.BytesIO(raw))
         previous=json.dumps(p.current(dict(m,release='previous'))).encode() if release=='live' else None
         prepare_publication(ftp,m,raw,previous,now=now-timedelta(days=days))
@@ -240,10 +286,12 @@ def test_retention(ftp):
     stage='.upload-live-'+'a'*32;ftp.mkd(stage)
     mark_upload(ftp,stage,m,raw,now=now-timedelta(days=8))
     ftp.storbinary('STOR '+stage+'/ways.pmtiles',io.BytesIO(b'PM'))
+    stray=p.SHARED+'/'+'0'*64+'.pmtiles';ftp.storbinary('STOR '+stray,io.BytesIO(b'PMTiles no release names'))
     preview=prune(ftp,now=now)
-    p.require(set(preview['delete'])=={'releases/expired',stage},'Disposable retention preview differs')
+    p.require(set(preview['delete'])=={'releases/expired',stage,stray},'Disposable retention preview differs')
     p.require('expired' in children(ftp,'releases'),'Retention preview wrote files')
     applied=prune(ftp,apply=True,now=now)
-    p.require(children(ftp,'releases')==['live','previous'] and p.retrieve(ftp,'current.json')==pointer,
+    p.require(children(ftp,'releases')==['live','previous'] and p.retrieve(ftp,'current.json')==pointer
+              and set(shared(ftp))=={p.place('live',f) for f in m['files']},
               'Disposable retention affected protected releases')
     return {'deleted_entries':len(applied['delete']),'live_and_predecessor_preserved':True,'preview_read_only':True}

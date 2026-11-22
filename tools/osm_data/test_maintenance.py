@@ -5,8 +5,8 @@ import json
 import unittest
 from unittest.mock import patch
 
-from tools.osm_data import maintenance
-from tools.osm_data.test_publish import Host, ROOT, manifest, encoded, pointer, ARCHIVE
+from tools.osm_data import maintenance, publish
+from tools.osm_data.test_publish import Host, ROOT, manifest, encoded, pointer, ARCHIVE, LICENSE
 
 NOW = datetime(2026, 11, 3, tzinfo=timezone.utc)
 
@@ -51,9 +51,9 @@ class MaintenanceTests(unittest.TestCase):
         self.release('rollback', 14)
         self.candidate('waiting')
         self.assertEqual(maintenance.prune(self.ftp, now=NOW)['delete'], [])
-        self.assertEqual(maintenance.prune(self.ftp, now=NOW, incoming_release='next')['delete'], [], 'before the upload')
+        self.assertEqual(maintenance.prune(self.ftp, now=NOW, incoming=manifest('next'))['delete'], [], 'before the upload')
         self.candidate('next')
-        self.assertEqual(maintenance.prune(self.ftp, now=NOW, incoming_release='next')['delete'], ['releases/waiting'])
+        self.assertEqual(maintenance.prune(self.ftp, now=NOW, incoming=manifest('next'))['delete'], ['releases/waiting'])
 
     def candidate(self, name):
         """An uploaded release Polku hasn't promoted, named in candidates/current.json."""
@@ -124,7 +124,7 @@ class MaintenanceTests(unittest.TestCase):
         self.release('newer',1)
         stage='.upload-old-'+'a'*32;self.host.dirs.add(ROOT+'/'+stage)
         maintenance.mark_upload(self.ftp,stage,manifest('old'),encoded(manifest('old')),now=NOW-timedelta(days=8))
-        self.assertEqual(maintenance.prune(self.ftp,now=NOW,incoming_release='old')['delete'],['releases/newer'])
+        self.assertEqual(maintenance.prune(self.ftp,now=NOW,incoming=manifest('old'))['delete'],['releases/newer'])
 
     def test_publication_record_is_updated_on_rollback(self):
         m=self.release('old',80,current=True)
@@ -159,3 +159,47 @@ class MaintenanceTests(unittest.TestCase):
         self.assertEqual([k for k in self.host.files if k.startswith(ROOT+'/releases/expired/')],[])
         maintenance.prune(self.ftp,apply=True,now=NOW)
         self.assertNotIn(ROOT+'/releases/expired',self.host.dirs)
+
+    def shared(self, name, days, ways, previous=None, current=False):
+        """A release among the shared files: its folder holds only its manifest."""
+        m = manifest(name)
+        digest = hashlib.sha256(ways).hexdigest()
+        m['files'][0].update(bytes=len(ways), sha256=digest)
+        m['datasets']['ways'].update(bytes=len(ways), sha256=digest)
+        m = publish.stored(m)
+        self.host.dirs.update({f'{ROOT}/releases/{name}', ROOT + '/files'})
+        self.host.files[f'{ROOT}/releases/{name}/manifest.json'] = encoded(m)
+        for f in m['files']:
+            self.host.files[ROOT + '/' + publish.place(name, f)] = ways if f['path'] == 'ways.pmtiles' else LICENSE
+        if current:
+            self.host.files[ROOT + '/current.json'] = encoded(publish.current(m))
+        self.host.files[f'{ROOT}/maintenance/r-{name}.json'] = encoded({
+            'version': 1, 'release': name, 'published_at': (NOW-timedelta(days=days)).isoformat(),
+            'previous_release': previous, 'manifest_sha256': hashlib.sha256(encoded(m)).hexdigest()})
+        return m
+
+    def test_a_shared_file_stays_while_a_release_that_stays_names_it(self):
+        self.shared('live', 7, b'PMTiles live', previous='rollback', current=True)
+        self.shared('rollback', 14, b'PMTiles rollback')
+        self.shared('other', 21, b'PMTiles other')
+        self.shared('again', 28, b'PMTiles live')
+        self.release('before', 35)  # from before the shared files: its folder holds its files
+        stray = 'files/' + 'b' * 64 + '.pmtiles'
+        self.host.files[ROOT + '/' + stray] = b'PMTiles stray'
+        incoming = publish.stored(manifest('next'))  # an upload that stopped, whose files are already up
+        for f in incoming['files']:
+            self.host.files[ROOT + '/' + publish.place('next', f)] = ARCHIVE if f['path'] == 'ways.pmtiles' else LICENSE
+        files = lambda *names: {'files/' + hashlib.sha256(n).hexdigest() + '.pmtiles' for n in names}
+        plan = maintenance.prune(self.ftp, now=NOW, incoming=incoming)
+        self.assertEqual(set(plan['delete']), {'releases/other', 'releases/again', 'releases/before', stray} | files(b'PMTiles other'))
+        applied = maintenance.prune(self.ftp, apply=True, now=NOW, incoming=incoming)
+        self.assertEqual(applied['delete'], plan['delete'])
+        left = {name.removeprefix(ROOT + '/') for name in self.host.files if name.startswith(ROOT + '/files/')}
+        self.assertEqual(left, files(b'PMTiles live', b'PMTiles rollback', ARCHIVE) | {publish.shared({'sha256': hashlib.sha256(LICENSE).hexdigest(), 'path': 'LICENSE.txt'})})
+        # A release that stays without a manifest to read keeps every shared file; anything else among them stops it
+        self.host.dirs.add(ROOT + '/releases/unknown')
+        self.host.files[ROOT + '/' + stray] = b'PMTiles stray'
+        self.assertNotIn(stray, maintenance.prune(self.ftp, now=NOW)['delete'])
+        self.host.files[ROOT + '/files/notes.txt'] = b'unknown'
+        with self.assertRaisesRegex(ValueError, 'Unexpected shared file'):
+            maintenance.prune(self.ftp, now=NOW)
