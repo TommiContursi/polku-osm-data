@@ -239,3 +239,22 @@ which holds its `manifest.json`; the squares, as brouter.de serves them, are in 
 lookup version. `url` is where the square lies, relative to its release's `manifest.json`: among the shared files,
 named by its SHA-256, so a square that doesn't change keeps its URL. A release from before the shared files has no
 `url`; its squares are at `releases/<release>/<path>`. `candidates/current.json` holds the candidate's manifest.
+
+## NLS background map
+
+`mml.py` copies the National Land Survey's background-map vector tiles (docs/OPERATIONS.md). Each release is
+`polku-mml/releases/<release>/`: `taustakartta.pmtiles` (MML's own tiles, gzipped; a 404 is an empty tile),
+`tiles.tsv.gz` (each tile's `z x y status last_modified`), `LICENSE.txt` and `manifest.json`:
+
+```json
+{"schema": 1, "release": "20261123T040000Z", "built_at": "2026-11-23T04:00:00Z",
+ "source": "https://avoin-karttakuva.maanmittauslaitos.fi/vectortiles/taustakartta/wmts/1.0.0/taustakartta/default/v21/WGS84_Pseudo-Mercator/{z}/{y}/{x}.pbf",
+ "fetched_from": "2026-11-22T21:00:05Z", "fetched_to": "2026-11-23T03:20:41Z",
+ "attribution": "© Maanmittauslaitos, Maastotietokanta 11/2026", "license": "CC BY 4.0",
+ "zooms": [11, 14], "bounds": [19.0, 59.3, 31.6, 70.1], "tiles": {"200": 892856},
+ "datasets": {"taustakartta": {"url": "taustakartta.pmtiles", "bytes": 9000000000, "sha256": "…"}},
+ "files": [{"path": "taustakartta.pmtiles", "bytes": 9000000000, "sha256": "…"}, {"path": "tiles.tsv.gz", …}, {"path": "LICENSE.txt", …}]}
+```
+
+`tiles` counts MML's answers by status. A tile with another 4xx is left out of the archive. `candidates/current.json`
+holds the candidate's manifest.
