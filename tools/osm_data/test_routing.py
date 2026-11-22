@@ -3,6 +3,7 @@
 from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 import hashlib
+from http.client import IncompleteRead
 import json
 import os
 from pathlib import Path
@@ -68,7 +69,7 @@ class RoutingHost(Host):
             raise AssertionError('an honest User-Agent')
         if self.failing.get(path):
             self.failing[path] -= 1
-            raise URLError('connection reset')
+            raise URLError('connection reset') if self.failing[path] else IncompleteRead(b'', 10)
         if path == '':
             rows = [f'<a href="{n}">{n}</a>      22-Nov-2026 01:03     {len(d)}' for n, d in sorted(self.brouter.items())
                     if '/' not in n]
@@ -77,7 +78,8 @@ class RoutingHost(Host):
             data = self.brouter[path]
         else:
             raise HTTPError(req.full_url, 404, 'missing', {}, None)
-        return Response(b'' if req.get_method() == 'HEAD' else data, headers={'Content-Length': str(len(data))})
+        # its index comes chunked, without a length, as nginx sends a directory listing
+        return Response(b'' if req.get_method() == 'HEAD' else data, headers={} if path == '' else {'Content-Length': str(len(data))})
 
     def publish_square(self, name, data, previous=None):
         """brouter.de's newest copy, the change file from each previous copy, and the empty one for itself."""
