@@ -117,6 +117,7 @@ def validate_files(ftp,base,expected,partial=False):
     return sum(ftp.size(base+'/'+name) for name in names)
 
 
+
 def prune(ftp, apply=False, incoming_bytes=0, now=None, incoming_release=None):
     now=now or datetime.now(timezone.utc)
     p.require(type(incoming_bytes) is int and incoming_bytes>=0,'Invalid incoming byte budget')
@@ -147,33 +148,35 @@ def prune(ftp, apply=False, incoming_bytes=0, now=None, incoming_release=None):
             p.require(re.fullmatch('[a-f0-9]{64}',record.get('manifest_sha256','')),'Invalid receipt digest')
             previous=record.get('previous_release')
             p.require(previous is None or isinstance(previous,str) and p.NAME.fullmatch(previous),'Invalid predecessor')
-            stamp=timestamp(record['published_at']);p.require(stamp<=now,'Publication receipt is in the future')
+            p.require(timestamp(record['published_at'])<=now,'Publication receipt is in the future')
             p.require(ftp.kind('releases/'+release)=='directory','Release needs a real directory')
             if not children(ftp,'releases/'+release):
-                records[release]=(record,stamp);manifests[release]=(None,b'');continue
+                records[release]=record;manifests[release]=(None,b'');continue
             body=p.retrieve(ftp,'releases/'+release+'/manifest.json')
             m=p.validate(json.loads(body))
             p.require(m['release']==release and hashlib.sha256(body).hexdigest()==record.get('manifest_sha256'),'Receipt manifest differs')
-            records[release]=(record,stamp);manifests[release]=(m,body)
+            records[release]=record;manifests[release]=(m,body)
     if pending:
-        records[live['release']]=(pending,timestamp(pending['published_at']))
+        records[live['release']]=pending
         manifests[live['release']]=(json.loads(raw),raw)
-    protected={live['release']}
+    # Only the live release, its saved predecessor (rollback) and the candidate: an upload's incoming release too,
+    # and the upload removes the candidate it replaces once candidates/current.json names the new one
+    named=None
+    if 'candidates' in root and 'current.json' in children(ftp,'candidates'):
+        named=p.validate(json.loads(p.retrieve(ftp,'candidates/current.json')))['release']
+    protected={live['release'],incoming_release,named}-{None}
     predecessor=None
-    if incoming_release: protected.add(incoming_release)
     if live['release'] in records:
-        predecessor=records[live['release']][0].get('previous_release')
+        predecessor=records[live['release']].get('previous_release')
         if predecessor:
             p.require(predecessor in releases,'Recorded predecessor is missing')
             protected.add(predecessor)
-        protected.update(sorted(records,key=lambda key:records[key][1],reverse=True)[:2])
     for release in releases:
         base='releases/'+release
         p.require(p.NAME.fullmatch(release) and ftp.kind(base)=='directory','Unsafe release directory')
-        if release in protected: keep[base]='live/predecessor/latest-two';continue
+        if release in protected: keep[base]='live/predecessor/candidate';continue
         if live['release'] not in records: keep[base]='live receipt unavailable';continue
         if release in records:
-            if now-records[release][1]<=timedelta(days=28): keep[base]='within 28 days';continue
             m,body=manifests[release]
             if m is None:
                 remove[base]=0;continue
@@ -184,8 +187,7 @@ def prune(ftp, apply=False, incoming_bytes=0, now=None, incoming_release=None):
             p.require(all(ftp.size(base+'/'+name)==expected[name] for name in children(ftp,base)),
                       'Retained file size differs')
         elif UPLOAD in children(ftp,base):
-            record,stamp=upload_record(ftp,base,release,now)
-            if now-stamp<=timedelta(days=35): keep[base]='unrecorded final within 35 days';continue
+            record,_=upload_record(ftp,base,release,now)
             expected=record['files'] | {UPLOAD:ftp.size(base+'/'+UPLOAD)}
             remove[base]=validate_files(ftp,base,expected,partial=True)
         else: keep[base]='unmanaged; never delete'

@@ -490,11 +490,13 @@ def upload(directory, resume=False):
             ftp.rename(stage, final)
         print('Verify public immutable release before naming it the candidate', flush=True)
         probe(config[-2], manifest, raw, samples)
-        # Its _upload.json stays until promotion: retention keeps an unpromoted candidate 35 days
+        # Its _upload.json stays until promotion: retention keeps the candidate until the next upload names another
         if 'candidates' not in maintenance.children(ftp):
             ftp.mkd('candidates')
         replace_pointer(ftp, raw, 'candidates/current.json')
         require(get(config[-2] + '/candidates/current.json') == raw, 'Public candidate pointer differs')
+        if previous is not None:
+            print(json.dumps(maintenance.prune(ftp, apply=True, incoming_release=release), sort_keys=True), flush=True)
         print(f'Candidate {release}: {config[-2]}/{final}/manifest.json', flush=True)
 
 

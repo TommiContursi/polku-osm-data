@@ -96,7 +96,7 @@ credentials apart:
    RELEASE` verifies the predecessor's every file over SFTP and HTTPS and switches the pointer
    back, unless another release has gone live meanwhile. The run stays failed.
 
-Rollback by hand runs the same way, with a release ID. The pin moves only through a Polku PR;
+Rollback by hand runs the same way, to the saved predecessor. The pin moves only through a Polku PR;
 when the contract changes, the PR here comes first, and Polku's PR moves the pin together with
 its reader.
 
@@ -120,15 +120,14 @@ can't go unnoticed for long; re-enable the workflows here when it happens.
 
 ## Retention
 
-Before an upload, `maintenance.py` removes only files it owns: the live release, its
-predecessor and the latest two recorded releases are kept whatever their age; published
-releases at least 28 days; interrupted staging 7 days; an owned release never promoted (a
-candidate) 35 days. Unmarked releases and unknown files are never deleted. Receipts live in
+Before an upload, `maintenance.py` removes only files it owns. It keeps the live release, its
+saved predecessor (for rollback) and the candidate. An upload keeps the candidate it replaces
+until `candidates/current.json` names the new one, then removes it. Interrupted staging is kept 7 days.
+Unmarked releases and unknown files are never deleted. Receipts live in
 `maintenance/`. The whole deletion plan must validate before anything is removed; unsafe
 paths, symlinks, unexpected files, a changed pointer or corrupt ownership records stop it,
 and an interrupted deletion keeps its manifest until last. The 80 GiB budget counts the whole
-directory, `candidates/` included; it reserves room within the host's 100 GB, and is no
-reading of the account's quota. **inspect-retention** prints the plan without changing
+directory, `candidates/` included. **inspect-retention** prints the plan without changing
 anything.
 
 ## The host
