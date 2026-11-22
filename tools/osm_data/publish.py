@@ -172,7 +172,7 @@ def open_sftp(host, user, password, expected_fingerprint):
         key = transport.get_remote_server_key()
         actual = 'SHA256:' + base64.b64encode(hashlib.sha256(key.asbytes()).digest()).decode('ascii').rstrip('=')
         require(hmac.compare_digest(actual, expected_fingerprint),
-                'SFTP server host key differs from pinned fingerprint; stop and verify with OVH')
+                'SFTP server host key differs from pinned fingerprint; stop and verify with the host')
         transport.auth_password(username=user, password=password)
         require(transport.is_authenticated(), 'SFTP authentication failed')
         client = paramiko.SFTPClient.from_transport(transport)
@@ -247,7 +247,7 @@ def verify_remote(ftp, base, manifest, raw):
 
 
 def get(url, byte_range=None, immutable=False, encoding='gzip, br'):
-    # OVH can reject Python's default user agent, though browser requests succeed.
+    # The host can reject Python's default user agent, though browser requests succeed.
     headers = {'Origin': 'https://polku.si', 'Accept-Encoding': encoding,
                'User-Agent': 'Mozilla/5.0'}
     if byte_range:
@@ -592,7 +592,7 @@ def test_host():
     config = settings()
     directory = 'host-test-' + uuid.uuid4().hex
     moved = directory + '-moved'
-    body = b'Polku OVH transfer test: ' + bytes(range(32))
+    body = b'Polku transfer test: ' + bytes(range(32))
     replacement = b'{"test":2}'
     with connection(config) as ftp:
         active = None
@@ -614,7 +614,7 @@ def test_host():
                     'SFTP directory rename verification failed')
             sample = get(config[-2] + '/' + active + '/sample.pmtiles',
                          (0, 10, len(body)), immutable=True)
-            require(sample == body[:10], 'OVH HTTP Range bytes differ from SFTP upload')
+            require(sample == body[:10], 'Public HTTP Range bytes differ from SFTP upload')
             ftp.cwd(active)
             try:
                 retention = maintenance.test_retention(ftp)

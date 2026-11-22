@@ -132,34 +132,21 @@ anything.
 
 ## The host
 
-`https://ducksoft.fi/polku-osm/` on OVH. Install the sample
-[`hosting.htaccess`](../tools/osm_data/hosting.htaccess) in that directory by hand (it is never
-uploaded): no listing, no HTTP gzip or Brotli, MIME types, wildcard read-only CORS with the
-Range headers exposed, immutable release caching, and `current.json` revalidated, which also
-covers `candidates/current.json`.
+The data is served from `https://ducksoft.fi/polku-osm/` and `https://ducksoft.fi/polku-routing/`.
+Each folder has its own `.htaccess`: [`hosting.htaccess`](../tools/osm_data/hosting.htaccess),
+installed by hand, and [`routing.htaccess`](../tools/osm_data/routing.htaccess) (Routing data,
+above). They turn off listing and HTTP compression, set the MIME types, allow read-only CORS with
+the Range headers exposed, cache releases as immutable and make `current.json` revalidate, which
+also covers `candidates/current.json`.
 
-SFTP on port 22, with the host key's SHA-256 fingerprint verified independently (never from
-an unauthenticated `ssh-keyscan` alone) and pinned. **test-host** writes tiny files into a
-unique `host-test-*` folder and checks upload, readback, rename over an existing file,
-folder rename, public Range, CORS and caching, and the retention rules, then removes the
-folder. **verify-access** checks the login, listing and the public pointer without writing.
+**test-host** writes tiny files into a unique `host-test-*` folder and checks upload, readback,
+renames, public Range, CORS and caching, and the retention rules, then removes the folder.
+**verify-access** checks the login, listing and the public pointer without writing.
 
-The environment `osm-data-production`, limited to `main`:
-
-| Secret | Value |
-| --- | --- |
-| `OSM_FTP_HOST` | OVH's SFTP hostname, without a scheme or port |
-| `OSM_FTP_USER` | The SFTP user |
-| `OSM_FTP_PASSWORD` | Its password |
-| `OSM_SFTP_HOST_KEY_SHA256` | The verified host key, `SHA256:...` |
-
-Repository variables (the daily check needs the URL outside the environment):
-
-| Variable | Value |
-| --- | --- |
-| `OSM_FTP_ROOT` | Absolute SFTP path ending in `/polku-osm` |
-| `OSM_PUBLIC_URL` | `https://ducksoft.fi/polku-osm` |
-| `OSM_UPLOAD_ENABLED` | `true` once uploads should follow every successful build |
+The jobs that use the host read the `osm-data-production` environment, limited to `main`, by the
+secret names in `.github/workflows/`. `OSM_PUBLIC_URL` and `OSM_UPLOAD_ENABLED` must be repository
+variables, since job conditions read them; `OSM_UPLOAD_ENABLED` set to `true` makes every
+successful build upload. The host's login and host key are documented in Polku's repository.
 
 The host sees which release and roughly which area a browser reads, through its byte
 ranges; keep its access logs as short as its operation allows.
