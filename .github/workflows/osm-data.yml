@@ -420,8 +420,8 @@ jobs:
         with:
           name: nordic-osm-release
           path: osm-build/release
-      - name: Install pinned SFTP and PMTiles dependencies (the cut into cells needs PMTiles)
-        run: python -m pip install --require-hashes -r tools/osm_data/requirements.txt -r tools/osm_data/sftp-requirements.txt
+      - name: Install pinned SFTP dependency (with PMTiles, for the cut into cells)
+        run: python -m pip install --require-hashes -r tools/osm_data/sftp-requirements.txt
       - name: Upload, verify and name the candidate
         env:
           OSM_ALLOW_PUBLISH: 'true'
@@ -475,8 +475,8 @@ jobs:
           path: osm-build/release
           github-token: ${{ github.token }}
           run-id: ${{ steps.source.outputs.run_id }}
-      - name: Install pinned SFTP and PMTiles dependencies (the cut into cells needs PMTiles)
-        run: python -m pip install --require-hashes -r tools/osm_data/requirements.txt -r tools/osm_data/sftp-requirements.txt
+      - name: Install pinned SFTP dependency (with PMTiles, for the cut into cells)
+        run: python -m pip install --require-hashes -r tools/osm_data/sftp-requirements.txt
       - name: Inspect, resume or upload the verified OSM release
         env:
           OSM_ALLOW_PUBLISH: ${{ inputs.operation == 'inspect-existing' && 'false' || 'true' }}

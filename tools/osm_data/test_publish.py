@@ -231,6 +231,10 @@ class Host:
 
 
 class PublishTests(unittest.TestCase):
+    def test_the_sftp_jobs_lock_has_pmtiles_for_the_cut(self):
+        lock = (Path(__file__).with_name('sftp-requirements.txt')).read_text()
+        self.assertIn('pmtiles==3.7.0', lock, 'the upload cuts archives into cells')
+
     def test_unattended_upload_is_gated_and_recovery_leaves_time_to_verify(self):
         workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/osm-data.yml').read_text()
         self.assertNotIn('rollback', workflow, "the live pointer is Polku's: its weekly job promotes and rolls back")
@@ -259,8 +263,6 @@ class PublishTests(unittest.TestCase):
         for publication in (automatic,recovery):
             self.assertIn('\n    timeout-minutes: 350\n',publication,
                           'Slow artifact download, a cut into cells and full verification, within six hours')
-            self.assertIn('-r tools/osm_data/requirements.txt -r tools/osm_data/sftp-requirements.txt', publication,
-                          'the cut into cells needs PMTiles')
             for switch in ('OSM_SHARED_FILES', 'OSM_CELLS'):
                 self.assertIn(f'{switch}: ${{{{ vars.{switch} }}}}',publication,'a resume keeps the layout it began with')
 
@@ -1258,11 +1260,34 @@ class CellsTests(unittest.TestCase):
         with patch.object(publish, 'verify_file', wraps=publish.verify_file) as verify:
             publish.rollback(saved, expected_current='next-release')
         self.assertLessEqual({publish.shared_path(entry) for entry in rows}, {call.args[1] for call in verify.call_args_list})
-        # Retention keeps every cell the releases that stay name
+        # Retention keeps every cell the releases that stay name, and stops when an index is missing
         with publish.connection(publish.settings()) as ftp:
             publish.maintenance.prune(ftp, apply=True)
         for entry in rows + new:
             self.assertIn(ROOT + '/' + publish.shared_path(entry), self.host.files)
+        index, = publish.indexes(second)
+        del self.host.files[ROOT + '/' + publish.place(second['release'], index)]
+        before = dict(self.host.files)
+        with self.assertRaisesRegex(RuntimeError, 'missing'), publish.connection(publish.settings()) as ftp:
+            publish.maintenance.prune(ftp, apply=True)
+        self.assertEqual(self.host.files, before)
+
+    def test_a_cell_an_upload_reuses_stays_though_the_release_it_came_with_goes(self):
+        first = self.publish(self.build('new-release', self.tiles))
+        tiles = self.tiles | {(14, 9101, 4600): b'other'}
+        stopped = self.build('other-release', tiles, '2026-11-21T00:00:00Z')
+        with patch.object(publish, 'verify_manifest', side_effect=RuntimeError('stopped')), self.assertRaises(RuntimeError):
+            publish.upload(stopped)  # after its cells moved among the shared files
+        stage, = [d for d in self.host.dirs if '.upload-other-release-' in d]
+        record = json.loads(self.host.files[stage + '/_upload.json'])
+        self.host.files[stage + '/_upload.json'] = encoded(record | {'created_at': '2026-01-01T00:00:00+00:00'})
+        _, hosted = publish.hosted(stopped)
+        reused, = [entry for entry in self.cells_named(hosted, stopped) if entry not in self.cells(first)]
+        # The next upload reuses that cell while its first retention removes the old staging
+        third = self.publish(self.build('third-release', tiles | {(14, 9119, 4614): b'x'}, '2026-11-28T00:00:00Z'))
+        self.assertIn(reused, self.cells(third))
+        self.assertIn(ROOT + '/' + publish.shared_path(reused), self.host.files)
+        self.assertNotIn(stage, self.host.dirs)
 
     def test_promotion_needs_every_cell_and_a_resume_sends_a_staged_cell_again(self):
         directory = self.build('new-release', self.tiles)

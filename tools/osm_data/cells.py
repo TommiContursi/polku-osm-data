@@ -3,6 +3,7 @@ SHA-256. A cell's bytes depend only on its tiles and its quadrant, so it keeps i
 an upload sends only the cells that changed."""
 
 from contextlib import contextmanager
+import gzip
 import hashlib
 import io
 import json
@@ -88,6 +89,8 @@ def cell(get_bytes, tiles, quadrant, metadata):
 
 def cut(header, metadata, tiles, get_bytes, target):
     """Each cell of an opened archive in index order, (quadrant, bytes), each read back tile for tile."""
+    # The writer gzips its directories and metadata: with a timestamp in them, every cell would change every run
+    require(gzip.compress(b'')[4:8] == bytes(4), 'Cells need gzip without timestamps, as in Python 3.14')
     kept = {key: metadata[key] for key in KEPT if key in metadata}
     for quadrant, group in sorted(quadrants(tiles, header['min_zoom'], target or TARGET).items()):
         data = cell(get_bytes, {t: tiles[t] for t in group}, quadrant, kept)
