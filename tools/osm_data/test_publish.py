@@ -589,6 +589,27 @@ class PublishTests(unittest.TestCase):
         self.assertNotIn(ROOT + '/releases/new-release/_upload.json', self.host.files)
         self.assertIsNone(publish.candidate(PUBLIC), 'the candidate is live')
 
+    def test_upload_removes_the_candidate_it_replaces_only_after_naming_the_new_one(self):
+        self.host.dirs.update({ROOT + '/maintenance', ROOT + '/candidates', ROOT + '/releases/waiting'})
+        self.host.files[ROOT + '/maintenance/r-previous-release.json'] = encoded({
+            'version': 1, 'release': 'previous-release', 'previous_release': None,
+            'published_at': datetime.now(timezone.utc).isoformat(), 'manifest_sha256': hashlib.sha256(encoded(self.old)).hexdigest()})
+        waiting = manifest('waiting')
+        self.host.add_release(waiting)
+        with publish.connection(publish.settings()) as ftp:
+            publish.maintenance.mark_upload(ftp, 'releases/waiting', waiting, encoded(waiting))
+        self.host.files[ROOT + '/candidates/current.json'] = encoded(waiting)
+        seen, real = [], publish.replace_pointer
+        def pointer(ftp, raw, path='current.json'):
+            seen.append(ROOT + '/releases/waiting/ways.pmtiles' in self.host.files)
+            real(ftp, raw, path)
+        with patch.object(publish, 'replace_pointer', pointer):
+            publish.upload(self.release_dir)
+        self.assertEqual(seen, [True], 'the pointer never names a deleted release')
+        self.assertNotIn(ROOT + '/releases/waiting', self.host.dirs)
+        self.assertIn(ROOT + '/releases/new-release/ways.pmtiles', self.host.files)
+        self.assertIn(ROOT + '/releases/previous-release/ways.pmtiles', self.host.files)
+
     def test_upload_fails_when_the_public_candidate_pointer_is_cached(self):
         self.host.pointer_cache = 'public, max-age=31536000, immutable'
         with self.assertRaisesRegex(RuntimeError, 'current.json must disable caching'):
