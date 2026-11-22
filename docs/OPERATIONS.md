@@ -132,10 +132,10 @@ anything.
 
 ## The host
 
-The data is served from `https://ducksoft.fi/polku-osm/` and `https://ducksoft.fi/polku-routing/`.
+The data is served from `https://ducksoft.fi/polku-osm/`, `https://ducksoft.fi/polku-routing/` and `https://ducksoft.fi/polku-mml/`.
 Each folder has its own `.htaccess`: [`hosting.htaccess`](../tools/osm_data/hosting.htaccess),
-installed by hand, and [`routing.htaccess`](../tools/osm_data/routing.htaccess) (Routing data,
-above). They turn off listing and HTTP compression, set the MIME types, allow read-only CORS with
+installed by hand, [`routing.htaccess`](../tools/osm_data/routing.htaccess) (Routing data,
+above) and [`mml.htaccess`](../tools/osm_data/mml.htaccess) in `polku-mml/` (NLS background map, below). They turn off listing and HTTP compression, set the MIME types, allow read-only CORS with
 the Range headers exposed, cache releases as immutable and make `current.json` revalidate, which
 also covers `candidates/current.json`.
 
@@ -191,7 +191,8 @@ to `https://ducksoft.fi/polku-mml/`. The format is in [tools/osm_data/README.md]
   `Last-Modified`, so an update can ask again with `If-Modified-Since`.
 - **upload**, only from `main`, puts [`mml.htaccess`](../tools/osm_data/mml.htaccess) into `polku-mml/` once. The
   release goes through `staging/` (a stopped upload goes on from where it stopped), is read back with its SHA-256,
-  checked over HTTPS and named in `candidates/current.json`. Releases other than the candidate and the live one go.
+  checked over HTTPS and named in `candidates/current.json`. Releases other than the candidate and the live one go,
+  and a release whose box doesn't cover the candidate's is refused.
 
 A smaller **box** tests the whole job. A pull request that changes the job fetches central Helsinki in two parts and
 uploads nothing. The tiles are CC BY 4.0: "© Maanmittauslaitos, Maastotietokanta" and the month fetched, in the

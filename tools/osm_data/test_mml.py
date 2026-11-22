@@ -6,6 +6,7 @@ import gzip
 import io
 import json
 from pathlib import Path
+import shutil
 import tempfile
 import threading
 import time
@@ -70,6 +71,7 @@ class Clock:
 class FetchTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
         self.store = self.tmp / 'store.sqlite'
 
     def fetch(self, fake, **kwargs):
@@ -188,6 +190,7 @@ class FetchTests(unittest.TestCase):
 class PackAndUploadTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
         self.store = self.tmp / 'store.sqlite'
         with redirect_stdout(io.StringIO()):
             mml.fetch(self.store, BOX, request=FakeMML({TILES[1]: [404], TILES[2]: [400]}), rate=1000, connections=3)
@@ -274,6 +277,15 @@ class PackAndUploadTests(unittest.TestCase):
         mml.upload(out)
         releases = {p.split('/')[-2] for p in self.host.files if '/releases/' in p}
         self.assertEqual(releases, {first, third['release']})
+
+    def test_a_test_box_never_replaces_a_larger_candidate(self):
+        out, manifest = self.pack()
+        larger = dict(manifest, bounds=[24.0, 60.0, 25.0, 61.0])
+        self.host.dirs.update({FOLDER, FOLDER + '/candidates'})
+        self.host.files[FOLDER + '/candidates/current.json'] = json.dumps(larger).encode()
+        with self.assertRaisesRegex(RuntimeError, 'more than this release'):
+            mml.upload(out)
+        self.assertFalse([p for p in self.host.files if '/staging' in p or '/releases/' in p], 'nothing was uploaded')
 
     def test_hosting_that_was_changed_by_hand_stops_the_upload(self):
         out, _ = self.pack()

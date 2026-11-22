@@ -32,6 +32,7 @@ from pmtiles.tile import Compression, TileType, tileid_to_zxy, zxy_to_tileid
 from pmtiles.writer import Writer
 from tools.osm_data import maintenance, publish
 from tools.osm_data.publish import require
+from tools.osm_data.routing import stamp
 
 HOST = 'avoin-karttakuva.maanmittauslaitos.fi'
 PATH = '/vectortiles/taustakartta/wmts/1.0.0/taustakartta/default/v21/WGS84_Pseudo-Mercator/{z}/{y}/{x}.pbf'
@@ -54,10 +55,6 @@ BUDGET = 30 * 1024**3  # live, candidate and staging: three copies of about 9 GB
 
 class Refused(Exception):
     """MML refused the key or kept limiting us: stop the whole run and ask the user."""
-
-
-def stamp(value):
-    return value.astimezone(timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z')
 
 
 def column(lon, z):
@@ -201,7 +198,7 @@ def store(path, box=None):
     return db
 
 
-def fetch(path, box=BOX, until=math.inf, limit=None, request=None, rate=RATE, connections=CONNECTIONS, clock=time.monotonic):
+def fetch(path, box=BOX, until=math.inf, limit=None, request=None, rate=RATE, connections=CONNECTIONS):
     """Every tile of the box the store doesn't hold yet, until the deadline (epoch seconds) or `limit` tiles. Raises
     Refused when MML refuses the key or keeps limiting us; what was fetched is kept either way."""
     db, every = store(path, box), tile_ids(box)
@@ -211,7 +208,7 @@ def fetch(path, box=BOX, until=math.inf, limit=None, request=None, rate=RATE, co
     print(json.dumps({'held': len(held), 'to_fetch': len(todo), 'rate': rate, 'connections': connections}), flush=True)
     if todo:
         db.execute("INSERT OR IGNORE INTO meta VALUES ('fetched_from', ?)", (stamp(datetime.now(timezone.utc)),))
-    pace, work, done, stop = Pace(rate, clock), queue.Queue(), queue.Queue(), threading.Event()
+    pace, work, done, stop = Pace(rate), queue.Queue(), queue.Queue(), threading.Event()
 
     def worker():
         while (item := work.get()) is not None:
@@ -231,14 +228,14 @@ def fetch(path, box=BOX, until=math.inf, limit=None, request=None, rate=RATE, co
     for thread in threads:
         thread.start()
     report, seen, outstanding = Counter(), Counter(), len(todo)
-    began = last_ok = last_print = last_commit = clock()
+    began = last_ok = last_print = last_commit = time.monotonic()
     answered = printed = 0
     failure = None
     try:
         while outstanding:
             (tile, attempt), result, error = done.get()
             outstanding -= 1
-            now = clock()
+            now = time.monotonic()
             if result is None and error is None:
                 report['left'] += 1  # stopped before asking
                 continue
@@ -294,7 +291,7 @@ def fetch(path, box=BOX, until=math.inf, limit=None, request=None, rate=RATE, co
         db.commit()
         held_now = db.execute('SELECT COUNT(*) FROM tiles').fetchone()[0]
         db.close()
-        elapsed = clock() - began
+        elapsed = time.monotonic() - began
         summary = json.dumps({'held': held_now, 'of': total, 'trouble': dict(seen), 'seconds': round(elapsed),
                               'per_second': round(answered / max(elapsed, 1e-9), 1), **report}, sort_keys=True)
         print(summary, flush=True)
@@ -309,9 +306,9 @@ def fetch(path, box=BOX, until=math.inf, limit=None, request=None, rate=RATE, co
     return report
 
 
-def sample(request=None):
+def sample():
     """The hand check: Helsinki's tile at each zoom, with what MML says about it."""
-    request = request or MML(os.environ.get('MML_API_KEY'))
+    request = MML(os.environ.get('MML_API_KEY'))
     for z in ZOOMS:
         x, y = column(HELSINKI[0], z), row(HELSINKI[1], z)
         status, headers, body, seconds = request(z, x, y)
@@ -412,6 +409,12 @@ def upload(directory):
         if '.htaccess' not in maintenance.children(ftp):
             ftp.storbinary('STOR .htaccess', io.BytesIO(hosting))
         require(publish.retrieve(ftp, '.htaccess') == hosting, f'{FOLDER}/.htaccess differs from mml.htaccess; change it by hand')
+        if 'candidates' in maintenance.children(ftp) and 'current.json' in maintenance.children(ftp, 'candidates'):
+            old = json.loads(publish.retrieve(ftp, 'candidates/current.json'))['bounds']
+            new = manifest['bounds']
+            # A test box never replaces a larger copy: retention would then remove that copy
+            require(new[0] <= old[0] and new[1] <= old[1] and new[2] >= old[2] and new[3] >= old[3],
+                    f'The candidate covers {old}, more than this release; upload a box that covers it')
         for name in ('releases', 'candidates'):
             if name not in maintenance.children(ftp):
                 ftp.mkd(name)
@@ -489,7 +492,8 @@ def main():
         else:
             upload(args.directory)
     except Exception as error:
-        parser.exit(1, f'{args.command} failed: {error}\n')
+        key = os.environ.get('MML_API_KEY')
+        parser.exit(1, f"{args.command} failed: {str(error).replace(key, '[key]') if key else error}\n")
     print(f'{args.command}: done')
 
 
