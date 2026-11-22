@@ -167,6 +167,20 @@ class FetchTests(unittest.TestCase):
         self.assertEqual(report['tile'] + report['left'], len(TILES))
         self.assertGreater(report['left'], 0)
 
+    def test_mml_answering_400_to_everything_stops_the_run(self):
+        with patch.object(mml, 'GIVE_UP', 0), self.assertRaisesRegex(mml.Refused, 'No good answer'):
+            self.fetch(FakeMML({tile: [400] for tile in TILES}))
+
+    def test_the_hand_check_needs_helsinki_in_every_zoom(self):
+        def helsinki(z, x, y):
+            data = vector('nimisto', 'Helsinki')
+            return 200, {'Content-Length': str(len(data))}, data, 0.1
+        with patch.object(mml, 'MML', lambda key: helsinki), patch.object(mml.time, 'sleep'), redirect_stdout(io.StringIO()):
+            mml.sample()
+            with self.assertRaisesRegex(ValueError, "the fetch doesn't start"):
+                with patch.object(mml, 'MML', lambda key: FakeMML({tile: [404] for tile in TILES})):
+                    mml.sample()
+
     def test_a_refused_key_stops_the_run_and_keeps_what_came_before(self):
         fake = FakeMML({tile: [403] for tile in TILES[3:]})
         with self.assertRaisesRegex(mml.Refused, 'refused the key'):

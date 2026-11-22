@@ -48,23 +48,25 @@ jobs:
           python-version: '3.14.3'
       - name: Install pinned data dependencies
         run: python -m pip install --require-hashes -r tools/osm_data/requirements.txt
-      - name: The tiles this run has fetched so far
-        id: here
-        continue-on-error: true
+      - name: The newest store, of this run or else of the earlier run named
+        id: store
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EARLIER: ${{ inputs.store }}
+        run: |
+          [[ "$EARLIER" =~ ^[0-9]*$ ]] || { echo 'store must be a run ID'; exit 1; }
+          for run in "$GITHUB_RUN_ID" $EARLIER; do
+            name=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts?per_page=100" --jq '[.artifacts[] | select((.name | startswith("mml-store-")) and (.expired | not))] | sort_by(.created_at) | last | .name // empty')
+            if [ -n "$name" ]; then echo "run=$run" >> "$GITHUB_OUTPUT"; echo "name=$name" >> "$GITHUB_OUTPUT"; echo "Store: $name of run $run"; break; fi
+          done
+      - if: steps.store.outputs.name
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53
         with:
-          name: mml-store
-          path: mml
-      - name: Or those of the earlier run named
-        if: steps.here.outcome == 'failure' && inputs.store
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53
-        with:
-          name: mml-store
+          name: ${{ steps.store.outputs.name }}
           path: mml
           github-token: ${{ github.token }}
-          run-id: ${{ inputs.store }}
+          run-id: ${{ steps.store.outputs.run }}
       - name: One tile at each zoom, by hand
-        if: matrix.part == 1
         env:
           MML_API_KEY: ${{ secrets.MML_API_KEY }}
         run: python tools/osm_data/mml.py sample
@@ -75,11 +77,11 @@ jobs:
           LIMIT: ${{ github.event_name == 'pull_request' && matrix.part == 1 && '--limit 10' || '' }}
         run: python tools/osm_data/mml.py fetch mml/store.sqlite --box "$BOX" --until "$UNTIL" $LIMIT
       - name: Keep what was fetched, for the next part or a later run
-        # A store from an earlier run is kept in this one even when it was complete, for the pack below
-        if: always() && (steps.fetch.outputs.changed == 'true' || (steps.here.outcome == 'failure' && inputs.store))
+        # One artifact a part: a failed upload never loses what an earlier part kept
+        if: always() && steps.fetch.outputs.changed == 'true'
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
-          name: mml-store
+          name: mml-store-${{ matrix.part }}
           path: mml/store.sqlite
           overwrite: true
           compression-level: 0
@@ -99,10 +101,24 @@ jobs:
           python-version: '3.14.3'
       - name: Install pinned data dependencies
         run: python -m pip install --require-hashes -r tools/osm_data/requirements.txt
-      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53
+      - name: The newest store, of this run or else of the earlier run named
+        id: store
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EARLIER: ${{ inputs.store }}
+        run: |
+          [[ "$EARLIER" =~ ^[0-9]*$ ]] || { echo 'store must be a run ID'; exit 1; }
+          for run in "$GITHUB_RUN_ID" $EARLIER; do
+            name=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts?per_page=100" --jq '[.artifacts[] | select((.name | startswith("mml-store-")) and (.expired | not))] | sort_by(.created_at) | last | .name // empty')
+            if [ -n "$name" ]; then echo "run=$run" >> "$GITHUB_OUTPUT"; echo "name=$name" >> "$GITHUB_OUTPUT"; echo "Store: $name of run $run"; break; fi
+          done
+      - if: steps.store.outputs.name
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53
         with:
-          name: mml-store
+          name: ${{ steps.store.outputs.name }}
           path: mml
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.store.outputs.run }}
       - name: One archive of every tile, read back tile for tile, with the manifest
         run: python tools/osm_data/mml.py pack mml/store.sqlite mml-release
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f

@@ -185,8 +185,9 @@ to `https://ducksoft.fi/polku-mml/`. The format is in [tools/osm_data/README.md]
   `MML_API_KEY`, and a User-Agent naming this repository. A 429, 5xx, timeout or answer slower than 2 s halves the
   rate, down to one a second; each 30 s without trouble raises it by one. A 404 is kept as an empty tile, and another
   4xx is recorded and not asked again. A 401 or 403, 5 minutes without a good answer, or 429s at one a second stop the
-  run. It runs in up to three parts of 5 h 20 min, each keeping its tiles in the `mml-store` artifact; a later run
-  given the run's ID in **store** goes on from there.
+  run, and so does a hand check that doesn't find Helsinki in its tile at every zoom. It runs in up to three parts of
+  5 h 20 min, each keeping its tiles in an `mml-store-<part>` artifact; a later run given the run's ID in **store**
+  goes on from the newest.
 - **pack** needs an answer for every tile and reads the archive back tile for tile. `tiles.tsv.gz` keeps each tile's
   `Last-Modified`, so an update can ask again with `If-Modified-Since`.
 - **upload**, only from `main`, puts [`mml.htaccess`](../tools/osm_data/mml.htaccess) into `polku-mml/` once. The

@@ -253,7 +253,8 @@ def fetch(path, box=BOX, until=math.inf, limit=None, request=None, rate=RATE, co
                 db.execute('INSERT INTO tiles VALUES (?, ?, ?, ?)', (tile, status, headers.get('Last-Modified'), detail))
                 report[kind] += 1
                 report['bytes'] += len(detail or b'')
-                last_ok = now
+                if kind != 'recorded':  # a 400 or 410 for everything is no good answer either
+                    last_ok = now
             elif kind == 'refused':
                 failure = failure or f'MML refused the key ({detail}); stopped'
                 stop.set()
@@ -307,8 +308,9 @@ def fetch(path, box=BOX, until=math.inf, limit=None, request=None, rate=RATE, co
 
 
 def sample():
-    """The hand check: Helsinki's tile at each zoom, with what MML says about it."""
-    request = MML(os.environ.get('MML_API_KEY'))
+    """The hand check: Helsinki's tile at each zoom, with what MML says about it. Each must be a vector tile that
+    names Helsinki, or the fetch doesn't start."""
+    request, wrong = MML(os.environ.get('MML_API_KEY')), []
     for z in ZOOMS:
         x, y = column(HELSINKI[0], z), row(HELSINKI[1], z)
         status, headers, body, seconds = request(z, x, y)
@@ -318,7 +320,10 @@ def sample():
                           'helsinki': b'Helsinki' in body, 'layers': layers(body) if kind == 'tile' else None}
                          | {name: headers.get(name) for name in ('Content-Type', 'Content-Length', 'Content-Encoding',
                                                                  'Last-Modified', 'Cache-Control', 'ETag')}), flush=True)
+        if kind != 'tile' or b'Helsinki' not in body:
+            wrong.append(f'{z}/{x}/{y}')
         time.sleep(1)
+    require(not wrong, f"Helsinki's tiles {wrong} are not what MML should answer; the fetch doesn't start")
 
 
 def pack(path, out, now=None):
