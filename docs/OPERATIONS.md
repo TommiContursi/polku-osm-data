@@ -132,10 +132,10 @@ anything.
 
 ## The host
 
-The data is served from `https://ducksoft.fi/polku-osm/` and `https://ducksoft.fi/polku-routing/`.
+The data is served from `https://ducksoft.fi/polku-osm/`, `https://ducksoft.fi/polku-routing/` and `https://ducksoft.fi/polku-mml/`.
 Each folder has its own `.htaccess`: [`hosting.htaccess`](../tools/osm_data/hosting.htaccess),
-installed by hand, and [`routing.htaccess`](../tools/osm_data/routing.htaccess) (Routing data,
-above). They turn off listing and HTTP compression, set the MIME types, allow read-only CORS with
+installed by hand, [`routing.htaccess`](../tools/osm_data/routing.htaccess) (Routing data,
+above) and [`mml.htaccess`](../tools/osm_data/mml.htaccess) in `polku-mml/` (NLS background map, below). They turn off listing and HTTP compression, set the MIME types, allow read-only CORS with
 the Range headers exposed, cache releases as immutable and make `current.json` revalidate, which
 also covers `candidates/current.json`.
 
@@ -174,3 +174,27 @@ or check opens a `watch` issue. The manifest is in [tools/osm_data/README.md](..
 Each release carries OSM's attribution and the ODbL link in `LICENSE.txt`, the manifest and
 the archives' metadata. Geofabrik is recorded as the extract provider. The routing manifest carries OSM's
 attribution, BRouter's, Sonny's (CC BY 4.0, https://sonny.4lima.de) and CIAT's citation for SRTM south of 60°N.
+
+## NLS background map
+
+`mml-data.yml`, by hand, copies the National Land Survey's (MML) background-map vector tiles (`taustakartta` v21,
+zooms 11–14 over 19.0–31.6°E and 59.3–70.1°N: 892,856 tiles) into one PMTiles archive, and uploads it as a candidate
+to `https://ducksoft.fi/polku-mml/`. The format is in [tools/osm_data/README.md](../tools/osm_data/README.md#nls-background-map).
+
+- **fetch** asks about 40 tiles a second over 8 keep-alive connections, with the key in the repository secret
+  `MML_API_KEY`, and a User-Agent naming this repository. A 429, 5xx, timeout or answer slower than 2 s halves the
+  rate, down to one a second; each 30 s without trouble raises it by one. A 404 is kept as an empty tile, and another
+  4xx is recorded and not asked again. A 401 or 403, 5 minutes without a good answer, or 429s at one a second stop the
+  run, and so does a hand check that doesn't find Helsinki in its tile at every zoom. It runs in up to three parts of
+  5 h 20 min, each keeping its tiles in an `mml-store-<part>` artifact; a later run given the run's ID in **store**
+  goes on from the newest.
+- **pack** needs an answer for every tile and reads the archive back tile for tile. `tiles.tsv.gz` keeps each tile's
+  `Last-Modified`, so an update can ask again with `If-Modified-Since`.
+- **upload**, only from `main`, puts [`mml.htaccess`](../tools/osm_data/mml.htaccess) into `polku-mml/` once. The
+  release goes through `staging/` (a stopped upload goes on from where it stopped), is read back with its SHA-256,
+  checked over HTTPS and named in `candidates/current.json`. Releases other than the candidate and the live one go,
+  and a release whose box doesn't cover the candidate's is refused.
+
+A smaller **box** tests the whole job. A pull request that changes the job fetches central Helsinki in two parts and
+uploads nothing. The tiles are CC BY 4.0: "© Maanmittauslaitos, Maastotietokanta" and the month fetched, in the
+manifest, the archive's metadata and `LICENSE.txt`.
