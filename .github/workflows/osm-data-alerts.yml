@@ -2,7 +2,7 @@ name: Polku OSM alerts
 
 on:
   workflow_run:
-    workflows: [Polku OSM data]
+    workflows: [Polku OSM data, Polku routing data]
     types: [completed]
     branches: [main]
   workflow_dispatch:
