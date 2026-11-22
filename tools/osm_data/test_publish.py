@@ -27,7 +27,7 @@ from tools.osm_data import publish
 from tools.osm_data.publish import open_sftp as real_open_sftp
 
 
-ROOT = '/home/example/www/polku-osm'
+ROOT = '/srv/example/polku-osm'
 PUBLIC = 'https://data.example/polku-osm'
 ENV = {'OSM_FTP_HOST': 'ftp.example', 'OSM_FTP_USER': 'user-private',
        'OSM_FTP_PASSWORD': 'password-private', 'OSM_FTP_ROOT': ROOT,
@@ -844,7 +844,7 @@ class PublishTests(unittest.TestCase):
         self.assertEqual(body, ARCHIVE[:10])
 
     def test_unsafe_root_and_missing_approval_fail_before_connect(self):
-        for root in ['', '/', '/home/example/www', '/www/../polku-osm', '/www/polku-osm\r\nDELE x']:
+        for root in ['', '/', '/srv/example', '/srv/../polku-osm', '/srv/polku-osm\r\nDELE x']:
             with self.subTest(root=root), patch.dict('os.environ', {'OSM_FTP_ROOT': root}):
                 with self.assertRaises(ValueError):
                     self.publish()

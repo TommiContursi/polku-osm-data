@@ -19,8 +19,8 @@ import zlib
 from tools.osm_data import publish, routing
 from tools.osm_data.test_publish import ENV, Host, Response, ROOT
 
-WWW = ROOT.removesuffix('/polku-osm')
-BASE = WWW + '/polku-routing'
+SITE = ROOT.removesuffix('/polku-osm')
+BASE = SITE + '/polku-routing'
 PUBLIC = 'https://data.example/polku-routing'
 T0 = datetime(2026, 11, 22, 9, 0, tzinfo=timezone.utc)
 JAR, PATH = os.environ.get('BROUTER_JAR'), os.environ.get('PATH', '')
@@ -42,14 +42,14 @@ def md5(data):
 class RoutingHost(Host):
     def __init__(self):
         super().__init__()
-        self.dirs.add(WWW)
+        self.dirs.add(SITE)
         self.brouter, self.failing, self.requests = {}, {}, []
 
     def http(self, req, **kwargs):
         url = req.full_url
         if url.startswith(routing.SOURCE):
             return self.brouter_de(req)
-        name = WWW + urlsplit(url).path
+        name = SITE + urlsplit(url).path
         if name not in self.files:
             raise HTTPError(url, 404, 'missing', {}, None)
         data, headers = self.files[name], dict(self.release_headers)
