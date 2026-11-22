@@ -33,23 +33,16 @@ AGENT = 'Polku-routing-mirror/1.0 (+https://github.com/TommiContursi/polku-osm-d
 RATE = 2096  # bytes per millisecond: BRouter's app keeps each download under 16 Mbit/s
 BACK_OFF = 300  # seconds before the one retry; a second failure stops the run, and the next run resumes
 SQUARE = re.compile(r'([EW])(\d{1,3})_([NS])(\d{1,2})\.rd5\Z')
-# CGIAR's SRTM terms leave publishing its elevation unclear (#7), so only Sonny's squares, 60°N and up.
-# Publishing south of it needs CIAT's citation in ATTRIBUTION too.
-NORTH = 60
 SMALL = 1024 * 1024  # BRouter makes no change files for squares under 1 MiB (Rd5DiffManager)
 QUARTER = timedelta(days=90)  # brouter.de allows a square's full download about once a quarter
 FRESH, OLDEST = timedelta(days=14), timedelta(days=100)  # squares with change files, and the small ones
 BUDGET = 32 * 1024**3  # live, candidate and the staging one between them: three copies of the world's 10.1 GB
 STAGE = 'staging'
 ATTRIBUTION = ('Routing data © OpenStreetMap contributors, ODbL 1.0 (https://www.openstreetmap.org/copyright), '
-               'built by BRouter (https://brouter.de). Elevation: Sonny\'s LiDAR digital terrain models '
-               '(https://sonny.4lima.de), CC BY 4.0.')
-
-
-def latitude(name):
-    match = SQUARE.fullmatch(name)
-    require(match, 'Not a routing square: ' + name)
-    return int(match[4]) * (1 if match[3] == 'N' else -1)
+               'built by BRouter (https://brouter.de). Elevation north of 60°N: Sonny\'s LiDAR digital terrain models '
+               '(https://sonny.4lima.de), CC BY 4.0. Elevation south of 60°N: Jarvis A., H.I. Reuter, A. Nelson, '
+               'E. Guevara, 2008, Hole-filled seamless SRTM data V4, International Centre for Tropical Agriculture '
+               '(CIAT), https://srtm.csi.cgiar.org.')
 
 
 def stamp(value):
@@ -68,17 +61,14 @@ def listing(page):
 
 
 def describe(path):
-    """A square's own index, as PhysicalFile reads it: its 25 1° parts as byte ranges (tileIndex = lonMod5 * 5 +
-    latMod5, part 0 from byte 200), the lookup version, BRouter's creation time and the elevation type."""
+    """BRouter's lookup version and creation time, from the square's index and the checksums after it."""
     with open(path, 'rb') as square:
         longs = struct.unpack('>25q', square.read(200))
-        ends = [value & 0xffffffffffff for value in longs]
-        square.seek(ends[24])
-        trailer = square.read(113)
-    require(len(trailer) >= 112, 'Square without its checksums')
-    return {'parts': [[200 if i == 0 else ends[i - 1], end] for i, end in enumerate(ends)], 'version': longs[0] >> 48,
-            'created': stamp(datetime.fromtimestamp(struct.unpack('>q', trailer[:8])[0] / 1000, timezone.utc)),
-            'elevation_type': trailer[112] if len(trailer) > 112 else None}
+        square.seek(longs[24] & 0xffffffffffff)
+        trailer = square.read(112)
+    require(len(trailer) == 112, 'Square without its checksums')
+    return {'version': longs[0] >> 48,
+            'created': stamp(datetime.fromtimestamp(struct.unpack('>q', trailer[:8])[0] / 1000, timezone.utc))}
 
 
 def record(path, name, downloaded):
@@ -99,11 +89,8 @@ def validate(manifest):
     require(len(set(names)) == len(names) and all(isinstance(n, str) and SQUARE.fullmatch(n) for n in names),
             'Unsafe or duplicate routing square')
     for square in manifest['squares']:
-        parts = square.get('parts')
-        require(type(square.get('bytes')) is int and re.fullmatch('[a-f0-9]{64}', square.get('sha256', ''))
-                and re.fullmatch('[a-f0-9]{32}', square.get('md5', '')) and isinstance(parts, list) and len(parts) == 25
-                and parts[0][0] == 200 and all(a[1] == b[0] for a, b in zip(parts, parts[1:]))
-                and all(start <= end for start, end in parts) and parts[24][1] + 112 <= square['bytes'],
+        require(type(square.get('bytes')) is int and square['bytes'] >= 312 and type(square.get('version')) is int
+                and re.fullmatch('[a-f0-9]{64}', square.get('sha256', '')) and re.fullmatch('[a-f0-9]{32}', square.get('md5', '')),
                 'Invalid routing square ' + square['path'])
         when(square['created']), when(square['downloaded'])
     return manifest
@@ -224,19 +211,6 @@ def staging(ftp, base, now):
     return release, {}
 
 
-def free_space(ftp):
-    """Free and total bytes by OpenSSH's statvfs extension, or None when the server doesn't offer it."""
-    try:
-        from paramiko.sftp import CMD_EXTENDED, CMD_EXTENDED_REPLY
-        kind, message = ftp.sftp._request(CMD_EXTENDED, 'statvfs@openssh.com', ftp.sftp.normalize('.'))
-    except Exception:  # a server without the extension answers with an error status
-        return None
-    if kind != CMD_EXTENDED_REPLY:
-        return None
-    _, fragment, blocks, _, available, *_ = [message.get_int64() for _ in range(11)]
-    return {'available': available * fragment, 'total': blocks * fragment}
-
-
 def put(ftp, path, local, entry):
     """Upload and read back: the host's copy must hash to the record."""
     with open(local, 'rb') as body:
@@ -253,7 +227,8 @@ def probe(url, manifest, raw):
     for square in manifest['squares']:
         head = publish.get(f"{base}/{square['path']}", (0, 200, square['bytes']), True)
         ends = [value & 0xffffffffffff for value in struct.unpack('>25q', head)]
-        require(ends == [end for _, end in square['parts']], 'Public square differs: ' + square['path'])
+        require(200 <= ends[0] and ends == sorted(ends) and ends[24] + 112 <= square['bytes'],
+                'Public square has no valid index: ' + square['path'])
 
 
 def mirror(jar, initial=False, now=None, source=None, brouter=None):
@@ -271,15 +246,13 @@ def mirror(jar, initial=False, now=None, source=None, brouter=None):
         page = source.get('', work / 'index.html')
         require(page, "brouter.de's index is missing")
         listed = listing(page.read_text())
-        names = sorted(name for name in listed if latitude(name) >= NORTH)
+        names = sorted(listed)
         previous = {square['path']: square for square in base['squares']} if base else {}
         release, done = staging(ftp, base and base['release'], now)
         incoming = sum(listed[name] for name in names if name not in done)
-        host = free_space(ftp)
         print(json.dumps({'release': release, 'squares': len(names), 'to_do': len(names) - len(done),
-                          'incoming_bytes': incoming, 'host': host}), flush=True)
+                          'incoming_bytes': incoming}), flush=True)
         require(maintenance.usage(ftp) + incoming <= BUDGET, 'Routing storage budget exceeded (32 GiB)')
-        require(host is None or host['available'] >= incoming + 2 * 1024**3, "The host's free space is too small")
         for name in names:
             if name in done:
                 continue
@@ -294,7 +267,8 @@ def mirror(jar, initial=False, now=None, source=None, brouter=None):
                 copy = work / ('base-' + name)
                 with open(copy, 'wb') as body:
                     ftp.retrbinary(f"RETR releases/{base['release']}/{name}", body.write)
-                require(record(copy, name, old['downloaded'])['sha256'] == old['sha256'], 'Our copy differs: ' + name)
+                copy_entry = record(copy, name, old['downloaded'])
+                require(copy_entry['sha256'] == old['sha256'], 'Our copy differs: ' + name)
                 change = old['bytes'] >= SMALL and source.get(f"diff/{name[:-4]}/{old['md5']}.df5", work / 'change.df5')
                 if change:
                     brouter('apply', copy, change, new)
@@ -306,9 +280,9 @@ def mirror(jar, initial=False, now=None, source=None, brouter=None):
                     kind, new = 'kept', copy
             if kind != 'kept':
                 brouter('check', new)
-            entry = old if kind == 'kept' else record(new, name, downloaded)
+            entry = copy_entry if kind == 'kept' else record(new, name, downloaded)
             require(not old or entry['version'] == old['version'],
-                    f"brouter.de's lookup version changed on {name}: Polku's BRouter needs the new lookups first")
+                    f"brouter.de's lookup version changed on {name}; stopped before publishing it")
             if kind not in {'kept', 'unchanged'} and entry['bytes'] >= SMALL:
                 # Next week's change file is named by this MD5: brouter.de names its newest copy with an empty one
                 require(source.get(f"diff/{name[:-4]}/{entry['md5']}.df5"), f'brouter.de has no change file for our new {name}')
@@ -388,13 +362,6 @@ def install_hosting():
         ftp.storbinary('STOR .htaccess', io.BytesIO(Path(__file__).with_name('routing.htaccess').read_bytes()))
 
 
-def space():
-    with routing_host() as (ftp, _):
-        result = {'statvfs': free_space(ftp), 'polku_routing_bytes': maintenance.usage(ftp)}
-        ftp.cwd('../polku-osm')
-        return result | {'polku_osm_bytes': maintenance.usage(ftp)}
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
@@ -402,7 +369,6 @@ def main():
     run.add_argument('--jar', type=Path, required=True, help="BRouter 1.7.10's brouter-1.7.10-all.jar")
     run.add_argument('--initial', action='store_true', help='download squares we have no copy of: their one initial download')
     commands.add_parser('check').add_argument('url', help='the public polku-routing URL')
-    commands.add_parser('space')
     commands.add_parser('install-hosting')
     args = parser.parse_args()
     try:
@@ -410,8 +376,6 @@ def main():
             mirror(args.jar, args.initial)
         elif args.command == 'check':
             print(json.dumps(check(args.url)))
-        elif args.command == 'space':
-            print(json.dumps(space(), sort_keys=True))
         else:
             install_hosting()
     except Exception as error:
