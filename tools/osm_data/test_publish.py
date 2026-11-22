@@ -25,6 +25,7 @@ from urllib.parse import urlsplit
 
 from tools.osm_data import publish
 from tools.osm_data.publish import open_sftp as real_open_sftp
+from tools.osm_data.test_cells import tile, write
 
 
 ROOT = '/srv/example/polku-osm'
@@ -150,6 +151,8 @@ class Host:
             def kind(self, path):
                 path = self.abs(path)
                 return 'other' if path in host.unsafe else 'directory' if path in host.dirs else 'file'
+            def attributes(self, path='.'):
+                return {posixpath.basename(p): (self.kind(p), len(host.files.get(p, b''))) for p in self.nlst(path)}
             def voidcmd(self, cmd):
                 return '200 OK'
             def storbinary(self, cmd, body, *args, **kwargs):
@@ -254,9 +257,10 @@ class PublishTests(unittest.TestCase):
         recovery=workflow.split('\n  upload-existing:\n',1)[1].split('\n  monitor:',1)[0]
         self.assertIn('run-id: ${{ steps.source.outputs.run_id }}',recovery)
         for publication in (automatic,recovery):
-            self.assertIn('\n    timeout-minutes: 120\n',publication,
-                          'Slow artifact download must leave time for full verification')
-            self.assertIn('OSM_SHARED_FILES: ${{ vars.OSM_SHARED_FILES }}',publication,'a resume keeps the layout it began with')
+            self.assertIn('\n    timeout-minutes: 350\n',publication,
+                          'Slow artifact download, a cut into cells and full verification, within six hours')
+            for switch in ('OSM_SHARED_FILES', 'OSM_CELLS'):
+                self.assertIn(f'{switch}: ${{{{ vars.{switch} }}}}',publication,'a resume keeps the layout it began with')
 
     def test_recovery_source_accepts_failed_publication_with_verified_main_bundle(self):
         run={'id':123,'status':'completed','conclusion':'failure','head_branch':'main',
@@ -789,6 +793,14 @@ class PublishTests(unittest.TestCase):
         self.assertIn(('prefetch', len(ARCHIVE), 64), events)
         self.assertEqual(b''.join(chunks), ARCHIVE)
 
+    def test_sftp_lists_a_folder_with_kinds_and_sizes_in_one_request(self):
+        class SFTP:
+            def listdir_attr(self, path):
+                entry = lambda name, mode, size: SimpleNamespace(filename=name, st_mode=mode, st_size=size)
+                return [entry('a.pmtiles', 0o100644, 5), entry('d', 0o40755, 4096), entry('link', 0o120777, 9)]
+        self.assertEqual(publish.SFTPFiles(None, SFTP()).attributes('files'),
+                         {'a.pmtiles': ('file', 5), 'd': ('directory', 4096), 'link': ('other', 9)})
+
     def test_sftp_resume_uses_nontruncating_seek_and_surfaces_close_errors(self):
         events = []
         class File(io.BytesIO):
@@ -1181,6 +1193,100 @@ class SharedFilesTests(unittest.TestCase):
                     broken['files'][0]['path'] = 'ways.tar_gz'
                 with self.assertRaises(ValueError):
                     publish.validate(broken, pointed)
+
+
+class CellsTests(unittest.TestCase):
+    """OSM_CELLS: each archive goes up as its cells and an index naming them, among the shared files."""
+    stage, sent = PublishTests.stage, SharedFilesTests.sent
+
+    def setUp(self):
+        PublishTests.setUp(self)
+        for patcher in (patch.dict('os.environ', {'OSM_CELLS': 'true'}), patch.object(publish.cells, 'TARGET', 2048)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.tiles = {(14, 9100 + n % 20, 4600 + n // 20): tile(n) for n in range(300)}
+
+    def build(self, name, tiles, built_at='2026-11-20T00:00:00Z'):
+        """A local release whose ways archive is a real one of these tiles."""
+        directory = Path(self.tmp.name) / name
+        directory.mkdir(exist_ok=True)
+        archive = write(directory / 'ways.pmtiles', tiles, {'timestamp': built_at}).read_bytes()
+        value = manifest(name, built_at)
+        digest = hashlib.sha256(archive).hexdigest()
+        value['files'][0].update(bytes=len(archive), sha256=digest)
+        value['datasets']['ways'].update(bytes=len(archive), sha256=digest, format='pmtiles-json', zoom=14)
+        (directory / 'LICENSE.txt').write_bytes(LICENSE)
+        (directory / 'manifest.json').write_bytes(encoded(value))
+        return directory
+
+    def publish(self, directory, resume=False):
+        publish.upload(directory, resume=resume)
+        raw, hosted = publish.hosted(directory)
+        publish.promote_candidate(hosted['release'], hashlib.sha256(raw).hexdigest(), directory)
+        return hosted
+
+    def cells(self, hosted):
+        index, = publish.indexes(hosted)
+        return publish.cells_of(self.host.files[ROOT + '/' + publish.place(hosted['release'], index)], index)
+
+    def test_an_archive_goes_up_as_its_cells_and_a_changed_tile_sends_one_cell(self):
+        first = self.publish(self.build('new-release', self.tiles))
+        ways = first['datasets']['ways']
+        self.assertEqual(ways['format'], publish.CELLS)
+        self.assertTrue(ways['url'].startswith('../../files/') and ways['url'].endswith('.json'))
+        rows = self.cells(first)
+        self.assertGreater(len(rows), 3)
+        for entry in rows:
+            self.assertEqual(hashlib.sha256(self.host.files[ROOT + '/' + publish.shared_path(entry)]).hexdigest(), entry['sha256'])
+        self.assertEqual([n for n in self.host.files if n.startswith(ROOT + '/releases/new-release/')],
+                         [ROOT + '/releases/new-release/manifest.json'])
+        archive = hashlib.sha256((Path(self.tmp.name) / 'new-release' / 'ways.pmtiles').read_bytes()).hexdigest()
+        self.assertFalse([n for n in self.host.files if archive in n], 'the whole archive never goes up')
+        publish.check(PUBLIC + '/current.json')
+        # A week later one tile changed: its cell, the index and the manifest go up
+        self.host.uploads.clear()
+        second = self.publish(self.build('next-release', self.tiles | {(14, 9100, 4600): b'changed'}, '2026-11-27T00:00:00Z'))
+        new = [entry for entry in self.cells(second) if entry not in rows]
+        self.assertEqual(len(new), 1)
+        self.assertEqual(self.sent(), sorted(['_upload.json', 'manifest.json', 'ways.cells.json', new[0]['path']]))
+        publish.check(PUBLIC + '/current.json')
+        # Polku's rollback hashes every cell of the predecessor
+        saved = next(p for p in (Path(self.tmp.name) / 'next-release').glob('rollback-*.json')
+                     if json.loads(p.read_bytes())['release'] == 'new-release')
+        with patch.object(publish, 'verify_file', wraps=publish.verify_file) as verify:
+            publish.rollback(saved, expected_current='next-release')
+        self.assertLessEqual({publish.shared_path(entry) for entry in rows}, {call.args[1] for call in verify.call_args_list})
+        # Retention keeps every cell the releases that stay name
+        with publish.connection(publish.settings()) as ftp:
+            publish.maintenance.prune(ftp, apply=True)
+        for entry in rows + new:
+            self.assertIn(ROOT + '/' + publish.shared_path(entry), self.host.files)
+
+    def test_promotion_needs_every_cell_and_a_resume_sends_a_staged_cell_again(self):
+        directory = self.build('new-release', self.tiles)
+        publish.upload(directory)
+        raw, hosted = publish.hosted(directory)
+        entry = self.cells(hosted)[1]
+        cell = self.host.files.pop(ROOT + '/' + publish.shared_path(entry))
+        with self.assertRaisesRegex(RuntimeError, 'Cell is missing or differs'):
+            publish.promote_candidate('new-release', hashlib.sha256(raw).hexdigest(), directory)
+        self.assertEqual(self.host.pointer_writes, 0)
+        self.host.files[ROOT + '/' + publish.shared_path(entry)] = cell
+        # Another release stopped part way: a half-sent cell is in its staging
+        other = self.build('other-release', self.tiles | {(14, 9101, 4600): b'other'}, '2026-11-21T00:00:00Z')
+        _, staged = publish.hosted(other)
+        changed, = [c for c in self.cells_named(staged, other) if c not in self.cells(hosted)]
+        stage = '.upload-other-release-' + 'a' * 32
+        self.host.dirs.add(ROOT + '/' + stage)
+        self.host.files[f"{ROOT}/{stage}/{changed['path']}"] = b'half'
+        self.host.uploads.clear()
+        publish.upload(other, resume=True)
+        self.assertIn((f"{ROOT}/{stage}/{changed['path']}", None, changed['bytes']), self.host.uploads)
+        self.assertEqual(hashlib.sha256(self.host.files[ROOT + '/' + publish.shared_path(changed)]).hexdigest(), changed['sha256'])
+
+    def cells_named(self, hosted, directory):
+        index, = publish.indexes(hosted)
+        return publish.cells_of((directory / index['path']).read_bytes(), index)
 
 
 if __name__ == '__main__':

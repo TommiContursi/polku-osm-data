@@ -406,7 +406,8 @@ jobs:
     needs: bundle
     if: ${{ !cancelled() && needs.bundle.result == 'success' && vars.OSM_UPLOAD_ENABLED == 'true' && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.operation == 'build')) }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    # A first upload of cells sends some 23,000 files; a stopped one goes on with resume-existing
+    timeout-minutes: 350
     environment: osm-data-production
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -431,6 +432,7 @@ jobs:
           OSM_FTP_ROOT: ${{ vars.OSM_FTP_ROOT }}
           OSM_PUBLIC_URL: ${{ vars.OSM_PUBLIC_URL }}
           OSM_SHARED_FILES: ${{ vars.OSM_SHARED_FILES }}
+          OSM_CELLS: ${{ vars.OSM_CELLS }}
         run: python tools/osm_data/publish.py upload osm-build/release
 
   upload-existing:
@@ -438,7 +440,8 @@ jobs:
     # Does not enable unattended upload or rebuild the archive.
     if: github.event_name == 'workflow_dispatch' && (inputs.operation == 'upload-existing' || inputs.operation == 'inspect-existing' || inputs.operation == 'resume-existing') && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    # A first upload of cells sends some 23,000 files; a stopped one goes on with resume-existing
+    timeout-minutes: 350
     environment: osm-data-production
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -485,6 +488,7 @@ jobs:
           OSM_FTP_ROOT: ${{ vars.OSM_FTP_ROOT }}
           OSM_PUBLIC_URL: ${{ vars.OSM_PUBLIC_URL }}
           OSM_SHARED_FILES: ${{ vars.OSM_SHARED_FILES }}
+          OSM_CELLS: ${{ vars.OSM_CELLS }}
         run: |
           case "$OSM_OPERATION" in
             inspect-existing) python tools/osm_data/publish.py inspect osm-build/release ;;
