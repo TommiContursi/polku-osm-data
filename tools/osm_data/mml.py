@@ -112,7 +112,8 @@ def layers(tile):
 
 
 class MML:
-    """One GET per tile, on this thread's keep-alive connection. Returns (status, headers, body, seconds)."""
+    """One GET per tile, on this thread's keep-alive connection. Returns (status, headers, body, seconds until the
+    answer began): MML's own pace, apart from the time a large tile takes to cross."""
     def __init__(self, key):
         require(re.fullmatch(r'[A-Za-z0-9-]{8,128}', key or ''), 'MML_API_KEY is missing or malformed')
         self.query, self.local = '?' + urlencode({'api-key': key}), threading.local()
@@ -126,12 +127,13 @@ class MML:
             connection.request('GET', PATH.format(z=z, x=x, y=y) + self.query,
                                headers={'User-Agent': AGENT, 'Accept-Encoding': 'identity'})
             response = connection.getresponse()
+            seconds = time.monotonic() - start
             body = response.read()
         except BaseException:
             connection.close()
             self.local.connection = None
             raise
-        return response.status, response.headers, body, time.monotonic() - start
+        return response.status, response.headers, body, seconds
 
 
 class Pace:
@@ -228,7 +230,8 @@ def fetch(path, box=BOX, until=math.inf, limit=None, request=None, rate=RATE, co
     for thread in threads:
         thread.start()
     report, seen, outstanding = Counter(), Counter(), len(todo)
-    last_ok = last_print = last_commit = clock()
+    began = last_ok = last_print = last_commit = clock()
+    answered = printed = 0
     failure = None
     try:
         while outstanding:
@@ -238,6 +241,7 @@ def fetch(path, box=BOX, until=math.inf, limit=None, request=None, rate=RATE, co
             if result is None and error is None:
                 report['left'] += 1  # stopped before asking
                 continue
+            answered += 1
             if result is None:
                 kind, detail, pause = 'trouble', error, 0
             else:
@@ -277,8 +281,9 @@ def fetch(path, box=BOX, until=math.inf, limit=None, request=None, rate=RATE, co
                 last_commit = now
             if now - last_print >= 60:
                 print(json.dumps({'held': len(held) + report['tile'] + report['empty'] + report['recorded'], 'of': total,
-                                  'rate': round(pace.rate, 2), 'trouble': dict(seen), **report}), flush=True)
-                last_print = now
+                                  'rate': round(pace.rate, 2), 'per_second': round((answered - printed) / (now - last_print), 1),
+                                  'trouble': dict(seen), **report}), flush=True)
+                last_print, printed = now, answered
     finally:
         stop.set()
         for _ in threads:
@@ -288,7 +293,9 @@ def fetch(path, box=BOX, until=math.inf, limit=None, request=None, rate=RATE, co
         db.commit()
         held_now = db.execute('SELECT COUNT(*) FROM tiles').fetchone()[0]
         db.close()
-        summary = json.dumps({'held': held_now, 'of': total, 'trouble': dict(seen), **report}, sort_keys=True)
+        elapsed = clock() - began
+        summary = json.dumps({'held': held_now, 'of': total, 'trouble': dict(seen), 'seconds': round(elapsed),
+                              'per_second': round(answered / max(elapsed, 1e-9), 1), **report}, sort_keys=True)
         print(summary, flush=True)
         if os.environ.get('GITHUB_OUTPUT'):
             with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
