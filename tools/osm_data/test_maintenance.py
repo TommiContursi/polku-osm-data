@@ -166,7 +166,7 @@ class MaintenanceTests(unittest.TestCase):
         digest = hashlib.sha256(ways).hexdigest()
         m['files'][0].update(bytes=len(ways), sha256=digest)
         m['datasets']['ways'].update(bytes=len(ways), sha256=digest)
-        m = publish.stored(m)
+        m = publish.shared_manifest(m)
         self.host.dirs.update({f'{ROOT}/releases/{name}', ROOT + '/files'})
         self.host.files[f'{ROOT}/releases/{name}/manifest.json'] = encoded(m)
         for f in m['files']:
@@ -186,7 +186,7 @@ class MaintenanceTests(unittest.TestCase):
         self.release('before', 35)  # from before the shared files: its folder holds its files
         stray = 'files/' + 'b' * 64 + '.pmtiles'
         self.host.files[ROOT + '/' + stray] = b'PMTiles stray'
-        incoming = publish.stored(manifest('next'))  # an upload that stopped, whose files are already up
+        incoming = publish.shared_manifest(manifest('next'))  # an upload that stopped, whose files are already up
         for f in incoming['files']:
             self.host.files[ROOT + '/' + publish.place('next', f)] = ARCHIVE if f['path'] == 'ways.pmtiles' else LICENSE
         files = lambda *names: {'files/' + hashlib.sha256(n).hexdigest() + '.pmtiles' for n in names}
@@ -195,11 +195,28 @@ class MaintenanceTests(unittest.TestCase):
         applied = maintenance.prune(self.ftp, apply=True, now=NOW, incoming=incoming)
         self.assertEqual(applied['delete'], plan['delete'])
         left = {name.removeprefix(ROOT + '/') for name in self.host.files if name.startswith(ROOT + '/files/')}
-        self.assertEqual(left, files(b'PMTiles live', b'PMTiles rollback', ARCHIVE) | {publish.shared({'sha256': hashlib.sha256(LICENSE).hexdigest(), 'path': 'LICENSE.txt'})})
+        self.assertEqual(left, files(b'PMTiles live', b'PMTiles rollback', ARCHIVE) | {publish.shared_path({'sha256': hashlib.sha256(LICENSE).hexdigest(), 'path': 'LICENSE.txt'})})
+        # A stopped upload kept 7 days keeps what it moved among the shared files
+        stopped = publish.shared_manifest(manifest('stopped'))
+        stage = '.upload-stopped-' + 'c' * 32
+        self.host.dirs.add(ROOT + '/' + stage)
+        maintenance.mark_upload(self.ftp, stage, stopped, encoded(stopped), now=NOW - timedelta(days=1))
+        self.host.files[f'{ROOT}/{stage}/manifest.json'] = encoded(stopped)
+        self.host.files[ROOT + '/' + stray] = b'PMTiles stray'
+        moved = 'files/' + hashlib.sha256(ARCHIVE).hexdigest() + '.pmtiles'
+        self.host.files[ROOT + '/' + moved] = ARCHIVE
+        plan = maintenance.prune(self.ftp, now=NOW)
+        self.assertEqual((stray in plan['delete'], moved in plan['delete']), (True, False))
+        del self.host.files[ROOT + '/' + stray]
         # A release that stays without a manifest to read keeps every shared file; anything else among them stops it
         self.host.dirs.add(ROOT + '/releases/unknown')
         self.host.files[ROOT + '/' + stray] = b'PMTiles stray'
         self.assertNotIn(stray, maintenance.prune(self.ftp, now=NOW)['delete'])
+        valid = self.host.files[ROOT + '/releases/live/manifest.json']
+        self.host.files[ROOT + '/releases/live/manifest.json'] = b'{"schema": 1'  # a corrupt manifest stops it too
+        with self.assertRaises(ValueError):
+            maintenance.prune(self.ftp, now=NOW)
+        self.host.files[ROOT + '/releases/live/manifest.json'] = valid
         self.host.files[ROOT + '/files/notes.txt'] = b'unknown'
         with self.assertRaisesRegex(ValueError, 'Unexpected shared file'):
             maintenance.prune(self.ftp, now=NOW)

@@ -97,10 +97,6 @@ def validate(manifest):
     return manifest
 
 
-def shared(entry):
-    """The square's record, with the url of its place among the shared files."""
-    return entry | {'url': '../../' + publish.shared(entry)}
-
 
 class Source:
     """brouter.de, politely: one request at a time, each file paced, and a failure other than 404 waits once, then
@@ -201,7 +197,7 @@ def staging(ftp, base, now):
         names = maintenance.children(ftp, STAGE)
         run = json.loads(publish.retrieve(ftp, STAGE + '/_run.json')) if '_run.json' in names else {}
         if run and run.get('base') == base:
-            done, have = {}, maintenance.shared(ftp)
+            done, have = {}, maintenance.shared_files(ftp)
             for name in names:
                 square = name[1:-5]
                 if name.startswith('_') and SQUARE.fullmatch(square):
@@ -230,9 +226,7 @@ def put(ftp, release, local, entry, have):
     sha256 = hashlib.sha256()
     ftp.retrbinary('RETR ' + path, sha256.update)
     require(ftp.size(path) == entry['bytes'] and sha256.hexdigest() == entry['sha256'], 'Uploaded square differs: ' + path)
-    if publish.SHARED not in maintenance.children(ftp):
-        ftp.mkd(publish.SHARED)
-    ftp.rename(path, target)
+    publish.move_shared(ftp, path, target)
     have[target] = entry['bytes']
     return True
 
@@ -266,7 +260,7 @@ def mirror(jar, initial=False, now=None, source=None, brouter=None):
         names = sorted(listed)
         previous = {square['path']: square for square in base['squares']} if base else {}
         release, done = staging(ftp, base and base['release'], now)
-        have = maintenance.shared(ftp)
+        have = maintenance.shared_files(ftp)
         incoming = sum(listed[name] for name in names if name not in done)
         print(json.dumps({'release': release, 'squares': len(names), 'to_do': len(names) - len(done),
                           'incoming_bytes': incoming}), flush=True)
@@ -298,7 +292,7 @@ def mirror(jar, initial=False, now=None, source=None, brouter=None):
                     kind, new = 'kept', copy
             if kind != 'kept':
                 brouter('check', new)
-            entry = shared(copy_entry if kind == 'kept' else record(new, name, downloaded))
+            entry = publish.share(copy_entry if kind == 'kept' else record(new, name, downloaded))
             require(not old or entry['version'] == old['version'],
                     f"brouter.de's lookup version changed on {name}; stopped before publishing it")
             if kind not in {'kept', 'unchanged'} and entry['bytes'] >= SMALL:
@@ -322,8 +316,8 @@ def mirror(jar, initial=False, now=None, source=None, brouter=None):
         ftp.storbinary(f'STOR {STAGE}/manifest.json', io.BytesIO(raw))
         require(publish.retrieve(ftp, f'{STAGE}/manifest.json') == raw, 'Uploaded routing manifest differs')
         # The records go before _run.json: a run stopped here resumes, or starts again, from what is left
-        for name in maintenance.children(ftp, STAGE):
-            if name.startswith('_') and name != '_run.json':
+        for name in maintenance.children(ftp, STAGE):  # records, and any square a stopped upload left
+            if name not in {'_run.json', 'manifest.json'} and (name.startswith('_') or SQUARE.fullmatch(name)):
                 ftp.remove(f'{STAGE}/{name}')
         ftp.remove(f'{STAGE}/_run.json')
         require(maintenance.children(ftp, STAGE) == ['manifest.json'], 'Unexpected files in staging')
@@ -341,7 +335,7 @@ def mirror(jar, initial=False, now=None, source=None, brouter=None):
                 remove_tree(ftp, 'releases/' + folder)
         # then the shared squares neither of them names
         named = {publish.place(m['release'], square) for m in (manifest, live) if m for square in m['squares'] if 'url' in square}
-        for path in sorted(maintenance.shared(ftp).keys() - named):
+        for path in sorted(maintenance.shared_files(ftp).keys() - named):
             ftp.remove(path)
     report |= {'release': release, 'dropped': sorted(set(previous) - set(names)), 'squares': len(squares), 'bytes': sum(square['bytes'] for square in squares),
                'brouter_requests': source.requests, 'brouter_bytes': source.bytes}

@@ -130,9 +130,10 @@ can't go unnoticed for long; re-enable the workflows here when it happens.
 
 Before an upload, `maintenance.py` removes only files it owns. It keeps the live release, its
 saved predecessor (for rollback) and the candidate. An upload keeps the candidate it replaces
-until `candidates/current.json` names the new one, then removes it. A file in `files/` goes once no
-release that stays, nor the upload under way, names it; it all stays while a release that stays has no
-manifest to read, and any other name in `files/` stops retention. Interrupted staging is kept 7 days.
+until `candidates/current.json` names the new one, then removes it. `files/` is the publisher's own: a
+file there goes once nothing that stays names it, neither a release, a stopped upload's staging nor the
+upload under way. They all stay while a release that stays has no manifest; a corrupt manifest, or any
+other name in `files/`, stops retention. Interrupted staging is kept 7 days.
 Unmarked releases and unknown files are never deleted. Receipts live in
 `maintenance/`. The whole deletion plan must validate before anything is removed; unsafe
 paths, symlinks, unexpected files, a changed pointer or corrupt ownership records stop it,

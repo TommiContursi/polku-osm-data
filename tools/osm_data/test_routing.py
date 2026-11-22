@@ -227,6 +227,7 @@ class RoutingTests(unittest.TestCase):
             self.run_mirror(initial=True)
         self.assertEqual([s for s in self.sleeps if s >= 1], [routing.BACK_OFF], 'no quick retries')
         self.assertIn(BASE + '/staging/_E20_N60.rd5.json', self.host.files)
+        self.host.files[BASE + '/staging/E20_N60.rd5'] = self.big[:100]  # left by an upload stopped part way
         report = self.run_mirror(T0 + timedelta(hours=1), initial=True)
         self.assertEqual(report['initial'], ['E25_N70.rd5'])
         self.assertNotIn(('GET', 'E20_N60.rd5'), self.host.requests)

@@ -18,7 +18,7 @@ is not open source: see [LICENSE](LICENSE). The data keeps OpenStreetMap's licen
    and bundles the four into one release. Hashes, the schema, sample roads in every country
    and the Python tests are checked before anything is uploaded.
 2. **The upload** (only when `OSM_UPLOAD_ENABLED` is `true`) puts the release in
-   `releases/<release>/`, reads every file back to check its SHA-256, checks the public
+   `releases/<release>/`, reads every file it sends back to check its SHA-256, checks the public
    Range, CORS and cache headers, and names it in `candidates/current.json`. The live
    `current.json` is not touched. With `OSM_SHARED_FILES` set to `true`, the files go in `files/`,
    named by their SHA-256, and only those the host doesn't hold yet are sent.

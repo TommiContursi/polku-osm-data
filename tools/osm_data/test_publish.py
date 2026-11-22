@@ -1136,6 +1136,18 @@ class SharedFilesTests(unittest.TestCase):
         self.assertEqual([name for name in self.host.files if name.startswith(ROOT + '/releases/new-release/')],
                          [ROOT + '/releases/new-release/manifest.json'])
 
+    def test_the_same_content_twice_in_a_release_is_sent_once(self):
+        value = json.loads((self.release_dir / 'manifest.json').read_bytes())
+        value['files'].append({**value['files'][0], 'path': 'lit.pmtiles'})
+        value['datasets']['lit'] = {**value['datasets']['ways'], 'url': 'lit.pmtiles'}
+        (self.release_dir / 'lit.pmtiles').write_bytes(ARCHIVE)
+        (self.release_dir / 'manifest.json').write_bytes(encoded(value))
+        self.publish()
+        self.assertEqual(self.sent(), ['LICENSE.txt', '_upload.json', 'manifest.json', 'ways.pmtiles'])
+        live = json.loads(self.host.files[ROOT + '/current.json'])
+        self.assertEqual(live['datasets']['lit']['url'], live['datasets']['ways']['url'])
+        publish.check(PUBLIC + '/current.json')
+
     def test_promotion_needs_every_shared_file_at_its_size(self):
         publish.upload(self.release_dir)
         raw, hosted = publish.hosted(self.release_dir)
@@ -1160,10 +1172,13 @@ class SharedFilesTests(unittest.TestCase):
         publish.validate(publish.current(hosted), pointed=True)
         for url, pointed in [('../../files/' + 'a' * 64 + '.pmtiles', False), ('../../' + ways[:-8] + '.json', False),
                              ('../../../' + ways, False), ('/' + ways, False), (ways, False), ('../x/../../' + ways, False),
-                             ('../../' + ways, True), ('releases/../' + ways, True)]:
+                             ('../../' + ways, True), ('releases/../' + ways, True),
+                             ('../../files/' + hashlib.sha256(ARCHIVE).hexdigest() + '.tar_gz', False)]:
             with self.subTest(url=url, pointed=pointed):
                 broken = copy.deepcopy(publish.current(hosted) if pointed else hosted)
                 broken['files'][0]['url'] = broken['datasets']['ways']['url'] = url
+                if url.endswith('.tar_gz'):  # a suffix the shared files can't hold
+                    broken['files'][0]['path'] = 'ways.tar_gz'
                 with self.assertRaises(ValueError):
                     publish.validate(broken, pointed)
 
