@@ -5,6 +5,9 @@ paths, lighting, trail details, winter ways, water hazards, overnight places, re
 full-tag inspection and area geometry for Finland, Sweden, Norway and Estonia, as static
 PMTiles archives at `https://ducksoft.fi/polku-osm/`.
 
+Beside it, `https://ducksoft.fi/polku-routing/` mirrors BRouter's routing data, for routing on the person's device
+([docs/OPERATIONS.md](docs/OPERATIONS.md#routing-data)).
+
 The repository is public so that its long builds run on GitHub's free runners. Its code
 is not open source: see [LICENSE](LICENSE). The data keeps OpenStreetMap's licence.
 

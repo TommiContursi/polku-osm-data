@@ -44,9 +44,9 @@ def retry_job():
     return condition,script
 
 
-def event(operation='build',conclusion='failure',branch='main'):
-    return {'repository':{'full_name':REPO},'workflow':{'path':'.github/workflows/osm-data.yml'},'workflow_run':{'name':'OSM data / '+operation,'path':'.github/workflows/osm-data.yml','head_branch':branch,
-        'head_repository':{'full_name':REPO},'event':'workflow_dispatch','display_title':'OSM data / '+operation,
+def event(operation='build',conclusion='failure',branch='main',workflow='osm-data.yml',prefix='OSM data / '):
+    return {'repository':{'full_name':REPO},'workflow':{'path':'.github/workflows/'+workflow},'workflow_run':{'name':prefix+operation,'path':'.github/workflows/'+workflow,'head_branch':branch,
+        'head_repository':{'full_name':REPO},'event':'workflow_dispatch','display_title':prefix+operation,
         'id':123,'html_url':'https://github.com/'+REPO+'/actions/runs/123','conclusion':conclusion}}
 
 
@@ -171,6 +171,18 @@ class AlertTests(unittest.TestCase):
         api=API();issue={'number':99,'body':'<!-- polku-osm-incident:health -->','state':'open','user':{'login':'TommiContursi'}}
         api.issues.append(issue);alerts.update_incident(api,REPO,alerts.classify(event('check'),REPO))
         self.assertEqual(api.created,1);self.assertEqual(issue['body'],'<!-- polku-osm-incident:health -->')
+
+    def test_routing_failures_have_incidents_of_their_own(self):
+        def routing(operation,conclusion='failure'):
+            return alerts.classify(event(operation,conclusion,workflow='routing-data.yml',prefix='Routing data / '),REPO)
+        self.assertEqual([routing(o)['kind'] for o in ('initial','update','check')],['routing-update','routing-update','routing-health'])
+        self.assertIsNone(routing('space'))
+        self.assertIsNone(alerts.classify(event('update',workflow='routing-data.yml'),REPO),'the OSM prefix is not the routing one')
+        api=API();alerts.update_incident(api,REPO,alerts.classify(event(),REPO));alerts.update_incident(api,REPO,routing('update'))
+        self.assertEqual([i['title'] for i in api.issues],['OSM data update failed','Routing data update failed'])
+        self.assertIn('brouter.de',api.issues[1]['body'])
+        alerts.update_incident(api,REPO,routing('update','success'))
+        self.assertEqual([i['state'] for i in api.issues],['open','closed'],'a routing recovery closes only its own')
 
     def test_invalid_run_link_cannot_enter_an_incident(self):
         data=event();data['workflow_run']['html_url']='https://attacker.example/run'

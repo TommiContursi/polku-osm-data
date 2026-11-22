@@ -165,7 +165,43 @@ Repository variables (the daily check needs the URL outside the environment):
 The host sees which release and roughly which area a browser reads, through its byte
 ranges; keep its access logs as short as its operation allows.
 
+## Routing data
+
+`routing-data.yml` mirrors BRouter's routing data, brouter.de's `segments4/`: 5°×5° `.rd5` squares, 10.1 GB for
+the world on 2026-11-22. It keeps to the terms brouter.de's maintainer set on 2026-11-12
+([abrensch/brouter#1011](https://github.com/abrensch/brouter/issues/1011)): one initial download, then syncs by its
+daily change files, as BRouter's Android app does, and no service promise. #7 holds the decisions.
+
+- **update**, Wednesdays 05:43 UTC: for each square, our candidate's copy, brouter.de's
+  `diff/<square>/<md5>.df5` for it, and BRouter 1.7.10's own `recoverFromDelta` and `checkFileIntegrity`
+  (`Rd5.java`, with the release jar pinned by SHA-256). brouter.de must know the new copy's MD5, since next week's
+  change file is named by it. One file at a time, at most 16 Mbit/s, with a User-Agent naming this repository. A
+  failure other than 404 waits 5 minutes once, then stops the run.
+- **A square without its change file** keeps our copy until its last full download is 90 days old, then downloads
+  whole: brouter.de allows that about once a quarter. brouter.de keeps about 9 days of change files and makes none
+  for squares under 1 MiB (557 of 1,142). The run's summary counts `quarterly` (1 MiB and over), `small` and `kept`.
+- **initial** downloads the squares we have no copy of, once: the first run, and any square brouter.de adds (`waiting`
+  in the summary). A scheduled run never does.
+- **Only 60°N and up for now** (`NORTH` in `routing.py`). South of it the elevation is CGIAR's SRTM, whose terms
+  leave redistribution unclear (#7). North of it, Sonny's LiDAR models (CC BY 4.0).
+- **Upload:** each square goes into `polku-routing/staging/` and is read back with its SHA-256, and a record beside it
+  lets a stopped run go on from there. Then the manifest, the rename to `releases/<release>/`, the public Range, CORS
+  and cache checks of every square's index, and `candidates/current.json`. Releases other than the candidate and the
+  live one are then removed: two copies of the data, three during an update. It needs the host's free space by
+  `statvfs` for the incoming bytes and 2 GiB more, and stays within its own 32 GiB budget.
+- **check**, daily at 07:43 UTC: the candidate, and `current.json` once Polku promotes one. The pointer equals its
+  immutable manifest, squares with change files are at most 14 days old and the small ones at most 100, and every
+  square's index is read by Range.
+- **space** reads the host's free space over SFTP and both folders' sizes. **install-hosting** puts
+  [`routing.htaccess`](../tools/osm_data/routing.htaccess) into `polku-routing/` once; a later change is made by hand.
+- A failed update or check opens its own `watch` issue, as for the OSM data.
+
+The live `current.json` is Polku's promotion, a later PR in Polku. The candidate pointer holds its release's manifest
+bytes, as for the OSM data, and the manifest's format is in
+[tools/osm_data/README.md](../tools/osm_data/README.md#routing-data).
+
 ## Licensing
 
 Each release carries OSM's attribution and the ODbL link in `LICENSE.txt`, the manifest and
-the archives' metadata. Geofabrik is recorded as the extract provider.
+the archives' metadata. Geofabrik is recorded as the extract provider. The routing manifest carries OSM's
+attribution, BRouter's and Sonny's (CC BY 4.0, https://sonny.4lima.de); squares south of 60°N would add CIAT's.

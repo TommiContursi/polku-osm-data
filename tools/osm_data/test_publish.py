@@ -356,7 +356,7 @@ class PublishTests(unittest.TestCase):
         # curl's --retry alone gives up at once when Geofabrik refuses the runner or briefly answers 404 for a file it has (#1131)
         workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/osm-data.yml').read_text().replace('\\\n', ' ')
         requests = [line for line in workflow.splitlines() if 'curl ' in line and '127.0.0.1' not in line]
-        self.assertEqual(len(requests), 7, 'the snapshot check, three country downloads, the reference size and its two downloads')
+        self.assertEqual(len(requests), 8, "the snapshot check, three country downloads, the reference size and its two downloads, and BRouter's release for the tests")
         for line in requests:
             with self.subTest(line=line.strip()[:90]):
                 # the snapshot check reads a 404 as a date not ready yet, so it retries only a refusal; the Europe
