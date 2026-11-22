@@ -282,11 +282,14 @@ def verify_manifest(ftp, base, raw):
             'Uploaded manifest differs')
 
 
-def verify_remote(ftp, manifest, raw):
-    """Every file the release names, wherever it lies, hashed in full."""
-    release = manifest['release']
-    samples = {place(release, f): verify_file(ftp, place(release, f), f) for f in manifest['files']}
-    verify_manifest(ftp, f'releases/{release}', raw)
+def verify_remote(ftp, base, manifest, raw):
+    """Every file the release names, hashed in full: in base (its own folder, or its staging) or among the shared
+    files. The samples are keyed by where each file lies once the release is in place."""
+    samples = {}
+    for f in manifest['files']:
+        path = place(manifest['release'], f)
+        samples[path] = verify_file(ftp, path if 'url' in f else f"{base}/{f['path']}", f)
+    verify_manifest(ftp, base, raw)
     return samples
 
 
@@ -644,10 +647,11 @@ def rollback(manifest_path, expected_current=None):
         if expected_current is not None:
             require(previous and json.loads(previous)['release'] == expected_current,
                     'Live release changed; do not roll back another publication')
-        raw = retrieve(ftp, f"releases/{target['release']}/manifest.json")
+        base = f"releases/{target['release']}"
+        raw = retrieve(ftp, base + '/manifest.json')
         manifest = validate(json.loads(raw))
         require(current(manifest) == target, 'Rollback manifest differs from immutable release')
-        samples = verify_remote(ftp, manifest, raw)
+        samples = verify_remote(ftp, base, manifest, raw)
         probe(config[-2], manifest, raw, samples)
         require(previous_pointer(ftp) == previous, 'Live pointer changed during rollback')
         promote(ftp, config[-2], manifest, previous, path.parent, samples, raw)

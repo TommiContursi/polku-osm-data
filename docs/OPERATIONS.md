@@ -91,11 +91,12 @@ credentials apart:
    ```
 
    It requires the manifest bytes Polku checked (by SHA-256), every file at its size (in the
-   release's folder or in `files/`) and nothing else in the folder, a release built after the live one, and that live geometry
-   isn't dropped. It checks the public Range reads again, writes a pending receipt naming the
-   true predecessor, renames a temporary pointer over `current.json`, reads it back and checks
-   the release over HTTPS, and restores the predecessor if that fails. The predecessor is
-   saved for rollback. A rerun after promotion only finishes the receipt.
+   release's folder or in `files/`) and nothing else in the folder, a release built after the
+   live one, and that live geometry isn't dropped. It checks the public Range reads again,
+   writes a pending receipt naming the true predecessor, renames a temporary pointer over
+   `current.json`, reads it back and checks the release over HTTPS, and restores the predecessor
+   if that fails. The predecessor is saved for rollback. A rerun after promotion only finishes
+   the receipt.
 3. **live** (Polku's checkout, no credentials): `health.py osm-health --release-dir osm-promote`
    requires the promoted release to be live and runs Polku's browser checks against polku.si.
 4. **rollback**, only when the live check failed (only this repository's checkout, the
