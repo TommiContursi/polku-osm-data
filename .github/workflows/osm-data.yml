@@ -40,7 +40,14 @@ jobs:
           python-version: '3.14.3'
       - name: Install pinned data dependencies
         run: python -m pip install --require-hashes -r tools/osm_data/requirements.txt -r tools/osm_data/sftp-requirements.txt
+      - name: BRouter 1.7.10's own release, pinned, for the routing mirror's check
+        run: |
+          curl --fail --location --retry 3 --retry-all-errors --retry-delay 30 --max-time 300 -o brouter.zip https://github.com/abrensch/brouter/releases/download/v1.7.10/brouter-1.7.10.zip
+          echo '023fec3ba997758e8cd7ab9e1bae52e962af3f00b57683e3de86b84ffad01532  brouter.zip' | sha256sum --check
+          unzip -q -j brouter.zip brouter-1.7.10/brouter-1.7.10-all.jar -d brouter
       - name: Test extraction, reading and publishing without credentials
+        env:
+          BROUTER_JAR: brouter/brouter-1.7.10-all.jar
         run: |
           python -m unittest discover -s tools/osm_data -p 'test_*.py' -v
 
