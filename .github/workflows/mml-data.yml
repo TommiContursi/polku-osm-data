@@ -75,7 +75,8 @@ jobs:
           LIMIT: ${{ github.event_name == 'pull_request' && matrix.part == 1 && '--limit 10' || '' }}
         run: python tools/osm_data/mml.py fetch mml/store.sqlite --box "$BOX" --until "$UNTIL" $LIMIT
       - name: Keep what was fetched, for the next part or a later run
-        if: always() && steps.fetch.outputs.changed == 'true'
+        # A store from an earlier run is kept in this one even when it was complete, for the pack below
+        if: always() && (steps.fetch.outputs.changed == 'true' || (steps.here.outcome == 'failure' && inputs.store))
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: mml-store

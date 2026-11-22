@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -155,6 +156,14 @@ class FetchTests(unittest.TestCase):
         self.assertEqual(set(self.rows()), set(TILES))
         with self.assertRaisesRegex(ValueError, 'box'):
             mml.fetch(self.store, mml.BOX, request=FakeMML())
+
+    def test_a_deadline_hands_back_the_rest_at_once_not_at_the_paced_rate(self):
+        with redirect_stdout(io.StringIO()):
+            start = time.monotonic()
+            report = mml.fetch(self.store, BOX, until=time.time() + 0.5, request=FakeMML(), rate=1, connections=2)
+        self.assertLess(time.monotonic() - start, 3, 'ten tiles at one a second would take ten')
+        self.assertEqual(report['tile'] + report['left'], len(TILES))
+        self.assertGreater(report['left'], 0)
 
     def test_a_refused_key_stops_the_run_and_keeps_what_came_before(self):
         fake = FakeMML({tile: [403] for tile in TILES[3:]})

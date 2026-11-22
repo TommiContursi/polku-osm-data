@@ -215,7 +215,8 @@ def fetch(path, box=BOX, until=math.inf, limit=None, request=None, rate=RATE, co
 
     def worker():
         while (item := work.get()) is not None:
-            pace.wait()
+            if not (stop.is_set() or time.time() >= until):
+                pace.wait()  # a stopped run hands back what is left at once, unpaced
             if stop.is_set() or time.time() >= until:
                 done.put((item, None, None))
                 continue
