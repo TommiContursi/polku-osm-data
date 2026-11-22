@@ -23,7 +23,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
 
-from tools.osm_data import publish
+from tools.osm_data import cells, publish
 from tools.osm_data.publish import open_sftp as real_open_sftp
 from tools.osm_data.test_cells import tile, write
 
@@ -259,6 +259,8 @@ class PublishTests(unittest.TestCase):
         for publication in (automatic,recovery):
             self.assertIn('\n    timeout-minutes: 350\n',publication,
                           'Slow artifact download, a cut into cells and full verification, within six hours')
+            self.assertIn('-r tools/osm_data/requirements.txt -r tools/osm_data/sftp-requirements.txt', publication,
+                          'the cut into cells needs PMTiles')
             for switch in ('OSM_SHARED_FILES', 'OSM_CELLS'):
                 self.assertIn(f'{switch}: ${{{{ vars.{switch} }}}}',publication,'a resume keeps the layout it began with')
 
@@ -980,8 +982,8 @@ class PublishTests(unittest.TestCase):
     def test_monitor_runs_without_the_sftp_dependency(self):
         original_import = __import__
         def no_sftp(name, *args, **kwargs):
-            if name == 'paramiko':
-                raise ModuleNotFoundError('SFTP dependency is not installed in monitor jobs')
+            if name == 'paramiko' or name.startswith('pmtiles'):
+                raise ModuleNotFoundError('SFTP and PMTiles dependencies are not installed in monitor jobs')
             return original_import(name, *args, **kwargs)
         with patch('builtins.__import__', side_effect=no_sftp):
             spec = importlib.util.spec_from_file_location('http_monitor', publish.__file__)
@@ -1201,7 +1203,7 @@ class CellsTests(unittest.TestCase):
 
     def setUp(self):
         PublishTests.setUp(self)
-        for patcher in (patch.dict('os.environ', {'OSM_CELLS': 'true'}), patch.object(publish.cells, 'TARGET', 2048)):
+        for patcher in (patch.dict('os.environ', {'OSM_CELLS': 'true'}), patch.object(cells, 'TARGET', 2048)):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.tiles = {(14, 9100 + n % 20, 4600 + n // 20): tile(n) for n in range(300)}

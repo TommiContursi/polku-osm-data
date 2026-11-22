@@ -11,12 +11,16 @@ from tools.osm_data import publish as p
 
 BUDGET = 80 * 1024**3
 UPLOAD = '_upload.json'
+STAGED_CELL = 16 * 1024**2  # a cell holds at most 1 MiB, or one tile of at most 8 MiB
+
+
+def safe(name):
+    return name not in {'', '.', '..'} and '/' not in name and '\\' not in name and not any(ord(c)<32 for c in name)
 
 
 def children(ftp, base='.'):
     names = [posixpath.basename(name) for name in ftp.nlst(base)]
-    p.require(all(name not in {'', '.', '..'} and '/' not in name and '\\' not in name
-                  and not any(ord(c)<32 for c in name) for name in names), 'Unsafe maintenance path')
+    p.require(all(safe(name) for name in names), 'Unsafe maintenance path')
     return sorted(names)
 
 
@@ -87,7 +91,7 @@ def usage(ftp, base='.', depth=0):
     total=0
     for name,(kind,size) in ftp.attributes(base).items():
         path=name if base=='.' else base+'/'+name
-        p.require(name not in {'','.','..'} and '/' not in name, 'Unsafe maintenance path')
+        p.require(safe(name), 'Unsafe maintenance path')
         p.require(kind in {'file','directory'}, 'Maintenance needs regular files and real directories (no symlinks)')
         total += size if kind=='file' else usage(ftp,path,depth+1)
     return total
@@ -125,12 +129,8 @@ def shared_files(ftp):
 def shared_named(ftp, release, manifest, have=None):
     """The shared files a manifest names, the cells of its indexes among them. Given have, an index the shared files
     don't hold yet names nothing: its cells go up after it."""
-    result={p.place(release,f) for f in manifest['files'] if 'url' in f}
-    for f in p.indexes(manifest):
-        path=p.place(release,f)
-        if have is None or path in have:
-            result|={p.place(release,c) for c in p.cells_of(p.retrieve(ftp,path),f)}
-    return result
+    return ({p.place(release,f) for f in manifest['files'] if 'url' in f}
+            | {p.place(release,c) for c in p.hosted_cells(ftp,manifest,have)})
 
 
 def named_by(ftp, base, release, have=None):
@@ -156,8 +156,9 @@ def validate_files(ftp,base,expected,partial=False):
 
 
 
-def prune(ftp, apply=False, incoming_bytes=0, now=None, incoming=None):
-    """incoming is the manifest an upload is putting on the host: its release and the shared files it names stay."""
+def prune(ftp, apply=False, incoming_bytes=0, now=None, incoming=None, incoming_files=()):
+    """incoming is the manifest an upload is putting on the host, and incoming_files all the shared files it names,
+    cells too: they all stay."""
     now=now or datetime.now(timezone.utc)
     p.require(type(incoming_bytes) is int and incoming_bytes>=0,'Invalid incoming byte budget')
     incoming_release=incoming and p.validate(incoming)['release']
@@ -244,7 +245,7 @@ def prune(ftp, apply=False, incoming_bytes=0, now=None, incoming=None):
             if 'manifest.json' in children(ftp,stage) and ftp.size(stage+'/manifest.json')==record['files']['manifest.json']:
                 staged.append((stage,match[1]))
             continue
-        cells={name:1<<30 for name in children(ftp,stage) if p.SHARED_NAME.fullmatch(name)}  # a cell on its way
+        cells={name:STAGED_CELL for name in children(ftp,stage) if p.SHARED_NAME.fullmatch(name)}  # on its way
         remove[stage]=validate_files(ftp,stage,record['files'] | cells | {UPLOAD:ftp.size(stage+'/'+UPLOAD)},partial=True)
     # A shared file goes once no release or staging that stays, nor the incoming upload, names it; only when every
     # release that stays can be read
@@ -257,6 +258,7 @@ def prune(ftp, apply=False, incoming_bytes=0, now=None, incoming=None):
         kept_files|=found or set()
     for stage,release in staged:  # a stopped upload kept 7 days keeps what it moved among the shared files
         kept_files|=named_by(ftp,stage,release,have) or set()
+    kept_files|=set(incoming_files)
     if incoming: kept_files|=shared_named(ftp,incoming_release,incoming,have)
     for path,size in have.items():
         if path in kept_files: continue

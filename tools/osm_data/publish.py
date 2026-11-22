@@ -25,7 +25,7 @@ import uuid
 
 if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from tools.osm_data import cells, maintenance
+from tools.osm_data import maintenance
 
 NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,120}\Z')
 BLOCK = 4096
@@ -33,6 +33,7 @@ MAX_JSON = 2 * 1024 * 1024
 SHARED = 'files'  # every release's files, named by their SHA-256, shared by the releases that name them
 SHARED_NAME = re.compile(r'[a-f0-9]{64}(\.[A-Za-z0-9]{1,16})?\Z')
 CELLS = 'pmtiles-json-cells'  # a dataset whose url is the index of its cells, not one archive
+INDEX = '.cells.json'  # an archive's index takes its name, with this suffix for .pmtiles
 
 
 def require(ok, message):
@@ -107,13 +108,14 @@ def current(manifest):
 
 def cut(directory, manifest):
     """With OSM_CELLS: each archive replaced by the index of its cells, <name>.cells.json, written beside it."""
+    from tools.osm_data import cells  # PMTiles is needed only to cut; the checks run on the standard library
     result = json.loads(json.dumps(manifest))
     files = {f['path']: f for f in result['files']}
     for dataset in result['datasets'].values():
         archive = dataset['url']
         print(f'Cut {archive} into cells', flush=True)
         body = cells.encoded(cells.index(directory / archive))
-        path = archive.removesuffix('.pmtiles') + '.cells.json'
+        path = archive.removesuffix('.pmtiles') + INDEX
         (directory / path).write_bytes(body)
         files[archive] = {'path': path, 'bytes': len(body), 'sha256': hashlib.sha256(body).hexdigest()}
         dataset.update(url=path, bytes=len(body), sha256=files[archive]['sha256'], format=CELLS)
@@ -140,6 +142,19 @@ def indexes(manifest):
     """The manifest's cell indexes, as its file entries."""
     urls = {dataset['url'] for dataset in manifest['datasets'].values() if dataset.get('format') == CELLS}
     return [f for f in manifest['files'] if f.get('url', f['path']) in urls]
+
+
+def index_entry(dataset):
+    """A cells dataset's index as a file entry."""
+    return {'path': dataset['url'], 'bytes': dataset['bytes'], 'sha256': dataset['sha256']}
+
+
+def hosted_cells(ftp, manifest, present=None):
+    """Every cell the manifest's indexes on the host name. Given present, an index not among them names none."""
+    for f in indexes(manifest):
+        path = place(manifest['release'], f)
+        if present is None or path in present:
+            yield from cells_of(retrieve(ftp, path), f)
 
 
 def shared_manifest(manifest):
@@ -347,9 +362,8 @@ def verify_remote(ftp, base, manifest, raw):
     for f in manifest['files']:
         path = place(manifest['release'], f)
         samples[path] = verify_file(ftp, path if 'url' in f else f"{base}/{f['path']}", f)
-    for f in indexes(manifest):
-        for entry in cells_of(retrieve(ftp, place(manifest['release'], f)), f):
-            verify_file(ftp, place(manifest['release'], entry), entry)
+    for entry in hosted_cells(ftp, manifest):
+        verify_file(ftp, place(manifest['release'], entry), entry)
     verify_manifest(ftp, base, raw)
     return samples
 
@@ -395,8 +409,7 @@ def probe(url, manifest, raw, samples=None):
     for dataset in current(manifest)['datasets'].values():
         reads = [(dataset['url'], dataset['bytes'])]
         if dataset.get('format') == CELLS:
-            rows = cells_of(get(f"{url}/{dataset['url']}", immutable=True),
-                            {'path': dataset['url'], 'bytes': dataset['bytes'], 'sha256': dataset['sha256']})
+            rows = cells_of(get(f"{url}/{dataset['url']}", immutable=True), index_entry(dataset))
             reads = [(shared_path(rows[i]), rows[i]['bytes']) for i in sorted({0, len(rows) // 2, len(rows) - 1})]
         for path, size in reads:
             for start, end in offsets(size):
@@ -605,6 +618,9 @@ def upload(directory, resume=False):
                     sending.add(place(release, entry))
         if indexes(manifest):
             print(f'Send {len(send_cells)} cells; the shared files hold the rest', flush=True)
+        # Retention keeps all this release names, though its new indexes aren't on the host yet
+        naming = set(places.values()) | {place(release, entry) for f in indexes(manifest)
+                                         for entry in cells_of((directory / f['path']).read_bytes(), f)}
         expected = send | {'manifest.json': len(raw)}
         incoming = sum(expected.values()) + sum(entry['bytes'] for entry in send_cells.values())
         if resume:
@@ -617,7 +633,7 @@ def upload(directory, resume=False):
             incoming = sum(max(0, size - ftp.size(stage + '/' + name)) if name in names else size
                            for name, size in expected.items()) + sum(entry['bytes'] for entry in send_cells.values())
         if previous is not None:
-            retention = maintenance.prune(ftp, apply=True, incoming_bytes=incoming, incoming=manifest)
+            retention = maintenance.prune(ftp, apply=True, incoming_bytes=incoming, incoming=manifest, incoming_files=naming)
             print(json.dumps(retention, sort_keys=True), flush=True)
         else:
             require(maintenance.usage(ftp) + incoming + 4096 <= maintenance.BUDGET, 'OSM storage budget exceeded')
@@ -646,12 +662,12 @@ def upload(directory, resume=False):
             if target != f"{final}/{f['path']}":
                 move_shared(ftp, staged, target)
         for f in indexes(manifest):  # each archive cut again, the same way; only its missing cells go up
-            archive = directory / (f['path'].removesuffix('.cells.json') + '.pmtiles')
             if not any(place(release, entry) in send_cells for entry in cells_of((directory / f['path']).read_bytes(), f)):
                 continue
-            for _, data in cells.cells(archive):
-                entry = share({'path': hashlib.sha256(data).hexdigest() + '.pmtiles', 'bytes': len(data),
-                               'sha256': hashlib.sha256(data).hexdigest()})
+            from tools.osm_data import cells
+            for _, data in cells.cells(directory / (f['path'].removesuffix(INDEX) + '.pmtiles')):
+                digest = hashlib.sha256(data).hexdigest()
+                entry = share({'path': digest + '.pmtiles', 'bytes': len(data), 'sha256': digest})
                 if send_cells.pop(place(release, entry), None) is None:
                     continue
                 staged = f"{stage}/{entry['path']}"
@@ -673,7 +689,8 @@ def upload(directory, resume=False):
         replace_pointer(ftp, raw, 'candidates/current.json')
         require(get(config[-2] + '/candidates/current.json') == raw, 'Public candidate pointer differs')
         if previous is not None:
-            print(json.dumps(maintenance.prune(ftp, apply=True, incoming=manifest), sort_keys=True), flush=True)
+            print(json.dumps(maintenance.prune(ftp, apply=True, incoming=manifest, incoming_files=naming), sort_keys=True),
+                  flush=True)
         print(f'Candidate {release}: {config[-2]}/{final}/manifest.json', flush=True)
 
 
@@ -719,9 +736,8 @@ def promote_candidate(release, sha256, directory):
         for f in manifest['files']:
             if 'url' in f:
                 require(have.get(place(release, f)) == f['bytes'], 'Shared file is missing or differs: ' + f['path'])
-        for f in indexes(manifest):
-            for entry in cells_of(retrieve(ftp, place(release, f)), f):
-                require(have.get(place(release, entry)) == entry['bytes'], 'Cell is missing or differs: ' + entry['path'])
+        for entry in hosted_cells(ftp, manifest):
+            require(have.get(place(release, entry)) == entry['bytes'], 'Cell is missing or differs: ' + entry['path'])
         live = json.loads(previous) if previous else None
         if not live or live['release'] != release:
             require(not live or manifest['built_at'] > live['built_at'], 'Candidate is not newer than the live release')

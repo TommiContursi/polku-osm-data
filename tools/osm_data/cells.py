@@ -12,13 +12,10 @@ from pmtiles.reader import MemorySource, MmapSource, Reader
 from pmtiles.tile import Compression, TileType, deserialize_directory, deserialize_header, tileid_to_zxy
 from pmtiles.writer import Writer
 
+from tools.osm_data.publish import require
+
 TARGET = 1 << 20
 KEPT = ('name', 'format', 'schema', 'attribution', 'license')  # the metadata that doesn't change from week to week
-
-
-def require(ok, message):
-    if not ok:
-        raise ValueError(message)
 
 
 def directory(get_bytes, header):
@@ -53,10 +50,14 @@ def quadrants(tiles, zoom, target):
     return cut
 
 
+def latitude(row, z):
+    return math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * row / 2 ** z))))
+
+
 def bounds(z, x, y):
     """A quadrant's west, south, east and north, in 1e-7 degrees."""
-    lat = lambda row: math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * row / 2 ** z))))
-    return [round(v * 1e7) for v in (x / 2 ** z * 360 - 180, lat(y + 1), (x + 1) / 2 ** z * 360 - 180, lat(y))]
+    return [round(v * 1e7) for v in (x / 2 ** z * 360 - 180, latitude(y + 1, z), (x + 1) / 2 ** z * 360 - 180,
+                                     latitude(y, z))]
 
 
 @contextmanager
@@ -85,26 +86,29 @@ def cell(get_bytes, tiles, quadrant, metadata):
     return out.getvalue()
 
 
+def cut(header, metadata, tiles, get_bytes, target):
+    """Each cell of an opened archive in index order, (quadrant, bytes), each read back tile for tile."""
+    kept = {key: metadata[key] for key in KEPT if key in metadata}
+    for quadrant, group in sorted(quadrants(tiles, header['min_zoom'], target or TARGET).items()):
+        data = cell(get_bytes, {t: tiles[t] for t in group}, quadrant, kept)
+        back = Reader(MemorySource(data))
+        require(all(back.get(*tileid_to_zxy(t)) == get_bytes(*tiles[t]) for t in group)
+                and back.header()['addressed_tiles_count'] == len(group), f'Cell {quadrant} differs from its archive')
+        yield quadrant, data
+
+
 def cells(path, target=None):
-    """Each cell of the archive in index order, (quadrant, bytes), each read back tile for tile."""
-    with archive(path) as (header, metadata, tiles, get_bytes):
-        kept = {key: metadata[key] for key in KEPT if key in metadata}
-        for quadrant, group in sorted(quadrants(tiles, header['min_zoom'], target or TARGET).items()):
-            data = cell(get_bytes, {t: tiles[t] for t in group}, quadrant, kept)
-            back = Reader(MemorySource(data))
-            require(all(back.get(*tileid_to_zxy(t)) == get_bytes(*tiles[t]) for t in group)
-                    and back.header()['addressed_tiles_count'] == len(group), f'Cell {quadrant} of {path} differs')
-            yield quadrant, data
+    """Each cell of the archive in index order, (quadrant, bytes)."""
+    with archive(path) as opened:
+        yield from cut(*opened, target)
 
 
 def index(path, target=None):
     """The archive's index: its zoom, and each cell as [z, x, y, bytes, sha256]; the cells lie beside it, as
     <sha256>.pmtiles."""
-    with archive(path) as (header, _, tiles, _):
-        zoom, count = header['min_zoom'], len(tiles)
-    rows = [[*quadrant, len(data), hashlib.sha256(data).hexdigest()] for quadrant, data in cells(path, target)]
-    require(sum(1 for _ in rows) and count, f'{path} has no tiles')
-    return {'schema': 1, 'zoom': zoom, 'cells': rows}
+    with archive(path) as opened:
+        rows = [[*quadrant, len(data), hashlib.sha256(data).hexdigest()] for quadrant, data in cut(*opened, target)]
+    return {'schema': 1, 'zoom': opened[0]['min_zoom'], 'cells': rows}
 
 
 def encoded(value):

@@ -39,8 +39,8 @@ def verify(output,release_dir=None):
     for name,dataset in live['datasets'].items():
         reads[name]={base+'/'+dataset['url']}
         if dataset.get('format')==p.CELLS:
-            index={'path':dataset['url'],'bytes':dataset['bytes'],'sha256':dataset['sha256']}
-            reads[name]={base+'/'+p.shared_path(c) for c in p.cells_of(p.get(base+'/'+dataset['url'],immutable=True),index)}
+            body=p.get(base+'/'+dataset['url'],immutable=True)
+            reads[name]={base+'/'+p.shared_path(c) for c in p.cells_of(body,p.index_entry(dataset))}
     extended = 'geometry' in live['datasets']
     # four countries' products, seven in a release from before reedbeds (#1144), which a rollback can restore
     expected_count = 4 * (8 if 'wetlands' in live['datasets'] else 7) + extended
