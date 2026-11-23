@@ -70,8 +70,8 @@ def fetch(sleep=time.sleep):
         if matched is not None:
             sleep(PAUSE)
         body = page(len(roads), sleep)
-        require(type(body.get('numberMatched')) is int and matched in (None, body['numberMatched']),
-                'Digiroad changed its count during the fetch')
+        require(type(body.get('numberMatched')) is int and matched in (None, body['numberMatched'])
+                and isinstance(body.get('timeStamp'), str), 'Digiroad changed its count during the fetch, or has no time')
         matched, served = body['numberMatched'], served or body.get('timeStamp')
         require(body.get('features'), f'Digiroad gave {len(roads)} of {matched} busy roads')
         for feature in body['features']:
