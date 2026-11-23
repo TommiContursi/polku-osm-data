@@ -30,6 +30,9 @@ url=${!#}
 case "$url" in "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/jobs/"*/logs) ;; *) echo "unexpected: curl $*" >&2; exit 1;; esac
 id=${url%/logs}; cat "$FAKE/log-${id##*/}"
 '''
+FAKE_SLEEP='''#!/bin/bash
+echo "$*" >> "$FAKE/slept"
+'''
 
 
 def retry_job():
@@ -88,7 +91,7 @@ class AlertTests(unittest.TestCase):
     def test_retry_runs_only_for_a_failed_main_build_below_the_attempt_cap(self):
         condition,_=retry_job()
         base=dict(event='workflow_run',branch='main',head=REPO,source='schedule',title='OSM data / build',conclusion='failure',attempt=1)
-        for change,expected in [({},True),(dict(source='workflow_dispatch',attempt=14),True),(dict(attempt=15),False),
+        for change,expected in [({},True),(dict(source='workflow_dispatch',attempt=3),True),(dict(attempt=4),False),
             (dict(conclusion='success'),False),(dict(conclusion='cancelled'),False),(dict(title='OSM data / check'),False),
             (dict(source='pull_request'),False),(dict(branch='feature'),False),(dict(head='attacker/polku-osm-data'),False),(dict(event='workflow_dispatch'),False)]:
             run=dict(base,**change);expression=condition
@@ -108,19 +111,34 @@ class AlertTests(unittest.TestCase):
             ('a newer build exists',901,{1:REFUSED},False),('no failed job',900,{},False)]:
             with self.subTest(case),tempfile.TemporaryDirectory() as fake:
                 fake=Path(fake);(fake/'bin').mkdir()
-                for name,text in [('gh',FAKE_GH),('curl',FAKE_CURL)]:
+                for name,text in [('gh',FAKE_GH),('curl',FAKE_CURL),('sleep',FAKE_SLEEP)]:
                     (fake/'bin'/name).write_text(text);(fake/'bin'/name).chmod(0o755)
                 (fake/'runs.json').write_text(json.dumps({'workflow_runs':[{'id':905,'display_title':'OSM data / check'},
                     {'id':newest,'display_title':'OSM data / build'},{'id':899,'display_title':'OSM data / build'}]}))
                 (fake/'jobs.json').write_text(json.dumps({'jobs':[{'id':3,'conclusion':'success'}]+[{'id':job,'conclusion':'failure'} for job in failed]}))
                 for job,log in failed.items(): (fake/f'log-{job}').write_text('Downloading…\n'+log+'\n')
-                env=dict(os.environ,PATH=f"{fake/'bin'}:{os.environ['PATH']}",FAKE=str(fake),GH_TOKEN='test-token',RUN='900',ATTEMPT='4',
+                env=dict(os.environ,PATH=f"{fake/'bin'}:{os.environ['PATH']}",FAKE=str(fake),GH_TOKEN='test-token',RUN='900',ATTEMPT='2',
                     GITHUB_REPOSITORY=REPO,GITHUB_API_URL='https://api.github.com')
                 # A run: step without a shell of its own runs under bash -e
                 result=subprocess.run(['bash','-e','-c',script],env=env,capture_output=True,text=True,timeout=20)
                 self.assertEqual(result.returncode,0,result.stderr)
                 reruns=(fake/'reruns').read_text() if (fake/'reruns').exists() else ''
                 self.assertEqual(reruns,f'run rerun 900 --failed --repo {REPO}\n' if expected else '',result.stdout)
+
+    def test_retry_waits_longer_before_each_re_run(self):
+        _,script=retry_job()
+        for attempt,seconds in [(1,1800),(2,3600),(3,7200)]:
+            with self.subTest(attempt=attempt),tempfile.TemporaryDirectory() as fake:
+                fake=Path(fake);(fake/'bin').mkdir()
+                for name,text in [('gh',FAKE_GH),('curl',FAKE_CURL),('sleep',FAKE_SLEEP)]:
+                    (fake/'bin'/name).write_text(text);(fake/'bin'/name).chmod(0o755)
+                (fake/'runs.json').write_text(json.dumps({'workflow_runs':[{'id':900,'display_title':'OSM data / build'}]}))
+                (fake/'jobs.json').write_text(json.dumps({'jobs':[{'id':1,'conclusion':'failure'}]}));(fake/'log-1').write_text(REFUSED)
+                env=dict(os.environ,PATH=f"{fake/'bin'}:{os.environ['PATH']}",FAKE=str(fake),GH_TOKEN='test-token',RUN='900',ATTEMPT=str(attempt),
+                    GITHUB_REPOSITORY=REPO,GITHUB_API_URL='https://api.github.com')
+                result=subprocess.run(['bash','-e','-c',script],env=env,capture_output=True,text=True,timeout=20)
+                self.assertEqual(result.returncode,0,result.stderr)
+                self.assertEqual((fake/'slept').read_text(),f'{seconds}\n')
 
     def test_only_trusted_main_operations_are_classified(self):
         self.assertEqual(alerts.classify(event(),REPO)['kind'],'update')
