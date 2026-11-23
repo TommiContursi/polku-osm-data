@@ -295,10 +295,10 @@ def mirror(jar, initial=False, now=None, source=None, brouter=None):
                     ftp.retrbinary(f"RETR {publish.place(base['release'], old)}", body.write)
                 copy_entry = record(copy, name, old['downloaded'])
                 require(copy_entry['sha256'] == old['sha256'], 'Our copy differs: ' + name)
-                change = old['bytes'] >= SMALL and source.get(f"diff/{name[:-4]}/{old['md5']}.df5", work / 'change.df5')
-                if change:
-                    brouter('apply', copy, change, new)
-                    kind, downloaded = 'diff' if change.stat().st_size else 'unchanged', old['downloaded']
+                delta = old['bytes'] >= SMALL and source.get(f"diff/{name[:-4]}/{old['md5']}.df5", work / 'change.df5')
+                if delta:
+                    brouter('apply', copy, delta, new)
+                    kind, downloaded = 'diff' if delta.stat().st_size else 'unchanged', old['downloaded']
                 elif now - when(old['downloaded']) >= QUARTER:
                     require(source.get(name, new), f'brouter.de no longer has {name}')
                     kind, downloaded = 'quarterly' if old['bytes'] >= SMALL else 'small', stamp(now)
@@ -312,18 +312,19 @@ def mirror(jar, initial=False, now=None, source=None, brouter=None):
             if kind not in {'kept', 'unchanged'} and entry['bytes'] >= SMALL:
                 # Next week's change file is named by this MD5: brouter.de names its newest copy with an empty one
                 require(source.get(f"diff/{name[:-4]}/{entry['md5']}.df5"), f'brouter.de has no change file for our new {name}')
-                if old:  # ours from the previous release's square, for squares of 1 MiB or more as brouter.de's
+                # The change file from the previous release's square: brouter.de's, or ours made as Rd5DiffManager makes it
+                if old and entry['sha256'] != old['sha256']:
                     if kind != 'diff':
-                        change = work / 'change.df5'
-                        brouter('diff', copy, new, change)
-                        brouter('apply', copy, change, work / 'applied.rd5')
+                        delta = work / 'change.df5'
+                        brouter('diff', copy, new, delta)
+                        brouter('apply', copy, delta, work / 'applied.rd5')
                         require(publish.digest_file(work / 'applied.rd5') == entry['sha256'], 'Our change file fails: ' + name)
-                    entry['change'] = publish.share({'path': name[:-4] + '.df5', 'bytes': change.stat().st_size,
-                                                     'sha256': publish.digest_file(change), 'from': old['sha256']})
+                    entry['change'] = publish.share({'path': name[:-4] + '.df5', 'bytes': delta.stat().st_size,
+                                                     'sha256': publish.digest_file(delta), 'from': old['sha256']})
             if not put(ftp, release, new, entry, have):
                 report['shared'] += 1
             if 'change' in entry:
-                put(ftp, release, change, entry['change'], have)
+                put(ftp, release, delta, entry['change'], have)
                 report['changes'] += 1
             ftp.storbinary(f'STOR {STAGE}/_{name}.json', io.BytesIO(json.dumps(entry).encode()))
             done[name] = entry

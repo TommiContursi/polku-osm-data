@@ -276,7 +276,7 @@ named by its SHA-256, so a square that doesn't change keeps its URL. A release f
 
 `change` is the mirror's change file for a square that changed since the previous release: applied with BRouter's
 `Rd5DiffTool.recoverFromDelta` to the square whose SHA-256 is `from`, it gives this square. Like brouter.de, the mirror
-has none for squares under 1 MiB, for new squares, or for squares that didn't change.
+has none when the new square is under 1 MiB, when the square is new, or when it didn't change.
 
 ## NLS background map
 
