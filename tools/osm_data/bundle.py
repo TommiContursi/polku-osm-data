@@ -43,8 +43,10 @@ def bundle(releases, output, *, geometry=None):
         expected_inputs = load_inputs([p for p,_ in inputs.values()])
         expected_coverage = {'type':'GeometryCollection','geometries':[inputs[c][1]['coverage'] for c in COUNTRIES]}
         d = geo.get('datasets',{}).get('geometry',{})
+        # Geofabrik's Europe export, or the mirror's byte-identical copy of it: either serves either country source
+        source_kind(geo['source'],'europe')
         if (set(geo.get('datasets',{}))!={'geometry'} or geo.get('inputs')!=input_receipt(expected_inputs) or
-            geo['source']['timestamp']!=stamp or source_kind(geo['source'],'europe')!=next(iter(kinds)) or
+            geo['source']['timestamp']!=stamp or
             d.get('kind')!='geometry' or d.get('format')!='pmtiles-json' or d.get('schema')!=2 or d.get('zoom')!=13 or
             d.get('source')!=geo['source'] or d.get('coverage')!=expected_coverage or geo.get('coverage')!=expected_coverage or
             d.get('areas_complete') is not True or type(d.get('nearby_complete')) is not bool):
