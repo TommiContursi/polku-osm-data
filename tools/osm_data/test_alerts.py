@@ -16,12 +16,16 @@ REPO='TommiContursi/polku-osm-data'
 WORKFLOW=Path(__file__).resolve().parents[2]/'.github/workflows/osm-data-alerts.yml'
 REFUSED="curl: (7) Failed to connect to download.geofabrik.de port 443 after 685 ms: Couldn't connect to server"
 SILENT="curl: (28) Operation timed out after 8002 milliseconds with 0 bytes received\nhttps://download.geofabrik.de/europe-261120.osm.pbf.md5 HTTP 000 (curl 28)"
-# Stand-ins for the retry job: gh answers the API from JSON files through jq and records re-runs, curl serves job logs
+# Stand-ins for the retry job and the build's late-build step: gh answers the API from JSON files through jq and
+# records re-runs, curl serves job logs
 FAKE_GH='''#!/bin/bash
 if [ "$1 $2" = 'run rerun' ]; then echo "$*" >> "$FAKE/reruns"; exit 0; fi
 case "$2" in
   "repos/$GITHUB_REPOSITORY/actions/workflows/osm-data.yml/runs?"*) jq -r "$4" "$FAKE/runs.json";;
   "repos/$GITHUB_REPOSITORY/actions/runs/$RUN/attempts/$ATTEMPT/jobs?"*) jq -r "$4" "$FAKE/jobs.json";;
+  "repos/$GITHUB_REPOSITORY/actions/runs/"*"/artifacts?name="*)
+    run=${2#*/runs/} name=${2#*name=}
+    jq --arg run "${run%%/*}" --arg name "$name" '{total_count: [.[$run][]? | select(. == $name)] | length}' "$FAKE/artifacts.json" | jq -r "$4";;
   *) echo "unexpected: gh $*" >&2; exit 1;;
 esac
 '''
@@ -48,23 +52,12 @@ def retry_job():
 
 
 def late_step():
-    """The script of the build's step that stops a late scheduled build when another build has its export."""
+    """The script of the build's step that marks its export, or stops a late scheduled build that another build has."""
     lines=(WORKFLOW.parent/'osm-data.yml').read_text().splitlines()
     step=lines[lines.index('        id: late')+1:]
     body=step[next(i for i,line in enumerate(step) if line.strip()=='run: |')+1:]
-    return textwrap.dedent('\n'.join(itertools.takewhile(lambda line: not line.strip() or line.startswith('          '),body)))
-
-
-# gh for the late-build step: workflow runs from runs.json, each run's artifact names from artifacts.json
-FAKE_GH_RUNS='''#!/bin/bash
-case "$2" in
-  "repos/$GITHUB_REPOSITORY/actions/workflows/osm-data.yml/runs?branch=main&created=%3E%3D"*) jq -r "$4" "$FAKE/runs.json";;
-  "repos/$GITHUB_REPOSITORY/actions/runs/"*"/artifacts?name="*)
-    run=${2#*/runs/} name=${2#*name=}
-    jq --arg run "${run%%/*}" --arg name "$name" '{total_count: [.[$run][]? | select(. == $name)] | length}' "$FAKE/artifacts.json" | jq -r "$4";;
-  *) echo "unexpected: gh $*" >&2; exit 1;;
-esac
-'''
+    indent=len(body[0])-len(body[0].lstrip())
+    return textwrap.dedent('\n'.join(itertools.takewhile(lambda line: not line.strip() or len(line)-len(line.lstrip())>=indent,body)))
 
 
 def event(operation='build',conclusion='failure',branch='main',workflow='osm-data.yml',prefix='OSM data / '):
@@ -169,12 +162,14 @@ class AlertTests(unittest.TestCase):
             ('a build of another export succeeded','schedule',built,['osm-snapshot-261121'],False),
             ('a check has nothing to do with it','schedule',dict(built,display_title='OSM data / check'),['osm-snapshot-261122'],False),
             ('only this run has it','schedule',dict(built,id=950),['osm-snapshot-261122'],False),
-            ('a manual build goes on as before','workflow_dispatch',built,['osm-snapshot-261122'],False)]:
+            ('a manual build goes on as before','workflow_dispatch',built,['osm-snapshot-261122'],False),
+            ("GitHub's API doesn't answer",'schedule',None,[],False)]:
             with self.subTest(case),tempfile.TemporaryDirectory() as fake:
                 fake=Path(fake);(fake/'bin').mkdir()
-                (fake/'bin'/'gh').write_text(FAKE_GH_RUNS);(fake/'bin'/'gh').chmod(0o755)
-                (fake/'runs.json').write_text(json.dumps({'workflow_runs':[run]}))
-                (fake/'artifacts.json').write_text(json.dumps({str(run['id']):markers}))
+                (fake/'bin'/'gh').write_text(FAKE_GH);(fake/'bin'/'gh').chmod(0o755)
+                if run:  # without runs.json, the stand-in fails as the API would
+                    (fake/'runs.json').write_text(json.dumps({'workflow_runs':[run]}))
+                    (fake/'artifacts.json').write_text(json.dumps({str(run['id']):markers}))
                 env=dict(os.environ,PATH=f"{fake/'bin'}:{os.environ['PATH']}",FAKE=str(fake),GH_TOKEN='test-token',SNAPSHOT='261122',
                     GITHUB_EVENT_NAME=source,GITHUB_RUN_ID='950',GITHUB_REPOSITORY=REPO,GITHUB_SERVER_URL='https://github.com',
                     GITHUB_OUTPUT=str(fake/'output'),GITHUB_STEP_SUMMARY=str(fake/'summary'))
@@ -183,10 +178,14 @@ class AlertTests(unittest.TestCase):
                 output=(fake/'output').read_text() if (fake/'output').exists() else ''
                 self.assertEqual(output,'skip=true\n' if stops else '')
                 self.assertEqual((fake/'osm-build'/'snapshot.txt').exists(),not stops)
+                self.assertEqual('::warning::' in result.stdout,run is None)
 
     def test_a_stopped_late_build_is_not_reported(self):
         jobs=[{'name':'snapshot','conclusion':'success'},{'name':'build','conclusion':'skipped'},{'name':'upload','conclusion':'skipped'}]
         self.assertIsNone(alerts.classify(event(conclusion='success'),REPO,jobs=jobs))
+        # A manual build given a release skips the snapshot too, and is still reported for not uploading
+        jobs[0]['conclusion']='skipped'
+        self.assertTrue(alerts.classify(event(conclusion='success'),REPO,jobs=jobs)['failed'])
 
     def test_only_trusted_main_operations_are_classified(self):
         self.assertEqual(alerts.classify(event(),REPO)['kind'],'update')

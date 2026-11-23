@@ -166,21 +166,22 @@ jobs:
           echo "Geofabrik did not answer, and the mirror has no Europe export from the last three days" \
                "(it offered '$mirror_stamp')" >&2
           exit 1
-      - name: A late scheduled build stops when another build has its export
+      - name: Mark this build's export, unless it is a late scheduled build that another build has already
         id: late
         timeout-minutes: 5
         env:
           GH_TOKEN: ${{ github.token }}
           SNAPSHOT: ${{ steps.snapshot.outputs.stamp }}
         run: |
-          # GitHub may start a schedule hours late (Monday's 05:17 began at 14:42 on 2026-11-23, after a manual build of
-          # the same export): a second build of one export asks Geofabrik for it all again and fails at upload, the
-          # release being there already. A build that is going on or has succeeded has the export's marker artifact.
+          # GitHub may start a schedule hours late: a second build of one export asks Geofabrik for it all again and fails
+          # at upload, the release being there already. A build going on or succeeded has the export's marker artifact.
+          # When GitHub's API doesn't answer, the build goes on as before rather than lose the week's build.
           if [ "$GITHUB_EVENT_NAME" = schedule ]; then
             runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/osm-data.yml/runs?branch=main&created=%3E%3D$(date -u -d '5 days ago' +%F)&per_page=100" \
-              --jq ".workflow_runs[] | select(.id != $GITHUB_RUN_ID and .display_title == \"OSM data / build\" and (.status != \"completed\" or .conclusion == \"success\")) | .id")
+              --jq ".workflow_runs[] | select(.id != $GITHUB_RUN_ID and .display_title == \"OSM data / build\" and (.status != \"completed\" or .conclusion == \"success\")) | .id") \
+              || echo "::warning::GitHub's API didn't list the builds: this scheduled build goes on without checking for another build of $SNAPSHOT"
             for run in $runs; do
-              count=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts?name=osm-snapshot-$SNAPSHOT" --jq .total_count)
+              count=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts?name=osm-snapshot-$SNAPSHOT" --jq .total_count) || count=0
               if [ "$count" != 0 ]; then
                 echo 'skip=true' >> "$GITHUB_OUTPUT"
                 echo "Build $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$run has the export $SNAPSHOT: this scheduled build stops." >> "$GITHUB_STEP_SUMMARY"
@@ -195,6 +196,8 @@ jobs:
         with:
           name: osm-snapshot-${{ steps.snapshot.outputs.stamp }}
           path: osm-build/snapshot.txt
+          # A re-run of a failed snapshot job uploads it again under the same run
+          overwrite: true
           retention-days: 14
           if-no-files-found: error
       - name: Download the four countries and their checksums
