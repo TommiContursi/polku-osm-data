@@ -361,14 +361,13 @@ class Stager(osmium.SimpleHandler):
         tiles = set()
         for a, b in zip(projected, projected[1:]):
             tiles.update(segment_tiles(a, b))
-        point = 'places' in names or 'inspection' in names or 'points' in names
-        if ('w', way.id) in self.needed or point:
+        if ('w', way.id) in self.needed or 'places' in names or 'inspection' in names:
             bounds = [min(p['lon'] for p in geometry), min(p['lat'] for p in geometry),
                       max(p['lon'] for p in geometry), max(p['lat'] for p in geometry)]
             if ('w', way.id) in self.needed:
                 self.member_bounds['w', way.id] = bounds
         element = json.loads(body)
-        if point:
+        if 'places' in names or 'inspection' in names:
             element['center'] = {'lon': round((bounds[0] + bounds[2]) / 2, 7), 'lat': round((bounds[1] + bounds[3]) / 2, 7)}
             # A way's centre can be away from its edges; nearby searches index both.
             p = tile_point(element['center']['lon'], element['center']['lat'])
