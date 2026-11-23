@@ -51,8 +51,10 @@ jobs build from those artifacts, as on Geofabrik's path, and the geometry job ta
 Europe export from the mirror too. The run's summary says which source it used, and each
 manifest's `source` names the mirrored export it was clipped from, with the tool
 (`clipped`) and the polygon (`coverage`), so a mirrored release is never mistaken for
-Geofabrik's own: the clipped countries differ slightly from Geofabrik's at the borders. A build mixing the two sources is
-refused. The mirror keeps only the newest export, so a build that runs past its nightly
+Geofabrik's own: the clipped countries differ slightly from Geofabrik's at the borders. A build mixing the two sources'
+countries is refused. The Europe export is the same file from either place, so when Geofabrik
+doesn't answer the geometry job's runner and the mirror's MD5 file names the same dated export,
+the geometry job takes the mirror's copy, and its manifest names the mirror. The mirror keeps only the newest export, so a build that runs past its nightly
 update (about 23:50 UTC) fails at the geometry job's epoch check rather than mixing two
 dates. The polygons are copies of Geofabrik's of 2026-11-23, updated by hand when Geofabrik
 changes a country's extent (a test pins each one's SHA-256); each manifest records the

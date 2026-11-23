@@ -171,7 +171,16 @@ class GeometrySourceTests(unittest.TestCase):
                         manifest_file.write_text(json.dumps(bad))
                         with self.assertRaisesRegex(ValueError,'geometry|Geometry'):
                             bundle(paths,root/('bad-'+mode),geometry=out)
+                    moved=json.loads(json.dumps(m))
+                    for source in (moved['source'],moved['datasets']['geometry']['source']):source['url']='https://example.com/europe-261101.osm.pbf'
+                    manifest_file.write_text(json.dumps(moved))
+                    with self.assertRaisesRegex(ValueError,'Mislabeled europe source'):bundle(paths,root/'bad-url',geometry=out)
                     manifest_file.write_text(json.dumps(m))
+                    if not remove:
+                        # Geofabrik refused the geometry's runner, so it took the mirror's copy of the same export (#1)
+                        mirrored={**source_info,'url':builder.MIRROR+'europe-latest.osm.pbf'}
+                        module.build_geometry(src,module.load_inputs(paths),root/'geometry-mirrored',mirrored)
+                        self.assertEqual(bundle(paths,root/'combined-mirrored',geometry=root/'geometry-mirrored')['datasets']['geometry']['source'],mirrored)
 
 
     def test_reference_epoch_mismatch_fails_before_output(self):

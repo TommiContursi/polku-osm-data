@@ -366,8 +366,9 @@ class PublishTests(unittest.TestCase):
         # curl's --retry alone gives up at once when Geofabrik refuses the runner or briefly answers 404 for a file it has (#1131)
         workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/osm-data.yml').read_text().replace('\\\n', ' ')
         requests = [line for line in workflow.splitlines() if 'curl ' in line and '127.0.0.1' not in line]
-        self.assertEqual(len(requests), 10, "the snapshot check and its mirror fallback, the countries and their checksums, the "
-                         "mirror's Europe export and checksum, the reference size and its two downloads, and BRouter's release for the tests")
+        self.assertEqual(len(requests), 12, "the snapshot check and its mirror fallback, the countries and their checksums, the "
+                         "mirror's Europe export and checksum, the reference check and its mirror fallback, the reference size and "
+                         "its two downloads, and BRouter's release for the tests")
         for line in requests:
             with self.subTest(line=line.strip()[:90]):
                 # the snapshot check reads a 404 as a date not ready yet, so it retries only a refusal; the Europe
@@ -515,6 +516,61 @@ class PublishTests(unittest.TestCase):
                                 self.assertIn(f'/{region}-{stamp}.osm.pbf.md5 HTTP 200 (curl 0)', result.stdout)
                         status = '200 (curl 0)' if selected == '261115' else '404 (curl 22)'
                         self.assertIn(f'{latest} HTTP {status}', result.stdout)
+            finally:
+                server.shutdown()
+                worker.join()
+
+    def test_the_geometry_takes_the_mirror_s_copy_of_its_dated_export_when_geofabrik_is_silent(self):
+        # Geofabrik refuses some runner networks (#1); the mirror's MD5 file names the dated export it holds
+        workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/osm-data.yml').read_text()
+        step = workflow.split("      - name: Take the mirror's copy of the same dated export when Geofabrik doesn't answer this runner\n", 1)[1]
+        script = dedent(step.split('        run: |\n', 1)[1].split('\n      - ', 1)[0])
+        offered, requests = [], []
+
+        class Hosts(BaseHTTPRequestHandler):
+            def do_HEAD(self):
+                requests.append(self.path)
+                self.send_response_only(200)
+                self.end_headers()
+
+            def do_GET(self):
+                requests.append(self.path)
+                body = b'7700b4c585e58b1c1f81113168d193de  europe-' + offered[0].encode() + b'.osm.pbf\n'
+                self.send_response(200)
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        with HTTPServer(('127.0.0.1', 0), Hosts) as server, tempfile.TemporaryDirectory() as tmp:
+            worker = Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            try:
+                host = f'http://127.0.0.1:{server.server_port}'
+                refused = 'curl() { case "$*" in *geofabrik.invalid*) printf 000; return 7;; esac; command curl "$@"; }\n'
+                output = Path(tmp) / 'output'
+                geofabrik, mirror = 'http://geofabrik.invalid/europe-261115.osm.pbf', host + '/europe-latest.osm.pbf'
+                answering = host + '/europe-261115.osm.pbf'
+                cases = [(answering, '261115', '261115', answering),
+                         (geofabrik, '261115', '261115', mirror),
+                         # the mirror has moved on: the same file is gone, so the download fails and the alerts re-run it
+                         (geofabrik, '261115', '261116', geofabrik),
+                         # countries clipped from the mirror already name the mirror's export
+                         (mirror, 'latest', '261115', mirror)]
+                for asked, snapshot, offer, expected in cases:
+                    with self.subTest(asked=asked, snapshot=snapshot, offer=offer):
+                        offered[:] = [offer]
+                        requests.clear()
+                        output.write_text('')
+                        env = dict(os.environ, GITHUB_OUTPUT=str(output), GITHUB_STEP_SUMMARY=os.devnull, MIRROR=host + '/',
+                                   SOURCE_URL=asked, SNAPSHOT=snapshot, NO_PROXY='127.0.0.1', no_proxy='127.0.0.1')
+                        result = subprocess.run(['bash', '-e', '-c', refused + script], env=env, capture_output=True, text=True, timeout=40)
+                        self.assertEqual(result.returncode, 0, result)
+                        self.assertEqual(output.read_text(), f'url={expected}\n')
+                        self.assertEqual('/europe-latest.osm.pbf.md5' in requests, asked == geofabrik,
+                                         'the mirror is read only when Geofabrik is silent')
             finally:
                 server.shutdown()
                 worker.join()
