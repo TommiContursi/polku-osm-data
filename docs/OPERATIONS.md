@@ -39,6 +39,13 @@ of their own; the clipping polygons are this repository's own copies in `data/`,
 waits on Geofabrik for them. The source must be at most 14 days old. Source and release
 artifacts are kept 14 days.
 
+GitHub may start the weekly schedule hours late (the 03:17 UTC schedule began at 12:42 UTC on 2026-11-23,
+after a manual build of the same export). So once the snapshot step has picked its dated
+export, a scheduled build stops when another build of that export is going on or has
+succeeded: each build marks its export with an `osm-snapshot-<date>` artifact. The stopped
+run ends without building anything, and the alerts report nothing for it. A manual build
+always runs, and so does a scheduled one when GitHub's API doesn't answer.
+
 **The second source.** When Geofabrik answers none of the snapshot step's requests (no HTTP
 answer at all; a 404 means a date isn't ready, and the run fails for the alerts' re-run), the
 run takes [GWDG's mirror](https://ftp5.gwdg.de/pub/misc/openstreetmap/download.geofabrik.de/)
@@ -185,10 +192,12 @@ anything.
 
 ## The host
 
-The data is served from `https://ducksoft.fi/polku-osm/`, `https://ducksoft.fi/polku-routing/` and `https://ducksoft.fi/polku-mml/`.
+The data is served from `https://ducksoft.fi/polku-osm/`, `https://ducksoft.fi/polku-routing/`, `https://ducksoft.fi/polku-mml/`
+and `https://ducksoft.fi/polku-digiroad/`.
 Each folder has its own `.htaccess`: [`hosting.htaccess`](../tools/osm_data/hosting.htaccess),
 installed by hand, [`routing.htaccess`](../tools/osm_data/routing.htaccess) (Routing data,
-above) and [`mml.htaccess`](../tools/osm_data/mml.htaccess) in `polku-mml/` (NLS background map, below). They turn off listing and HTTP compression, set the MIME types, allow read-only CORS with
+above), [`mml.htaccess`](../tools/osm_data/mml.htaccess) in `polku-mml/` (NLS background map, below) and a copy of
+`hosting.htaccess` in `polku-digiroad/` (Digiroad traffic volumes, below). They turn off listing and HTTP compression, set the MIME types, allow read-only CORS with
 the Range headers exposed, cache releases as immutable and make `current.json` revalidate, which
 also covers `candidates/current.json`.
 
@@ -250,7 +259,33 @@ to `https://ducksoft.fi/polku-mml/`. The format is in [tools/osm_data/README.md]
   release goes through `staging/` (a stopped upload goes on from where it stopped), is read back with its SHA-256,
   checked over HTTPS and named in `candidates/current.json`. Releases other than the candidate and the live one go,
   and a release whose box doesn't cover the candidate's is refused.
+- **Promotion** is Polku's `mml-promote.yml`, run by hand, like the OSM data's. `mml.py candidate` finds a
+  candidate built after the live release, over public HTTP only, and Polku's check reads it in the app. Then
+  `mml.py promote` checks the release's manifest hash and file sizes, and that it is still the candidate, since an
+  upload removes a release that is neither the candidate nor live. It reads the release over HTTPS and puts the
+  manifest's own bytes in `polku-mml/current.json`, the release the app reads. The pointer it replaced is kept. If
+  polku.si then fails its check, `mml.py restore` puts that pointer back, or removes `current.json` if there was
+  none, so the app reads MML's own service. It refuses if another release went live meanwhile or the old release is
+  gone.
 
 A smaller **box** tests the whole job. A pull request that changes the job fetches central Helsinki in two parts and
 uploads nothing. The tiles are CC BY 4.0: "© Maanmittauslaitos, Maastotietokanta" and the month fetched, in the
 manifest, the archive's metadata and `LICENSE.txt`.
+
+## Digiroad traffic volumes
+
+`digiroad-data.yml`, by hand, copies Digiroad's busy roads: the roads of 800 or more vehicles a day in Väylävirasto's
+WFS layer `dr_liikennemaara`, 117,061 of them on 2026-11-23. Väylävirasto's updates to it ended on 2026-09-18, when
+Fintraffic took Digiroad over, so the copy runs again only when a source with newer data exists. The format is in
+[tools/osm_data/README.md](../tools/osm_data/README.md#digiroad-traffic-volumes).
+
+- **install-hosting**, once: makes `polku-digiroad/` and puts a copy of
+  [`hosting.htaccess`](../tools/osm_data/hosting.htaccess) in it.
+- **copy** asks the WFS for 5,000 roads at a time, ordered by ID, with 5 s between pages, and retries a failed page once
+  after 5 minutes. The count must equal the WFS's own. The release is about 9.5 MB in 1,904 zoom-11 tiles, and goes up
+  as about 20 cells through `publish.py`, as the OSM data does: read back with its SHA-256, checked over HTTPS and
+  named in `candidates/current.json`. A cell the host already holds isn't sent again.
+
+There is no promotion yet, so Polku reads the candidate. The data is CC BY 4.0: "Traffic
+volumes: © Fintraffic / Digiroad, from Väylävirasto's open data, CC BY 4.0", in the manifest, the archive's metadata and
+`LICENSE.txt`, which also says what was changed.
