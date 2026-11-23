@@ -366,7 +366,7 @@ class PublishTests(unittest.TestCase):
         # curl's --retry alone gives up at once when Geofabrik refuses the runner or briefly answers 404 for a file it has (#1131)
         workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/osm-data.yml').read_text().replace('\\\n', ' ')
         requests = [line for line in workflow.splitlines() if 'curl ' in line and '127.0.0.1' not in line]
-        self.assertEqual(len(requests), 10, "the snapshot check and its mirror fallback, two country downloads, the "
+        self.assertEqual(len(requests), 10, "the snapshot check and its mirror fallback, the countries and their checksums, the "
                          "mirror's Europe export and checksum, the reference size and its two downloads, and BRouter's release for the tests")
         for line in requests:
             with self.subTest(line=line.strip()[:90]):
@@ -443,7 +443,7 @@ class PublishTests(unittest.TestCase):
 
     def test_snapshot_retries_temporary_failure_and_takes_the_mirror_only_when_geofabrik_is_silent(self):
         workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/osm-data.yml').read_text()
-        step = workflow.split('\n  snapshot:\n', 1)[1].split('\n  mirror:', 1)[0]
+        step = workflow.split('\n      - id: snapshot\n', 1)[1].split('\n      - ', 1)[0]
         script = dedent(step.split('        run: |\n', 1)[1])
         latest = '/europe-261115.osm.pbf.md5'
         older = '/europe-261114.osm.pbf.md5'
@@ -519,21 +519,23 @@ class PublishTests(unittest.TestCase):
                 server.shutdown()
                 worker.join()
 
-    def test_the_mirror_job_checks_the_export_and_hands_each_country_to_its_build(self):
-        # Geofabrik refuses some runner networks; the mirror holds Europe alone, so the countries are clipped here (#1)
+    def test_one_job_fetches_the_countries_and_hands_each_to_its_build(self):
+        # Geofabrik answered the snapshot check, then refused two build runners (2026-11-23), so the builds never ask it.
+        # The mirror holds Europe alone, so on that path the same job clips the countries (#1).
         workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/osm-data.yml').read_text()
         self.assertIn('  MIRROR: ' + builder.MIRROR + '\n', workflow, 'the workflow and builder.py name one mirror')
-        job = workflow.split('\n  mirror:\n', 1)[1].split('\n  build:', 1)[0]
+        job = workflow.split('\n  snapshot:\n', 1)[1].split('\n  build:', 1)[0]
         self.assertIn('md5sum --check --strict', job, 'the published checksum is checked before clipping')
         self.assertIn('grep -q "  europe-$SNAPSHOT\\.osm\\.pbf\\$"', job, 'the mirror may have moved on to a newer export')
         for country in ('finland', 'sweden', 'norway', 'estonia'):
-            self.assertIn(f'name: osm-mirror-{country}\n          path: osm-build/clipped/{country}\n', job)
+            self.assertIn(f'name: osm-{country}-source\n          path: osm-build/sources/{country}\n', job)
         build = workflow.split('\n  build:\n', 1)[1].split('\n  geometry:', 1)[0]
-        self.assertIn('name: osm-mirror-${{ matrix.country }}\n          path: osm-build\n', build)
+        self.assertIn('name: osm-${{ matrix.country }}-source\n          path: osm-build\n', build)
+        self.assertNotIn('curl', build, 'a country build downloads nothing itself')
         self.assertIn('--coverage "data/$COUNTRY.poly"', build, "the build's declared extent is the polygon it was clipped with")
 
-    @unittest.skipUnless(shutil.which('osmium'), 'osmium-tool, as the mirror job installs it')
-    def test_the_mirror_job_clips_four_countries_keeping_the_export_s_epoch(self):
+    @unittest.skipUnless(shutil.which('osmium'), 'osmium-tool, as the snapshot job installs it on the mirror path')
+    def test_the_mirror_path_clips_four_countries_keeping_the_export_s_epoch(self):
         import osmium
         workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/osm-data.yml').read_text()
         step = workflow.split("      - name: Clip the four countries in one pass, keeping the export's replication timestamp\n", 1)[1]
@@ -561,7 +563,7 @@ class PublishTests(unittest.TestCase):
             self.assertFalse((root / 'osm-build/europe.osm.pbf').exists(), 'the 35 GB export makes room for the builds')
             for country, way in [('finland', 1), ('sweden', 1), ('norway', 2), ('estonia', 2)]:
                 with self.subTest(country=country):
-                    clipped = root / 'osm-build/clipped' / country
+                    clipped = root / 'osm-build/sources' / country
                     pbf = clipped / 'source.osm.pbf'
                     with osmium.io.Reader(str(pbf)) as reader:
                         self.assertEqual(reader.header().get('osmosis_replication_timestamp'), stamp)
@@ -573,15 +575,18 @@ class PublishTests(unittest.TestCase):
     def test_country_checksum_comes_from_beside_the_file_served(self):
         # Geofabrik moves countries into folders of their own; its old addresses keep a different checksum (#1151)
         workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/osm-data.yml').read_text()
-        step = workflow.split('name: Download one complete country and its checksum', 1)[1].split('\n      - name:', 1)[0]
-        script = '\n'.join(line for line in dedent(step.split('        run: |\n', 1)[1]).splitlines() if 'disk' not in line)
-        pbf = b'the country itself'
-        moved = {'/europe/estonia-261118.osm.pbf': (308, b'', '/europe/estonia/estonia-261118.osm.pbf'),
-                 '/europe/estonia-261118.osm.pbf.md5': (200, b'0' * 32 + b'  estonia-261118.osm.pbf\n', None),
-                 '/europe/estonia/estonia-261118.osm.pbf': (200, pbf, None),
-                 '/europe/estonia/estonia-261118.osm.pbf.md5': (200, hashlib.md5(pbf).hexdigest().encode() + b'  estonia-261118.osm.pbf\n', None)}
-        kept = {'/europe/estonia-261118.osm.pbf': (200, pbf, None),
-                '/europe/estonia-261118.osm.pbf.md5': (200, hashlib.md5(pbf).hexdigest().encode() + b'  estonia-261118.osm.pbf\n', None)}
+        step = workflow.split('name: Download the four countries and their checksums', 1)[1].split('\n      - name:', 1)[0]
+        script = dedent(step.split('        run: |\n', 1)[1])
+        countries = ('finland', 'sweden', 'norway', 'estonia')
+        pbf = {c: f'{c} itself'.encode() for c in countries}
+        md5 = {c: hashlib.md5(pbf[c]).hexdigest().encode() + f'  {c}-261118.osm.pbf\n'.encode() for c in countries}
+        moved, kept = {}, {}
+        for c in countries:
+            moved.update({f'/europe/{c}-261118.osm.pbf': (308, b'', f'/europe/{c}/{c}-261118.osm.pbf'),
+                          f'/europe/{c}-261118.osm.pbf.md5': (200, b'0' * 32 + f'  {c}-261118.osm.pbf\n'.encode(), None),
+                          f'/europe/{c}/{c}-261118.osm.pbf': (200, pbf[c], None),
+                          f'/europe/{c}/{c}-261118.osm.pbf.md5': (200, md5[c], None)})
+            kept.update({f'/europe/{c}-261118.osm.pbf': (200, pbf[c], None), f'/europe/{c}-261118.osm.pbf.md5': (200, md5[c], None)})
         files = {}
 
         class Geofabrik(BaseHTTPRequestHandler):
@@ -599,31 +604,36 @@ class PublishTests(unittest.TestCase):
             worker.start()
             try:
                 local = script.replace('https://download.geofabrik.de', f'http://127.0.0.1:{server.server_port}')
-                env = dict(os.environ, COUNTRY='estonia', SNAPSHOT='261118', NO_PROXY='127.0.0.1', no_proxy='127.0.0.1')
+                env = dict(os.environ, SNAPSHOT='261118', NO_PROXY='127.0.0.1', no_proxy='127.0.0.1')
                 for layout, served in [('moved', moved), ('kept', kept)]:
                     with self.subTest(layout=layout):
                         files.clear(); files.update(served)
                         result = subprocess.run(['bash', '-e', '-c', local], cwd=tmp, env=env, capture_output=True, text=True, timeout=30)
                         self.assertEqual(result.returncode, 0, result.stderr)
-                        build = Path(tmp) / 'osm-build'
-                        self.assertEqual((build / 'source.md5').read_text()[:32], hashlib.md5((build / 'source.osm.pbf').read_bytes()).hexdigest())
+                        for c in countries:
+                            source = Path(tmp) / 'osm-build/sources' / c
+                            self.assertEqual((source / 'source.osm.pbf').read_bytes(), pbf[c])
+                            self.assertEqual((source / 'source.md5').read_bytes(), md5[c])
             finally:
                 server.shutdown()
                 worker.join()
 
-    def test_country_download_leaves_time_to_build(self):
+    def test_country_downloads_and_builds_have_time(self):
         workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/osm-data.yml').read_text()
+        snapshot = workflow.split('\n  snapshot:\n', 1)[1].split('\n  build:', 1)[0]
         build = workflow.split('\n  build:\n', 1)[1].split('\n  geometry:', 1)[0]
-        download = build.split('      - name: Download one complete country', 1)[1].split('\n      - name:', 1)[0]
-        curl = next(line for line in download.splitlines() if '-o osm-build/source.osm.pbf' in line).split()
+        download = snapshot.split('      - name: Download the four countries', 1)[1].split('\n      - name:', 1)[0]
+        curl = next(line for line in download.splitlines() if '/source.osm.pbf"' in line).split()
         transfer = int(curl[curl.index('--max-time') + 1])
         self.assertGreaterEqual(transfer, 22 * 60, 'the slowest Norway transfer needed over 21 minutes')
         retries = int(curl[curl.index('--retry-max-time') + 1])
         step = int(download.split('timeout-minutes: ', 1)[1].splitlines()[0])
-        job = int(build.split('timeout-minutes: ', 1)[1].splitlines()[0])
+        job = int(snapshot.split('timeout-minutes: ', 1)[1].splitlines()[0])
         self.assertGreater(retries, 0, 'a stalled large transfer must not restart late in the step')
-        self.assertLess(transfer + retries, step * 60, 'leave time for checksum and polygon downloads')
-        self.assertGreaterEqual(job - step, 100, 'leave time for the measured 86-minute build and its checks')
+        self.assertLessEqual(transfer + retries, step * 60 // 4 - 60, 'four countries, one after another, with their checksums')
+        self.assertLess(step, job)
+        self.assertGreaterEqual(int(build.split('timeout-minutes: ', 1)[1].splitlines()[0]), 100,
+                                'leave time for the measured 86-minute build and its checks')
 
     def test_reference_download_leaves_time_to_compile(self):
         workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/osm-data.yml').read_text()
