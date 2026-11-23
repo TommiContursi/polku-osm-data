@@ -314,27 +314,15 @@ class RoutingTests(unittest.TestCase):
         manifest['squares'][0]['change'] = good
         routing.validate(manifest)
 
-    def test_hosting_is_installed_once_and_replaces_only_the_one_before_change_files(self):
+    def test_hosting_is_installed_once_and_never_replaced(self):
         del self.host.files[BASE + '/.htaccess']
         with self.assertRaisesRegex(RuntimeError, 'run install-hosting first'):
             self.run_mirror(initial=True)
         self.assertEqual(self.host.requests, [])
-        ours = Path(routing.__file__).with_name('routing.htaccess').read_bytes()
         routing.install_hosting()
-        self.assertEqual(self.host.files[BASE + '/.htaccess'], ours)
-        routing.install_hosting()
-        self.assertEqual(self.host.files[BASE + '/.htaccess'], ours, 'nothing to do the second time')
-        before = ours.replace(b"squares and their change files. The\n# workflow's install-hosting puts it in place once (#7); a change after that is made by hand.",
-                              b"squares' type. The workflow's install-hosting puts it\n# in place once (#7); a change after that is made by hand.")
-        before = before.replace(b' .rd5 .df5\n', b' .rd5\n').replace(b'the type of the routing ', b'the routing ')
-        self.assertEqual(hashlib.sha256(before).hexdigest(), routing.UNTYPED, 'the file of 2026-11-22')
-        self.host.files[BASE + '/.htaccess'] = before
-        routing.install_hosting()
-        self.assertEqual(self.host.files[BASE + '/.htaccess'], ours)
-        self.host.files[BASE + '/.htaccess'] = b'changed by hand'
+        self.assertEqual(self.host.files[BASE + '/.htaccess'], Path(routing.__file__).with_name('routing.htaccess').read_bytes())
         with self.assertRaisesRegex(RuntimeError, 'change it by hand'):
             routing.install_hosting()
-        self.assertEqual(self.host.files[BASE + '/.htaccess'], b'changed by hand')
 
     def test_downloads_stay_under_16_mbit(self):
         clock = [0.0]

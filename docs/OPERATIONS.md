@@ -216,8 +216,7 @@ change files, one file at a time and at most 16 Mbit/s.
   (`Rd5.java`, the release jar pinned by SHA-256) and checks it. A square without one is downloaded whole at most
   every 90 days. After a failed Wednesday, run **update** by hand within two days, while the change files last.
 - **check**, daily at 07:43 UTC: the candidate, and `current.json` once there is one.
-- **install-hosting**: puts [`routing.htaccess`](../tools/osm_data/routing.htaccess) into `polku-routing/`. It
-  replaces only the one it put there on 2026-11-22, before the change files had a type; any other is changed by hand.
+- **install-hosting**, once: puts [`routing.htaccess`](../tools/osm_data/routing.htaccess) into `polku-routing/`.
 
 Each square that changed also gets the mirror's change file from the previous release's square: brouter.de's own, or
 one made with the same jar and checked by applying it. Each square and change file goes in `polku-routing/files/`,
