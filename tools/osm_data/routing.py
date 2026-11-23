@@ -41,6 +41,7 @@ QUARTER = timedelta(days=90)  # brouter.de allows a square's full download about
 FRESH, OLDEST = timedelta(days=14), timedelta(days=100)  # squares with change files, and the small ones
 BUDGET = 32 * 1024**3  # live, candidate and the staging one between them: three copies of the world's 10.1 GB
 STAGE = 'staging'
+UNTYPED = 'e964a48862a61b1fb77b31ff4bddde1924779bbbb522dd0196ea7e984c4d26c0'  # the .htaccess of 2026-11-22, before .df5
 ATTRIBUTION = ('Routing data © OpenStreetMap contributors, ODbL 1.0 (https://www.openstreetmap.org/copyright), '
                'built by BRouter (https://brouter.de). Elevation north of 60°N: Sonny\'s LiDAR digital terrain models '
                '(https://sonny.4lima.de), CC BY 4.0. Elevation south of 60°N: Jarvis A., H.I. Reuter, A. Nelson, '
@@ -399,10 +400,18 @@ def check(url, now=None):
 
 
 def install_hosting():
-    """The routing folder's .htaccess, once: an existing one is changed by hand."""
+    """The routing folder's .htaccess: put in place once, or over the one put there before the change files had a type.
+    Any other is changed by hand."""
+    body = Path(__file__).with_name('routing.htaccess').read_bytes()
     with routing_host() as (ftp, _):
-        require('.htaccess' not in maintenance.children(ftp), 'polku-routing/.htaccess exists; change it by hand')
-        ftp.storbinary('STOR .htaccess', io.BytesIO(Path(__file__).with_name('routing.htaccess').read_bytes()))
+        if '.htaccess' in maintenance.children(ftp):
+            have = publish.retrieve(ftp, '.htaccess')
+            if have == body:
+                return
+            require(hashlib.sha256(have).hexdigest() == UNTYPED, 'polku-routing/.htaccess is not ours; change it by hand')
+            publish.replace_pointer(ftp, body, '.htaccess')
+        else:
+            ftp.storbinary('STOR .htaccess', io.BytesIO(body))
 
 
 def main():
