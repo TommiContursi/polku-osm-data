@@ -3,7 +3,6 @@
 from contextlib import ExitStack
 from datetime import datetime, timezone
 import gzip
-import hashlib
 import io
 import json
 from pathlib import Path
@@ -30,7 +29,7 @@ def road(n, aadt=1000, kind='LineString'):
         line = [[23.906, 61.5], [23.910, 61.5]]  # 23.90625° is a zoom-11 tile's west edge
     geometry = {'type': kind, 'coordinates': [line] if kind == 'MultiLineString' else line}
     return {'type': 'Feature', 'id': f'dr_liikennemaara.{100 + n}', 'geometry': geometry,
-            'properties': {'id': str(100 + n), 'arvo': aadt}}
+            'properties': {'id': str(100 + n), 'arvo': aadt, 'muokkauspv': f'{n + 1:02}.07.2022 12:00:00'}}
 
 
 class WFS:
@@ -64,8 +63,8 @@ class DigiroadTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(tmp.name)
 
-    def test_the_fetch_asks_page_by_page_and_keeps_what_polku_draws(self):
-        roads, served = digiroad.fetch(self.sleeps.append)
+    def test_the_fetch_asks_page_by_page_and_keeps_the_busy_roads(self):
+        roads, edited = digiroad.fetch(self.sleeps.append)
         self.assertEqual([q['startIndex'] for q in self.wfs.requests], ['0', '3', '6'])
         self.assertEqual(self.sleeps, [digiroad.PAUSE] * 2, 'one page at a time, with a pause between')
         query = self.wfs.requests[0]
@@ -75,7 +74,7 @@ class DigiroadTests(unittest.TestCase):
         self.assertEqual(roads[101], {'id': 101, 'aadt': 1000, 'lines': [[[23.7301, 61.49], [23.7341, 61.491]]]},
                          'six decimals, no heights')
         self.assertEqual((roads[107]['aadt'], len(roads[107]['lines'])), (78500, 1))
-        self.assertEqual(served, '2026-11-23T17:27:05.820Z')
+        self.assertEqual(edited, '2022-07-08T09:00:00Z', "the newest edit, in Finland's summer time")
 
     def test_missing_or_unexpected_roads_stop_the_fetch(self):
         self.wfs.matched = 9
@@ -84,6 +83,11 @@ class DigiroadTests(unittest.TestCase):
         self.wfs.matched = None
         self.wfs.features[2] = road(2, aadt=500)
         with self.assertRaisesRegex(ValueError, 'Unexpected Digiroad feature dr_liikennemaara.102'):
+            digiroad.fetch(self.sleeps.append)
+        self.wfs.features[2] = road(2)
+        for feature in self.wfs.features:
+            del feature['properties']['muokkauspv']
+        with self.assertRaisesRegex(ValueError, 'no edit times'):
             digiroad.fetch(self.sleeps.append)
 
     def test_a_failed_page_waits_once_then_stops(self):
@@ -99,8 +103,8 @@ class DigiroadTests(unittest.TestCase):
             return {xyz: json.loads(gzip.decompress(data)) for xyz, data in all_tiles(MmapSource(f))}
 
     def test_the_release_has_each_road_in_every_tile_it_touches(self):
-        roads, served = digiroad.fetch(self.sleeps.append)
-        manifest = digiroad.build(roads, served, self.tmp / 'release', T0)
+        roads, edited = digiroad.fetch(self.sleeps.append)
+        manifest = digiroad.build(roads, edited, self.tmp / 'release', T0)
         tiles = self.tiles(self.tmp / 'release')
         self.assertEqual({z for z, _, _ in tiles}, {11})
         self.assertEqual(sorted(xyz for xyz, t in tiles.items() if any(e['id'] == 100 for e in t['elements'])),
@@ -112,17 +116,25 @@ class DigiroadTests(unittest.TestCase):
         self.assertIn('Väylävirasto', manifest['attribution'])
         self.assertIn('creativecommons.org/licenses/by/4.0', (self.tmp / 'release' / 'LICENSE.txt').read_text())
         publish.local_release(self.tmp / 'release')
-        again = digiroad.build(roads, served, self.tmp / 'again', T0)
+        again = digiroad.build(roads, edited, self.tmp / 'again', T0)
         self.assertEqual(again['files'], manifest['files'], 'the same roads give the same bytes')
 
+    def test_the_fixture_is_the_archive_the_wfs_answer_gives(self):
+        fixtures = Path(__file__).resolve().parents[1] / 'fixtures'
+        self.wfs.features = json.loads((fixtures / 'digiroad-tampere.json').read_text())['features']
+        with patch.object(digiroad, 'PAGE', 5000):
+            manifest = digiroad.build(*digiroad.fetch(self.sleeps.append), self.tmp / 'release', T0)
+        self.assertEqual((self.tmp / 'release' / digiroad.ARCHIVE).read_bytes(), (fixtures / 'digiroad-traffic.pmtiles').read_bytes())
+        self.assertEqual(manifest['datasets']['traffic']['features'], 89)
+
     def test_the_release_goes_up_in_cells_beside_polku_osm(self):
-        roads = digiroad.fetch(self.sleeps.append)
+        fetched = digiroad.fetch(self.sleeps.append)
         host = RoutingHost()
         host.dirs.add(BASE)
         host.files[BASE + '/.htaccess'] = b'installed'
         with patch.dict('os.environ', ENV | {'OSM_CELLS': 'true'}, clear=True), \
                 patch.object(publish, 'open_sftp', host.ftp), patch.object(publish.urllib.request, 'urlopen', host.http):
-            digiroad.build(*roads, self.tmp / 'release', T0)
+            digiroad.build(*fetched, self.tmp / 'release', T0)
             publish.upload(self.tmp / 'release', folder=digiroad.FOLDER)
             raw = host.files[BASE + '/candidates/current.json']
             manifest = json.loads(raw)
@@ -134,7 +146,7 @@ class DigiroadTests(unittest.TestCase):
                 self.assertIn(f"{BASE}/files/{cell['sha256']}.pmtiles", host.files)
             self.assertFalse(any(p.startswith(SITE + '/polku-osm/') for p in host.files), 'nothing in polku-osm')
             host.uploads.clear()
-            digiroad.build(*roads, self.tmp / 'again', datetime(2026, 11, 24, tzinfo=timezone.utc))
+            digiroad.build(*fetched, self.tmp / 'again', datetime(2026, 11, 24, tzinfo=timezone.utc))
             publish.upload(self.tmp / 'again', folder=digiroad.FOLDER)
             self.assertEqual([p for p, _, _ in host.uploads if p.endswith('.pmtiles')], [], 'the same roads send no cell again')
             del host.files[BASE + '/.htaccess']

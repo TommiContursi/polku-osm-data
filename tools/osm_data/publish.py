@@ -597,7 +597,9 @@ def upload(directory, resume=False, folder=None):
     with connection(config) as ftp:
         url = config[-2]
         if folder:
+            require(url.endswith('/polku-osm'), 'OSM_PUBLIC_URL must end in /polku-osm')
             ftp.cwd('..')
+            require(folder in maintenance.children(ftp), f'{folder} is missing: run install-hosting first')
             ftp.cwd(folder)
             require('.htaccess' in maintenance.children(ftp), f'{folder} has no .htaccess: run install-hosting first')
             url = url.removesuffix('/polku-osm') + '/' + folder

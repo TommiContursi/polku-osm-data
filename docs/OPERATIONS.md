@@ -270,5 +270,6 @@ Fintraffic took Digiroad over, so the copy runs again only when a source with ne
   as about 20 cells through `publish.py`, as the OSM data does: read back with its SHA-256, checked over HTTPS and
   named in `candidates/current.json`. A cell the host already holds isn't sent again.
 
-The data is CC BY 4.0: "Traffic volumes: Digiroad, © Väylävirasto, CC BY 4.0", in the manifest, the archive's
-metadata and `LICENSE.txt`, which also says what was changed.
+There is no promotion yet: Polku reads the candidate, as it reads the NLS copy's. The data is CC BY 4.0: "Traffic
+volumes: © Fintraffic / Digiroad, from Väylävirasto's open data, CC BY 4.0", in the manifest, the archive's metadata and
+`LICENSE.txt`, which also says what was changed.

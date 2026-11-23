@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""A copy of Digiroad's traffic volumes: the roads of 800 or more vehicles a day that Polku draws as busy roads, as one
-zoom-11 PMTiles archive of JSON tiles, uploaded as a candidate in polku-digiroad beside polku-osm.
+"""A copy of Digiroad's traffic volumes: the roads of 800 or more vehicles a day, as one zoom-11 PMTiles archive of
+JSON tiles, uploaded as a candidate in polku-digiroad beside polku-osm.
 
 The source is Väylävirasto's WFS layer dr_liikennemaara, CC BY 4.0. Väylävirasto's updates to it ended on 2026-09-18,
 when Fintraffic took Digiroad over, so the copy is made by hand, and again only when a source with newer data exists.
@@ -8,13 +8,12 @@ The fetch asks for one page at a time, with a pause between pages and one retry 
 
 import argparse
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 import gzip
-import hashlib
 import http.client
 import io
 import json
 import math
-import os
 from pathlib import Path
 import sys
 import time
@@ -32,14 +31,15 @@ from tools.osm_data.routing import stamp
 SOURCE = 'https://avoinapi.vaylapilvi.fi/vaylatiedot/digiroad/ows'
 LAYER = 'digiroad:dr_liikennemaara'
 AGENT = 'polku-osm-data/1.0 (+https://github.com/TommiContursi/polku-osm-data)'
-BUSY = 800  # vehicles a day: the least Polku draws as a busy road
-ZOOM = 11  # Polku reads the busy roads by zoom-11 tile
+BUSY = 800  # vehicles a day
+ZOOM = 11
 PAGE, PAUSE, BACK_OFF = 5000, 5, 300  # features a request, and seconds between pages and before the one retry
 FOLDER, ARCHIVE = 'polku-digiroad', 'traffic.pmtiles'
-ATTRIBUTION = 'Traffic volumes: Digiroad, © Väylävirasto, CC BY 4.0'
+ATTRIBUTION = 'Traffic volumes: © Fintraffic / Digiroad, from Väylävirasto\'s open data, CC BY 4.0'
 LICENSE = 'CC BY 4.0'
-LICENSE_TEXT = f'''Traffic volumes from Digiroad, © Väylävirasto (the Finnish Transport Infrastructure Agency), licensed under
-Creative Commons Attribution 4.0 International: https://creativecommons.org/licenses/by/4.0/
+LICENSE_TEXT = f'''Traffic volumes from Digiroad, © Fintraffic, from the open data of Väylävirasto (the Finnish Transport
+Infrastructure Agency), licensed under Creative Commons Attribution 4.0 International:
+https://creativecommons.org/licenses/by/4.0/
 
 Source: {SOURCE}, layer {LAYER}. Changed: only roads of {BUSY} or more vehicles a day, coordinates rounded to six
 decimal places without heights, and cut into map tiles.
@@ -49,7 +49,7 @@ decimal places without heights, and cut into map tiles.
 def page(start, sleep=time.sleep):
     """One page of busy roads from start, in WGS84, ordered by ID so the pages don't overlap."""
     query = urlencode({'service': 'WFS', 'version': '2.0.0', 'request': 'GetFeature', 'typeNames': LAYER,
-                       'outputFormat': 'application/json', 'srsName': 'EPSG:4326', 'propertyName': 'arvo,geom',
+                       'outputFormat': 'application/json', 'srsName': 'EPSG:4326', 'propertyName': 'arvo,geom,muokkauspv',
                        'sortBy': 'id', 'cql_filter': f'arvo>={BUSY}', 'count': PAGE, 'startIndex': start})
     for attempt in (1, 2):
         try:
@@ -64,36 +64,41 @@ def page(start, sleep=time.sleep):
 
 
 def fetch(sleep=time.sleep):
-    """Every busy road, {id: feature}, and when the WFS served them. The count must be the WFS's own."""
-    roads, matched, served = {}, None, None
+    """Every busy road, {id: feature}, and the newest edit among them: the data's own time. The count must be the WFS's
+    own."""
+    roads, matched, edited = {}, None, []
     while matched is None or len(roads) < matched:
         if matched is not None:
             sleep(PAUSE)
         body = page(len(roads), sleep)
-        require(type(body.get('numberMatched')) is int and matched in (None, body['numberMatched'])
-                and isinstance(body.get('timeStamp'), str), 'Digiroad changed its count during the fetch, or has no time')
-        matched, served = body['numberMatched'], served or body.get('timeStamp')
+        require(type(body.get('numberMatched')) is int and matched in (None, body['numberMatched']),
+                'Digiroad changed its count during the fetch')
+        matched = body['numberMatched']
         require(body.get('features'), f'Digiroad gave {len(roads)} of {matched} busy roads')
         for feature in body['features']:
-            geometry, aadt = feature.get('geometry') or {}, feature.get('properties', {}).get('arvo')
+            properties = feature.get('properties', {})
+            geometry, aadt = feature.get('geometry') or {}, properties.get('arvo')
             require(type(aadt) is int and aadt >= BUSY and geometry.get('type') in {'LineString', 'MultiLineString'},
                     'Unexpected Digiroad feature ' + str(feature.get('id')))
+            if properties.get('muokkauspv'):  # Finnish time, as Digiroad writes it: 31.10.2020 13:48:30
+                edited.append(datetime.strptime(properties['muokkauspv'], '%d.%m.%Y %H:%M:%S'))
             lines = [geometry['coordinates']] if geometry['type'] == 'LineString' else geometry['coordinates']
             road = int(feature['id'].rpartition('.')[2])
             require(road not in roads, f'Digiroad repeated road {road}')
             roads[road] = {'id': road, 'aadt': aadt,
                            'lines': [[[round(p[0], 6), round(p[1], 6)] for p in line] for line in lines]}
     require(len(roads) == matched, f'Digiroad gave {len(roads)} of {matched} busy roads')
-    return roads, served
+    require(edited, 'Digiroad gave no edit times')
+    return roads, stamp(max(edited).replace(tzinfo=ZoneInfo('Europe/Helsinki')))
 
 
-def tile_range(lon, lat):
+def tile_of(lon, lat):
     side = 1 << ZOOM
     y = (1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * side
     return min(side - 1, int((lon + 180) / 360 * side)), min(side - 1, int(y))
 
 
-def build(roads, served, output, now=None):
+def build(roads, edited, output, now=None):
     """The release: the archive, LICENSE.txt and a manifest as the OSM data's, so publish.py uploads it. Each road goes
     into every tile its extent touches, whole."""
     now = now or datetime.now(timezone.utc)
@@ -103,20 +108,20 @@ def build(roads, served, output, now=None):
     for road in roads.values():
         points = [p for line in road['lines'] for p in line]
         extent = [min(p[0] for p in points), min(p[1] for p in points), max(p[0] for p in points), max(p[1] for p in points)]
-        (x0, y1), (x1, y0) = tile_range(*extent[:2]), tile_range(*extent[2:])
+        (x0, y1), (x1, y0) = tile_of(*extent[:2]), tile_of(*extent[2:])
         for x in range(x0, x1 + 1):
             for y in range(y0, y1 + 1):
                 tiles.setdefault(zxy_to_tileid(ZOOM, x, y), []).append(road)
         extents.append(extent)
     bounds = [min(e[0] for e in extents), min(e[1] for e in extents), max(e[2] for e in extents), max(e[3] for e in extents)]
-    source = {'url': SOURCE, 'layer': LAYER, 'filter': f'arvo>={BUSY}', 'timestamp': served}
+    source = {'url': SOURCE, 'layer': LAYER, 'filter': f'arvo>={BUSY}', 'timestamp': edited}
     output.mkdir(parents=True)
     with (output / ARCHIVE).open('wb') as stream:
         writer = Writer(stream)
         for tile in sorted(tiles):
             elements = sorted(tiles[tile], key=lambda road: road['id'])
             raw = json.dumps({'schema': 1, 'elements': elements}, separators=(',', ':')).encode()
-            require(len(raw) <= 32 * 1024 * 1024, 'Tile over the browser limit')  # Polku's reader refuses larger ones
+            require(len(raw) <= 32 * 1024 * 1024, 'Tile over the browser limit')  # as the OSM builder's
             writer.write_tile(tile, gzip.compress(raw, 6, mtime=0))
         writer.finalize({'tile_type': TileType.UNKNOWN, 'tile_compression': Compression.GZIP,
                          'min_lon_e7': round(bounds[0] * 1e7), 'min_lat_e7': round(bounds[1] * 1e7),
@@ -154,7 +159,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('build', help='fetch the busy roads and write the release').add_argument('output', type=Path)
-    commands.add_parser('upload', help='upload the release as the candidate, in cells').add_argument('directory', type=Path)
+    commands.add_parser('upload', help='upload the release as the candidate (in cells with OSM_CELLS=true)').add_argument('directory', type=Path)
     commands.add_parser('install-hosting')
     args = parser.parse_args()
     try:
@@ -162,7 +167,6 @@ def main():
             manifest = build(*fetch(), args.output)
             print(json.dumps({'release': manifest['release'], **manifest['datasets']['traffic']}))
         elif args.command == 'upload':
-            os.environ['OSM_CELLS'] = 'true'  # from its first release: only the cells that changed go up
             publish.upload(args.directory, folder=FOLDER)
         else:
             install_hosting()

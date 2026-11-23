@@ -2,8 +2,7 @@ name: Polku Digiroad traffic volumes
 run-name: Digiroad / ${{ inputs.operation }}
 
 # Copies Digiroad's busy roads, by hand, into PMTiles and uploads a candidate in cells. Its source stopped updating on
-# 2026-09-18, so the copy runs again only when a newer source exists.
-# Its tests run with the others in osm-data.yml.
+# 2026-09-18, so the copy runs again only when a newer source exists. Its tests run with the others in osm-data.yml.
 on:
   workflow_dispatch:
     inputs:
@@ -65,6 +64,7 @@ jobs:
       - name: Upload the release in cells and name the candidate
         env:
           OSM_ALLOW_PUBLISH: 'true'
+          OSM_CELLS: 'true'
           OSM_FTP_HOST: ${{ secrets.OSM_FTP_HOST }}
           OSM_FTP_USER: ${{ secrets.OSM_FTP_USER }}
           OSM_FTP_PASSWORD: ${{ secrets.OSM_FTP_PASSWORD }}

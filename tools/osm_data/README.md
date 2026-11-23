@@ -300,14 +300,16 @@ the same way, in cells among the shared files, into `polku-digiroad/` (Shared fi
 {"schema": 1, "release": "20261123T173225Z-36716f407dc9", "built_at": "2026-11-23T17:32:25Z",
  "source": {"url": "https://avoinapi.vaylapilvi.fi/vaylatiedot/digiroad/ows", "layer": "digiroad:dr_liikennemaara",
             "filter": "arvo>=800", "timestamp": "2026-11-23T17:29:47.400Z"},
- "bounds": [21.174094, 59.843474, 31.005393, 69.907816], "attribution": "Traffic volumes: Digiroad, © Väylävirasto, CC BY 4.0",
+ "bounds": [21.174094, 59.843474, 31.005393, 69.907816],
+ "attribution": "Traffic volumes: © Fintraffic / Digiroad, from Väylävirasto's open data, CC BY 4.0",
  "license": "CC BY 4.0",
  "datasets": {"traffic": {"format": "pmtiles-json", "schema": 1, "zoom": 11, "url": "traffic.pmtiles", "bytes": 9492956,
                           "sha256": "…", "tiles": 1904, "features": 117061}},
  "files": [{"path": "traffic.pmtiles", …}, {"path": "LICENSE.txt", …}]}
 ```
 
-`source.timestamp` is when the WFS served the first page. Each zoom-11 tile is gzipped JSON,
+`source.timestamp` is the newest edit among the roads (Digiroad's `muokkauspv`, in Finnish time), so it says how old
+the data is, not when it was copied. Each zoom-11 tile is gzipped JSON,
 `{"schema": 1, "elements": [{"id": 104141443, "aadt": 10550, "lines": [[[23.62121, 60.813286], …]]}]}`: every road of
 800 or more vehicles a day (`aadt`) whose extent touches the tile, whole, ordered by Digiroad's ID. `lines` holds its
 line strings in WGS84, rounded to six decimal places, without heights.
