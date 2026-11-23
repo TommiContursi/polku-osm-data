@@ -32,6 +32,8 @@ BLOCK = 4096
 MAX_JSON = 2 * 1024 * 1024
 SHARED = 'files'  # every release's files, named by their SHA-256, shared by the releases that name them
 SHARED_NAME = re.compile(r'[a-f0-9]{64}(\.[A-Za-z0-9]{1,16})?\Z')
+CELLS = 'pmtiles-json-cells'  # a dataset whose url is the index of its cells, not one archive
+INDEX = '.cells.json'  # an archive's index takes its name, with this suffix for .pmtiles
 
 
 def require(ok, message):
@@ -89,7 +91,7 @@ def validate(manifest, pointed=False):
     for dataset in manifest['datasets'].values():
         url = dataset.get('url')
         entry = isinstance(url, str) and urls.get(url)
-        require(entry and url.endswith('.pmtiles'), 'Unsafe dataset URL')
+        require(entry and url.endswith('.json' if dataset.get('format') == CELLS else '.pmtiles'), 'Unsafe dataset URL')
         require(entry['bytes'] == dataset.get('bytes') and entry['sha256'] == dataset.get('sha256') and entry['bytes'] > 0,
                 'Dataset and file integrity disagree')
     return manifest
@@ -102,6 +104,57 @@ def current(manifest):
         if 'url' in entry:
             entry['url'] = posixpath.normpath(f"releases/{result['release']}/{entry['url']}")
     return result
+
+
+def cut(directory, manifest):
+    """With OSM_CELLS: each archive replaced by the index of its cells, <name>.cells.json, written beside it."""
+    from tools.osm_data import cells  # PMTiles is needed only to cut; the checks run on the standard library
+    result = json.loads(json.dumps(manifest))
+    files = {f['path']: f for f in result['files']}
+    for dataset in result['datasets'].values():
+        archive = dataset['url']
+        print(f'Cut {archive} into cells', flush=True)
+        body = cells.encoded(cells.index(directory / archive))
+        path = archive.removesuffix('.pmtiles') + INDEX
+        (directory / path).write_bytes(body)
+        files[archive] = {'path': path, 'bytes': len(body), 'sha256': hashlib.sha256(body).hexdigest()}
+        dataset.update(url=path, bytes=len(body), sha256=files[archive]['sha256'], format=CELLS)
+    result['files'] = list(files.values())
+    return result
+
+
+def cells_of(index_body, entry):
+    """The cells an index names, as shared entries; the index must be the one its manifest names."""
+    require(len(index_body) == entry['bytes'] and hashlib.sha256(index_body).hexdigest() == entry['sha256'],
+            'Cell index differs from its manifest: ' + entry['path'])
+    index = json.loads(index_body)
+    require(index.get('schema') == 1 and type(index.get('zoom')) is int and isinstance(index.get('cells'), list)
+            and index['cells'], 'Invalid cell index: ' + entry['path'])
+    result = []
+    for row in index['cells']:
+        require(isinstance(row, list) and len(row) == 5 and all(type(v) is int for v in row[:4]) and row[3] > 0
+                and isinstance(row[4], str) and re.fullmatch('[a-f0-9]{64}', row[4]), 'Invalid cell: ' + entry['path'])
+        result.append(share({'path': row[4] + '.pmtiles', 'bytes': row[3], 'sha256': row[4]}))
+    return result
+
+
+def indexes(manifest):
+    """The manifest's cell indexes, as its file entries."""
+    urls = {dataset['url'] for dataset in manifest['datasets'].values() if dataset.get('format') == CELLS}
+    return [f for f in manifest['files'] if f.get('url', f['path']) in urls]
+
+
+def index_entry(dataset):
+    """A cells dataset's index as a file entry."""
+    return {'path': dataset['url'], 'bytes': dataset['bytes'], 'sha256': dataset['sha256']}
+
+
+def hosted_cells(ftp, manifest, present=None):
+    """Every cell the manifest's indexes on the host name. Given present, an index not among them names none."""
+    for f in indexes(manifest):
+        path = place(manifest['release'], f)
+        if present is None or path in present:
+            yield from cells_of(retrieve(ftp, path), f)
 
 
 def shared_manifest(manifest):
@@ -128,6 +181,10 @@ def settings():
     return host, user, password, root, public_url(url), fingerprint
 
 
+def kind_of(mode):
+    return 'directory' if stat.S_ISDIR(mode) else 'file' if stat.S_ISREG(mode) else 'other'
+
+
 class SFTPFiles:
     """Small FTP-like file-operation facade; all transfers are SSH-encrypted."""
     def __init__(self, transport, sftp):
@@ -146,8 +203,11 @@ class SFTPFiles:
         return self.sftp.stat(path).st_size
 
     def kind(self, path):
-        mode = self.sftp.lstat(path).st_mode
-        return 'directory' if stat.S_ISDIR(mode) else 'file' if stat.S_ISREG(mode) else 'other'
+        return kind_of(self.sftp.lstat(path).st_mode)
+
+    def attributes(self, path='.'):
+        """{name: (kind, size)} for a folder, in one request rather than two per entry."""
+        return {a.filename: (kind_of(a.st_mode), a.st_size) for a in self.sftp.listdir_attr(path)}
 
     def remove(self, path):
         return self.sftp.remove(path)
@@ -302,6 +362,8 @@ def verify_remote(ftp, base, manifest, raw):
     for f in manifest['files']:
         path = place(manifest['release'], f)
         samples[path] = verify_file(ftp, path if 'url' in f else f"{base}/{f['path']}", f)
+    for entry in hosted_cells(ftp, manifest):
+        verify_file(ftp, place(manifest['release'], entry), entry)
     verify_manifest(ftp, base, raw)
     return samples
 
@@ -341,15 +403,20 @@ def get(url, byte_range=None, immutable=False, encoding='gzip, br'):
 
 
 def probe(url, manifest, raw, samples=None):
-    """The public manifest, and each archive's Range reads; compared with the bytes just hashed, where there are any."""
+    """The public manifest, and each archive's Range reads (or, for cells, the index and its first, middle and last
+    cells); compared with the bytes just hashed, where there are any."""
     require(get(f"{url}/releases/{manifest['release']}/manifest.json", immutable=True) == raw, 'Public manifest differs')
     for dataset in current(manifest)['datasets'].values():
-        path, size = dataset['url'], dataset['bytes']
-        for start, end in offsets(size):
-            for encoding in ('identity', 'gzip, br'):
-                body = get(f'{url}/{path}', (start, end, size), True, encoding)
-                if samples and path in samples:
-                    require(body == samples[path][start], 'Public archive bytes differ')
+        reads = [(dataset['url'], dataset['bytes'])]
+        if dataset.get('format') == CELLS:
+            rows = cells_of(get(f"{url}/{dataset['url']}", immutable=True), index_entry(dataset))
+            reads = [(shared_path(rows[i]), rows[i]['bytes']) for i in sorted({0, len(rows) // 2, len(rows) - 1})]
+        for path, size in reads:
+            for start, end in offsets(size):
+                for encoding in ('identity', 'gzip, br'):
+                    body = get(f'{url}/{path}', (start, end, size), True, encoding)
+                    if samples and path in samples:
+                        require(body == samples[path][start], 'Public archive bytes differ')
 
 
 def replace_pointer(ftp, raw, path='current.json'):
@@ -447,10 +514,11 @@ def recovery_candidates(ftp, release):
 
 def hosted(directory):
     """The local release's manifest as the host gets it, and its bytes: with OSM_SHARED_FILES its files go among the
-    shared files."""
+    shared files, and with OSM_CELLS (which shares them too) each archive goes as its cells."""
     raw, manifest = local_release(directory)
-    if os.environ.get('OSM_SHARED_FILES') == 'true':
-        manifest = validate(shared_manifest(manifest))
+    in_cells = os.environ.get('OSM_CELLS') == 'true'
+    if in_cells or os.environ.get('OSM_SHARED_FILES') == 'true':
+        manifest = validate(shared_manifest(cut(directory, manifest) if in_cells else manifest))
         raw = json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode()
     return raw, manifest
 
@@ -480,7 +548,8 @@ def resume_upload(ftp, base, directory, manifest, raw, send):
     require(ftp.kind(base) == 'directory', 'Resume needs a real directory, not a symlink')
     names = {posixpath.basename(p) for p in ftp.nlst(base)}
     record = {f['path']: f['bytes'] for f in manifest['files']} | {'manifest.json': len(raw)}
-    require(names <= record.keys() | {maintenance.UPLOAD}, 'Unexpected files in staging directory')
+    staged_cells = {name for name in names if SHARED_NAME.fullmatch(name)}  # made again from the archive, sent whole
+    require(names - staged_cells <= record.keys() | {maintenance.UPLOAD}, 'Unexpected files in staging directory')
     if maintenance.UPLOAD in names:
         marker, _ = maintenance.upload_record(ftp, base, manifest['release'], datetime.now(timezone.utc))
         require(marker['files'] == record, 'Upload receipt differs from local release')
@@ -506,7 +575,7 @@ def resume_upload(ftp, base, directory, manifest, raw, send):
                 ftp.retrbinary('RETR ' + path, compare)
                 require(body.tell() == actual, 'Staged file prefix size changed')
     for name in names - expected.keys() - {maintenance.UPLOAD}:
-        print(f'Remove staged {base}/{name}: the shared files hold it already', flush=True)
+        print(f'Remove staged {base}/{name}: the shared files hold it, or it is a cell made and sent again', flush=True)
         ftp.remove(base + '/' + name)
     for name, size in expected.items():
         actual = sizes.get(name)
@@ -541,8 +610,19 @@ def upload(directory, resume=False):
                 send[f['path']] = f['bytes']
                 sending.add(places[f['path']])
         print(f'Send {len(send)} of {len(places)} files; the shared files hold the rest', flush=True)
+        send_cells = {}  # each cell the shared files lack, by its place, once
+        for f in indexes(manifest):
+            for entry in cells_of((directory / f['path']).read_bytes(), f):
+                if place(release, entry) not in sending:
+                    send_cells[place(release, entry)] = entry
+                    sending.add(place(release, entry))
+        if indexes(manifest):
+            print(f'Send {len(send_cells)} cells; the shared files hold the rest', flush=True)
+        # Retention keeps all this release names, though its new indexes aren't on the host yet
+        naming = set(places.values()) | {place(release, entry) for f in indexes(manifest)
+                                         for entry in cells_of((directory / f['path']).read_bytes(), f)}
         expected = send | {'manifest.json': len(raw)}
-        incoming = sum(expected.values())
+        incoming = sum(expected.values()) + sum(entry['bytes'] for entry in send_cells.values())
         if resume:
             candidates = recovery_candidates(ftp, release)
             require(final in candidates or len(candidates) == 1, 'Resume needs exactly one existing stage; inspect before proceeding')
@@ -551,9 +631,9 @@ def upload(directory, resume=False):
             names = maintenance.children(ftp, stage)
             require(all(ftp.kind(stage + '/' + name) == 'file' for name in names), 'Resume needs regular files')
             incoming = sum(max(0, size - ftp.size(stage + '/' + name)) if name in names else size
-                           for name, size in expected.items())
+                           for name, size in expected.items()) + sum(entry['bytes'] for entry in send_cells.values())
         if previous is not None:
-            retention = maintenance.prune(ftp, apply=True, incoming_bytes=incoming, incoming=manifest)
+            retention = maintenance.prune(ftp, apply=True, incoming_bytes=incoming, incoming=manifest, incoming_files=naming)
             print(json.dumps(retention, sort_keys=True), flush=True)
         else:
             require(maintenance.usage(ftp) + incoming + 4096 <= maintenance.BUDGET, 'OSM storage budget exceeded')
@@ -581,6 +661,20 @@ def upload(directory, resume=False):
             samples[target] = verify_file(ftp, staged, f)
             if target != f"{final}/{f['path']}":
                 move_shared(ftp, staged, target)
+        for f in indexes(manifest):  # each archive cut again, the same way; only its missing cells go up
+            if not any(place(release, entry) in send_cells for entry in cells_of((directory / f['path']).read_bytes(), f)):
+                continue
+            from tools.osm_data import cells
+            for _, data in cells.cells(directory / (f['path'].removesuffix(INDEX) + '.pmtiles')):
+                digest = hashlib.sha256(data).hexdigest()
+                entry = share({'path': digest + '.pmtiles', 'bytes': len(data), 'sha256': digest})
+                if send_cells.pop(place(release, entry), None) is None:
+                    continue
+                staged = f"{stage}/{entry['path']}"
+                ftp.storbinary('STOR ' + staged, io.BytesIO(data))
+                verify_file(ftp, staged, entry)
+                move_shared(ftp, staged, place(release, entry))
+        require(not send_cells, 'Cells missing from the cut: ' + ', '.join(sorted(send_cells)[:3]))
         verify_manifest(ftp, stage, raw)
         if stage != final:
             if 'releases' not in {posixpath.basename(p) for p in ftp.nlst()}:
@@ -595,7 +689,8 @@ def upload(directory, resume=False):
         replace_pointer(ftp, raw, 'candidates/current.json')
         require(get(config[-2] + '/candidates/current.json') == raw, 'Public candidate pointer differs')
         if previous is not None:
-            print(json.dumps(maintenance.prune(ftp, apply=True, incoming=manifest), sort_keys=True), flush=True)
+            print(json.dumps(maintenance.prune(ftp, apply=True, incoming=manifest, incoming_files=naming), sort_keys=True),
+                  flush=True)
         print(f'Candidate {release}: {config[-2]}/{final}/manifest.json', flush=True)
 
 
@@ -641,6 +736,8 @@ def promote_candidate(release, sha256, directory):
         for f in manifest['files']:
             if 'url' in f:
                 require(have.get(place(release, f)) == f['bytes'], 'Shared file is missing or differs: ' + f['path'])
+        for entry in hosted_cells(ftp, manifest):
+            require(have.get(place(release, entry)) == entry['bytes'], 'Cell is missing or differs: ' + entry['path'])
         live = json.loads(previous) if previous else None
         if not live or live['release'] != release:
             require(not live or manifest['built_at'] > live['built_at'], 'Candidate is not newer than the live release')

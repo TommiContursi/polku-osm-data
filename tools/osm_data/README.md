@@ -222,6 +222,32 @@ The separate candidate concurrency group keeps the experiment independent of
 live checks and weekly country updates. The same-epoch reference, area
 completeness, size and publication checks remain.
 
+## Cells
+
+With `OSM_CELLS` each archive is uploaded as cells (`cells.py`). A quadtree
+splits the archive's tiles from the whole world down, a quadrant at a time,
+until each quadrant holds at most 1 MiB (a tile stored once counts once) or is
+a single tile. Each quadrant is a cell: a plain PMTiles file of its tiles,
+unchanged, at the archive's zoom, type and compression. Its header bounds are
+the quadrant's, and its metadata only the archive's `name`, `format`,
+`schema`, `attribution` and `license`. So a cell's bytes depend only on its
+tiles and its quadrant, and it keeps its name while they don't change. The
+cut checks that the cells give back every tile of the archive.
+
+The dataset's `format` is then `pmtiles-json-cells`, and its `url`, `bytes` and
+`sha256` are those of its index, `<name>.cells.json`, among the shared files:
+
+```json
+{"schema": 1, "zoom": 14, "cells": [[9, 290, 140, 812345, "<sha256>"], …]}
+```
+
+Each row is a cell's quadrant `z, x, y`, its bytes and its SHA-256. The cell
+lies beside the index, as `<sha256>.pmtiles`. A tile `zoom/x/y` is in the cell
+whose quadrant is `z/(x >> (zoom - z))/(y >> (zoom - z))` for some `z`; a tile
+in no cell is empty, as in an archive. Every other field of the dataset is as
+before. `tools/fixtures/osm-geometry-cells/` is the cut of
+`osm-geometry.pmtiles` at a 4 KiB target.
+
 ## Routing data
 
 `routing.py` mirrors brouter.de's squares (docs/OPERATIONS.md). Each release is `polku-routing/releases/<release>/`,

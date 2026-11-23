@@ -64,6 +64,14 @@ is hashed in full in the staging folder before it moves to `files/`. A file that
 its URL from release to release. Turn it on only once Polku's promotion is pinned to a commit that
 reads this layout: older code refuses such a candidate and changes nothing.
 
+**Cells.** With `OSM_CELLS` set to `true` (it shares the files too), the upload cuts each archive into
+cells of at most 1 MiB and writes their index, `<name>.cells.json`, beside the archive. The index goes
+up in the archive's place, and a cell goes to `files/` only when `files/` doesn't hold it yet: about a
+quarter of the bytes in a week (measured 2–8 Nov 2026). The cut takes some 15 minutes, and the first
+upload of cells sends every cell once; if it runs out of time, **resume-existing** goes on. Turn it on
+only once Polku's reader reads cells and its promotion is pinned to a commit that does: older readers
+don't accept the format.
+
 An interrupted upload is never started again from nothing. **inspect-existing**, with the
 build's run ID in **release**, reports the staged files' sizes without changing the host.
 **resume-existing** then reuses the release if it was already renamed, or exactly one
@@ -113,8 +121,9 @@ its reader.
 **check**, daily at 07:17 UTC and by hand, needs only Python's standard library: the live
 source at most 14 days old, the pointer equal to its immutable manifest, `current.json`
 revalidated (never immutable or fresh without revalidation), and Range reads of every
-archive. Polku's weekly job checks the live release in a browser: 16 places in a desktop and
-an emulated phone profile, with Overpass forbidden, every archive of the manifest read, and
+archive (of a dataset in cells: its index and its first, middle and last cells). Polku's
+weekly job checks the live release in a browser: 16 places in a desktop and an emulated phone
+profile, with Overpass forbidden, every archive of the manifest read, and
 six lake and park cases when the release has area geometry.
 
 `osm-data-alerts.yml` handles only this repository's scheduled and manual runs on `main`. It
@@ -131,9 +140,11 @@ can't go unnoticed for long; re-enable the workflows here when it happens.
 Before an upload, `maintenance.py` removes only files it owns. It keeps the live release, its
 saved predecessor (for rollback) and the candidate. An upload keeps the candidate it replaces
 until `candidates/current.json` names the new one, then removes it. `files/` is the publisher's own: a
-file there goes once nothing that stays names it, neither a release, a stopped upload's staging nor the
-upload under way. They all stay while a release that stays has no manifest; a corrupt manifest, or any
-other name in `files/`, stops retention. Interrupted staging is kept 7 days.
+file there goes once nothing that stays names it, neither a release (directly, or through a cell
+index), a stopped upload's staging nor the upload under way. They all stay while a release that stays
+has no manifest; a corrupt manifest, a missing index, or any other name in `files/`, stops retention.
+A stopped upload's staging may hold a cell on its way, named by its SHA-256; it goes with the
+staging. Interrupted staging is kept 7 days.
 Unmarked releases and unknown files are never deleted. Receipts live in
 `maintenance/`. The whole deletion plan must validate before anything is removed; unsafe
 paths, symlinks, unexpected files, a changed pointer or corrupt ownership records stop it,

@@ -207,6 +207,8 @@ class MaintenanceTests(unittest.TestCase):
         self.host.files[ROOT + '/' + moved] = ARCHIVE
         plan = maintenance.prune(self.ftp, now=NOW)
         self.assertEqual((stray in plan['delete'], moved in plan['delete']), (True, False))
+        self.assertNotIn(stray, maintenance.prune(self.ftp, now=NOW, incoming_files={stray})['delete'],
+                         "a cell the upload under way names stays, though its index isn't up yet")
         del self.host.files[ROOT + '/' + stray]
         # A release that stays without a manifest to read keeps every shared file; anything else among them stops it
         self.host.dirs.add(ROOT + '/releases/unknown')

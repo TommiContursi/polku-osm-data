@@ -23,7 +23,9 @@ is not open source: see [LICENSE](LICENSE). The data keeps OpenStreetMap's licen
    `releases/<release>/`, reads every file it sends back to check its SHA-256, checks the public
    Range, CORS and cache headers, and names it in `candidates/current.json`. The live
    `current.json` is not touched. With `OSM_SHARED_FILES` set to `true`, the files go in `files/`,
-   named by their SHA-256, and only those the host doesn't hold yet are sent.
+   named by their SHA-256, and only those the host doesn't hold yet are sent. With `OSM_CELLS`,
+   each archive goes as cells of at most 1 MiB and an index of them, so a week sends only the
+   cells that changed.
 3. **Polku's own weekly job** finds the candidate (`publish.py candidate`), runs the app's
    checks against it in a browser, and promotes it with Polku's credentials in a job that holds
    only this repository's code at a pinned commit (`publish.py promote`). A job without

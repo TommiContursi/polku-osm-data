@@ -11,12 +11,16 @@ from tools.osm_data import publish as p
 
 BUDGET = 80 * 1024**3
 UPLOAD = '_upload.json'
+STAGED_CELL = 16 * 1024**2  # a cell holds at most 1 MiB, or one tile of at most 8 MiB
+
+
+def safe(name):
+    return name not in {'', '.', '..'} and '/' not in name and '\\' not in name and not any(ord(c)<32 for c in name)
 
 
 def children(ftp, base='.'):
     names = [posixpath.basename(name) for name in ftp.nlst(base)]
-    p.require(all(name not in {'', '.', '..'} and '/' not in name and '\\' not in name
-                  and not any(ord(c)<32 for c in name) for name in names), 'Unsafe maintenance path')
+    p.require(all(safe(name) for name in names), 'Unsafe maintenance path')
     return sorted(names)
 
 
@@ -85,11 +89,11 @@ def mark_upload(ftp, stage, manifest, raw, now=None):
 def usage(ftp, base='.', depth=0):
     p.require(depth<=4, 'Unexpected nested maintenance content')
     total=0
-    for name in children(ftp, base):
+    for name,(kind,size) in ftp.attributes(base).items():
         path=name if base=='.' else base+'/'+name
-        kind=ftp.kind(path)
+        p.require(safe(name), 'Unsafe maintenance path')
         p.require(kind in {'file','directory'}, 'Maintenance needs regular files and real directories (no symlinks)')
-        total += ftp.size(path) if kind=='file' else usage(ftp,path,depth+1)
+        total += size if kind=='file' else usage(ftp,path,depth+1)
     return total
 
 
@@ -115,21 +119,28 @@ def shared_files(ftp):
     if p.SHARED not in children(ftp): return {}
     p.require(ftp.kind(p.SHARED)=='directory', 'Shared files need a real directory')
     result={}
-    for name in children(ftp,p.SHARED):
+    for name,(kind,size) in ftp.attributes(p.SHARED).items():
         path=p.SHARED+'/'+name
-        p.require(p.SHARED_NAME.fullmatch(name) and ftp.kind(path)=='file', 'Unexpected shared file '+path)
-        result[path]=ftp.size(path)
+        p.require(p.SHARED_NAME.fullmatch(name) and kind=='file', 'Unexpected shared file '+path)
+        result[path]=size
     return result
 
 
-def named_by(ftp, base, release):
-    """The shared files the manifest in a release's folder (or staging) names, or None when it has none; a corrupt one
-    stops the run."""
+def shared_named(ftp, release, manifest, have=None):
+    """The shared files a manifest names, the cells of its indexes among them. Given have, an index the shared files
+    don't hold yet names nothing: its cells go up after it."""
+    return ({p.place(release,f) for f in manifest['files'] if 'url' in f}
+            | {p.place(release,c) for c in p.hosted_cells(ftp,manifest,have)})
+
+
+def named_by(ftp, base, release, have=None):
+    """The shared files the manifest in a release's folder (or staging) names, or None when it has none; a corrupt one,
+    or a missing index of a release, stops the run."""
     if 'manifest.json' not in children(ftp,base): return None
     p.require(ftp.kind(base+'/manifest.json')=='file','Release manifest needs a regular file')
     m=p.validate(json.loads(p.retrieve(ftp,base+'/manifest.json')))
     p.require(m['release']==release,'Release manifest differs from its folder')
-    return {p.place(release,f) for f in m['files'] if 'url' in f}
+    return shared_named(ftp,release,m,have)
 
 
 def validate_files(ftp,base,expected,partial=False):
@@ -145,8 +156,9 @@ def validate_files(ftp,base,expected,partial=False):
 
 
 
-def prune(ftp, apply=False, incoming_bytes=0, now=None, incoming=None):
-    """incoming is the manifest an upload is putting on the host: its release and the shared files it names stay."""
+def prune(ftp, apply=False, incoming_bytes=0, now=None, incoming=None, incoming_files=()):
+    """incoming is the manifest an upload is putting on the host, and incoming_files all the shared files it names,
+    cells too: they all stay."""
     now=now or datetime.now(timezone.utc)
     p.require(type(incoming_bytes) is int and incoming_bytes>=0,'Invalid incoming byte budget')
     incoming_release=incoming and p.validate(incoming)['release']
@@ -233,9 +245,11 @@ def prune(ftp, apply=False, incoming_bytes=0, now=None, incoming=None):
             if 'manifest.json' in children(ftp,stage) and ftp.size(stage+'/manifest.json')==record['files']['manifest.json']:
                 staged.append((stage,match[1]))
             continue
-        remove[stage]=validate_files(ftp,stage,record['files'] | {UPLOAD:ftp.size(stage+'/'+UPLOAD)},partial=True)
+        cells={name:STAGED_CELL for name in children(ftp,stage) if p.SHARED_NAME.fullmatch(name)}  # on its way
+        remove[stage]=validate_files(ftp,stage,record['files'] | cells | {UPLOAD:ftp.size(stage+'/'+UPLOAD)},partial=True)
     # A shared file goes once no release or staging that stays, nor the incoming upload, names it; only when every
     # release that stays can be read
+    have=shared_files(ftp)
     kept_files,sweep=set(),live['release'] in records
     for release in releases:
         if 'releases/'+release in remove: continue
@@ -243,9 +257,10 @@ def prune(ftp, apply=False, incoming_bytes=0, now=None, incoming=None):
         sweep=sweep and found is not None
         kept_files|=found or set()
     for stage,release in staged:  # a stopped upload kept 7 days keeps what it moved among the shared files
-        kept_files|=named_by(ftp,stage,release)
-    kept_files|={p.place(incoming_release,f) for f in (incoming or {}).get('files',[]) if 'url' in f}
-    for path,size in shared_files(ftp).items():
+        kept_files|=named_by(ftp,stage,release,have) or set()
+    kept_files|=set(incoming_files)
+    if incoming: kept_files|=shared_named(ftp,incoming_release,incoming,have)
+    for path,size in have.items():
         if path in kept_files: continue
         if sweep: remove[path]=size
         else: keep[p.SHARED]='a release that stays has no manifest to read, or the live receipt is unavailable'
