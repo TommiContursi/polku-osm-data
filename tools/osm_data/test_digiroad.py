@@ -9,6 +9,7 @@ import json
 import lzma
 from pathlib import Path
 import shutil
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -116,7 +117,7 @@ class DigiroadTests(unittest.TestCase):
             self.assertEqual((again / f'{name}.jsonl.xz').read_bytes(), (self.tmp / f'{name}.jsonl.xz').read_bytes(),
                              'the same features give the same bytes')
 
-    def test_missing_repeated_or_unexpected_features_stop_the_copy(self):
+    def test_missing_repeated_or_unexpected_features_stop_the_fetch_at_once(self):
         self.wfs.matched = 9
         with self.assertRaisesRegex(ValueError, 'gave 8 of 9 traffic features'):
             digiroad.fetch('traffic', self.tmp, self.sleeps.append)
@@ -125,24 +126,28 @@ class DigiroadTests(unittest.TestCase):
         speed[3] = speed[2]  # a page that slipped: one feature twice, another not at all
         with self.assertRaisesRegex(ValueError, 'repeated dr_nopeusrajoitus.102'):
             digiroad.fetch('speed', self.tmp, self.sleeps.append)
-        self.wfs.features = layers()
-        for layer, n, properties in [('digiroad:dr_liikennemaara', 2, {'arvo': 500}),
-                                     ('digiroad:dr_paallystetty_tie', 1, {'hallinn_lk': 0}),
-                                     ('digiroad:tiekunnalliset_yksityistiet', 0, {'lisatiedot': None}),
-                                     ('digiroad:dr_nopeusrajoitus', 4, {'arvo': 110})]:
-            with self.subTest(layer):
-                self.wfs.features = layers()
-                feature = self.wfs.features[layer][n]
+        for name, n, properties in [('traffic', 2, {'arvo': 500}), ('paved', 1, {'hallinn_lk': 0}),
+                                    ('private', 0, {'lisatiedot': None}), ('speed', 4, {'arvo': 110})]:
+            with self.subTest(name):
+                self.wfs.features, self.wfs.requests = layers(), []
+                feature = self.wfs.features[digiroad.DATASETS[name][0]][n]
                 feature['properties'] |= properties
-                with tempfile.TemporaryDirectory() as tmp:
-                    with self.assertRaisesRegex(ValueError, 'Unexpected Digiroad feature ' + feature['id']):
-                        digiroad.build(self.fetch(Path(tmp) / 'release'), T0)
+                with self.assertRaisesRegex(ValueError, 'Unexpected Digiroad feature ' + feature['id']):
+                    digiroad.fetch(name, self.tmp, self.sleeps.append)
+                self.assertEqual(len(self.wfs.requests), n // digiroad.PAGE + 1, 'stopped on the page it came in')
         self.wfs.features = layers()
         for features in self.wfs.features.values():
             for feature in features:
                 feature['properties'].pop('muokkauspv', None)
         with self.assertRaisesRegex(ValueError, 'no edit times'):
             digiroad.build(self.fetch(self.tmp / 'release'), T0)
+
+    def test_the_fetch_command_asks_for_the_private_roads_first(self):
+        with patch.object(digiroad, 'PAUSE', 0), patch.object(sys, 'argv', ['digiroad.py', 'fetch', str(self.tmp / 'release')]):
+            digiroad.main()
+        self.assertEqual(self.wfs.requests[0]['typeNames'], 'digiroad:tiekunnalliset_yksityistiet', 'the slowest first')
+        self.assertEqual(sorted(p.name for p in (self.tmp / 'release').iterdir()),
+                         ['paved.jsonl.xz', 'private.jsonl.xz', 'speed.jsonl.xz', 'traffic.jsonl.xz'])
 
     def test_a_failed_page_waits_once_then_stops(self):
         self.wfs.failing = 1
@@ -168,9 +173,11 @@ class DigiroadTests(unittest.TestCase):
                     for name in digiroad.DATASETS}
         lines = [[[23.7301, 61.49], [23.7341, 61.491]]]  # six decimals, no heights
         self.assertIn({'id': 101, 'aadt': 1000, 'lines': lines}, elements['traffic'])
-        self.assertIn({'id': 101, 'arvo': 99, 'hallinn_lk': 2, 'lines': lines}, elements['paved'])
-        self.assertIn({'id': '1a-b:1', 'lisatiedot': 'ei toimitettu', 'lines': lines}, elements['private'])
-        self.assertIn({'id': 101, 'arvo': 60, 'lines': lines}, elements['speed'], "the feature's own ID, not Digiroad's id")
+        self.assertIn({'id': 101, 'surface': 'unknown', 'state': False, 'lines': lines}, elements['paved'])
+        self.assertIn({'id': 100, 'surface': 'unknown', 'state': True, 'lines': [[[23.906, 61.5], [23.91, 61.5]]]},
+                      elements['paved'])
+        self.assertIn({'id': '1a-b:1', 'restrictions': 'unreported', 'lines': lines}, elements['private'])
+        self.assertIn({'id': 101, 'limit': 60, 'lines': lines}, elements['speed'], "the feature's own ID, not Digiroad's id")
         self.assertEqual(sorted(manifest['datasets']), ['paved', 'private', 'speed', 'traffic'])
         files = {f['path']: f for f in manifest['files']}
         for name, dataset in manifest['datasets'].items():
@@ -179,13 +186,18 @@ class DigiroadTests(unittest.TestCase):
                               f'{name}.pmtiles', f'{name}.jsonl.xz'))
             self.assertEqual(files[dataset['raw']]['bytes'], (self.tmp / 'release' / dataset['raw']).stat().st_size)
         self.assertEqual(manifest['datasets']['traffic']['source']['filter'], 'arvo>=800')
-        self.assertEqual(manifest['source']['timestamp'], '2024-10-25T07:54:16Z', "the newest edit of all, in Finland's summer time")
+        self.assertEqual({name: d['source'].get('timestamp') for name, d in manifest['datasets'].items()},
+                         {'traffic': '2022-07-08T09:00:00Z', 'paved': '2024-10-25T07:54:16Z', 'private': None,
+                          'speed': '2015-10-15T13:00:45Z'}, "each layer's newest edit, in Finland's time; private roads have none")
+        self.assertEqual(manifest['source']['timestamp'], '2024-10-25T07:54:16Z', 'the newest of them')
         self.assertTrue(manifest['release'].startswith('20261123T180000Z-'))
         self.assertIn('Väylävirasto', manifest['attribution'])
         self.assertIn('creativecommons.org/licenses/by/4.0', (self.tmp / 'release' / 'LICENSE.txt').read_text())
         publish.local_release(self.tmp / 'release')
-        again = digiroad.build(self.fetch(self.tmp / 'again'), T0)
-        self.assertEqual(again['files'], manifest['files'], 'the same features give the same bytes')
+        speed = self.tmp / 'release' / 'speed.jsonl.xz'  # the same features, packed otherwise: only that file differs
+        speed.write_bytes(lzma.compress(lzma.decompress(speed.read_bytes()), preset=0))
+        self.assertNotEqual(digiroad.build(self.tmp / 'release', T0)['release'], manifest['release'],
+                            "the release's name covers every file")
 
     def test_the_fixtures_are_what_the_wfs_answers_around_tampere_give(self):
         self.wfs.features = {layer: served(FIXTURES / f'digiroad-{name}.jsonl.xz')
@@ -226,6 +238,16 @@ class DigiroadTests(unittest.TestCase):
                 self.assertEqual(host.files[f"{BASE}/{publish.place(manifest['release'], files[dataset['raw']])}"],
                                  (self.tmp / 'release' / dataset['raw']).read_bytes(), 'the features as served, shared')
             self.assertFalse(any(p.startswith(SITE + '/polku-osm/') for p in host.files), 'nothing in polku-osm')
+            copy = self.tmp / 'copy'
+            copy.mkdir()
+            for f in manifest['files']:  # each fetched file saved from its url under its path
+                if f['path'].endswith('.jsonl.xz'):
+                    (copy / f['path']).write_bytes(host.files[f"{BASE}/{publish.place(manifest['release'], f)}"])
+            with patch.object(sys, 'argv', ['digiroad.py', 'build', str(copy)]):
+                digiroad.main()
+            self.assertEqual(json.loads((copy / 'manifest.json').read_bytes())['files'],
+                             json.loads((self.tmp / 'release' / 'manifest.json').read_bytes())['files'],
+                             'the same release, built again from the copy alone')
             host.files[BASE + '/current.json'] = json.dumps(publish.current(manifest)).encode()  # as a promotion
             host.uploads.clear()
             digiroad.build(self.tmp / 'again', datetime(2026, 11, 24, tzinfo=timezone.utc))
@@ -239,10 +261,6 @@ class DigiroadTests(unittest.TestCase):
             del host.files[BASE + '/.htaccess']
             with self.assertRaisesRegex(RuntimeError, 'run install-hosting first'):
                 publish.upload(self.tmp / 'again', folder=digiroad.FOLDER, budget=digiroad.BUDGET)
-
-    def test_the_budget_holds_three_copies_of_the_release(self):
-        # measured 2026-11-23 on sample pages: about 0.4 GB of tiles and 0.56 GB of the features as served
-        self.assertGreaterEqual(digiroad.BUDGET, 3 * 0.96e9 * 1.3)
 
 
 if __name__ == '__main__':

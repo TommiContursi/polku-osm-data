@@ -11,6 +11,7 @@ import argparse
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import gzip
+import hashlib
 import http.client
 import io
 import json
@@ -37,22 +38,28 @@ PAGE, PAUSE, BACK_OFF = 5000, 5, 300  # features a request, and seconds between 
 FOLDER = 'polku-digiroad'
 BUDGET = 4 * 1024**3  # live, candidate and staging: three copies of about 1 GB
 SPEEDS = {20, 30, 40, 50, 60, 70, 80, 90, 100, 120}  # km/h
-PRIVATE = {'tieto toimitettu - rajoituksia', 'tieto toimitettu - ei rajoituksia', 'ei toimitettu'}
-# Each dataset: its WFS layer, its filter, the unique field that orders its pages, and what its tiles keep of a
-# feature's properties: what the layer's WMS style draws, or None for a value the style doesn't draw
+# The paving classes of the style dr_paallystetty_tie: Asfaltti, Kivi, Sitomaton kulutuskerros, Muut päällysteluokat
+# and Päällystetty, tyyppi tuntematon
+SURFACES = {1: 'asphalt', 2: 'stone', 3: 'unbound', 4: 'other', 99: 'unknown'}
+RESTRICTIONS = {'tieto toimitettu - rajoituksia': 'yes', 'tieto toimitettu - ei rajoituksia': 'no',
+                'ei toimitettu': 'unreported'}
+# Each dataset, private roads first (the slowest to fetch, and their key the least proven): its WFS layer, its filter,
+# the unique field that orders its pages, and what its tiles keep of a feature's properties: what the layer's WMS
+# style draws, or None for a value the style doesn't draw
 DATASETS = {
+    # style dr_yksityistietieto: whether the road's restrictions were reported, and if there are any
+    'private': ('digiroad:tiekunnalliset_yksityistiet', None, 'link_id',
+                lambda p: {'restrictions': RESTRICTIONS[p['lisatiedot']]} if p.get('lisatiedot') in RESTRICTIONS
+                else None),
     'traffic': ('digiroad:dr_liikennemaara', f'arvo>={BUSY}', 'id',
                 lambda p: {'aadt': p['arvo']} if type(p.get('arvo')) is int and p['arvo'] >= BUSY else None),
-    # style dr_paallystetty_tie: the surface's class, and state roads (hallinn_lk 1) from a smaller scale than others
+    # style dr_paallystetty_tie: the paving class, and state roads (hallinn_lk 1) from a smaller scale than others
     'paved': ('digiroad:dr_paallystetty_tie', None, 'id',
-              lambda p: {'arvo': p['arvo'], 'hallinn_lk': p['hallinn_lk']} if p.get('arvo') in {1, 2, 3, 4, 99}
+              lambda p: {'surface': SURFACES[p['arvo']], 'state': p['hallinn_lk'] == 1} if p.get('arvo') in SURFACES
               and type(p.get('hallinn_lk')) is int and p['hallinn_lk'] >= 1 else None),
-    # style dr_yksityistietieto: whether the road's details were given, and with restrictions or not
-    'private': ('digiroad:tiekunnalliset_yksityistiet', None, 'link_id',
-                lambda p: {'lisatiedot': p['lisatiedot']} if p.get('lisatiedot') in PRIVATE else None),
     # the layer's default style: the limit
     'speed': ('digiroad:dr_nopeusrajoitus', None, 'id_pk',
-              lambda p: {'arvo': p['arvo']} if p.get('arvo') in SPEEDS else None),
+              lambda p: {'limit': p['arvo']} if p.get('arvo') in SPEEDS else None),
 }
 ATTRIBUTION = '© Fintraffic / Digiroad, from Väylävirasto\'s open data, CC BY 4.0'
 LICENSE = 'CC BY 4.0'
@@ -85,9 +92,27 @@ def page(name, start, sleep=time.sleep):
             sleep(BACK_OFF)
 
 
+def element(name, feature):
+    """The feature as the dataset's tiles hold it: its ID, what its layer's style draws, and its lines in WGS84 to six
+    decimal places without heights. A feature the style doesn't draw stops the copy."""
+    properties, geometry = feature.get('properties', {}), feature.get('geometry') or {}
+    kept = DATASETS[name][3](properties)
+    require(kept is not None and geometry.get('type') in {'LineString', 'MultiLineString'},
+            'Unexpected Digiroad feature ' + str(feature.get('id')))
+    lines = [geometry['coordinates']] if geometry['type'] == 'LineString' else geometry['coordinates']
+    key = feature['id'].rpartition('.')[2]
+    return {'id': int(key) if key.isdigit() else key, **kept,
+            'lines': [[[round(p[0], 6), round(p[1], 6)] for p in line] for line in lines]}
+
+
+def union(boxes):
+    """The box around boxes of west, south, east and north."""
+    return [min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes)]
+
+
 def fetch(name, directory, sleep=time.sleep):
     """Every feature of the dataset as the WFS serves it, one JSON line each, into <name>.jsonl.xz as its pages come.
-    Each feature must come once, and the count must be the WFS's own."""
+    Each feature is checked as it comes, must come once, and the count must be the WFS's own."""
     seen, matched = set(), None
     with lzma.open(directory / f'{name}.jsonl.xz', 'wb') as raw:
         while matched is None or len(seen) < matched:
@@ -99,7 +124,8 @@ def fetch(name, directory, sleep=time.sleep):
             matched = body['numberMatched']
             require(body.get('features'), f'Digiroad gave {len(seen)} of {matched} {name} features')
             for feature in body['features']:
-                require(feature.get('id') not in seen, f'Digiroad repeated {feature.get("id")}')
+                element(name, feature)
+                require(feature['id'] not in seen, f'Digiroad repeated {feature["id"]}')
                 seen.add(feature['id'])
                 raw.write(json.dumps(feature, ensure_ascii=False, separators=(',', ':')).encode() + b'\n')
             print(f'Digiroad {name}: {len(seen)} of {matched}', flush=True)
@@ -107,45 +133,42 @@ def fetch(name, directory, sleep=time.sleep):
 
 
 def build(directory, now=None):
-    """The release from the fetched features in directory: an archive per dataset, LICENSE.txt and a manifest as the
-    OSM data's, naming the fetched features too, so publish.py uploads them all. Each feature goes into every tile its
-    extent touches, whole."""
+    """The release from the fetched features in directory, <name>.jsonl.xz: an archive per dataset, LICENSE.txt and a
+    manifest as the OSM data's, naming the fetched features too, so publish.py uploads them all. Each feature goes into
+    every tile its extent touches, whole."""
     now, directory = now or datetime.now(timezone.utc), Path(directory)
-    datasets, files, boxes, edited = {}, [], [], datetime.min
+    datasets, files, boxes = {}, {}, []
 
     def entry(path):
-        return {'path': path, 'bytes': (directory / path).stat().st_size, 'sha256': publish.digest_file(directory / path)}
+        return {'path': path, 'bytes': (directory / path).stat().st_size,
+                'sha256': publish.digest_file(directory / path)}
 
-    for name, (layer, where, _, keep) in DATASETS.items():
-        tiles, extents = {}, []
+    for name, (layer, where, _, _) in DATASETS.items():
+        tiles, extents, edited = {}, [], datetime.min
         with lzma.open(directory / f'{name}.jsonl.xz') as raw:
             for line in raw:
                 feature = json.loads(line)
-                properties, geometry = feature.get('properties', {}), feature.get('geometry') or {}
-                kept = keep(properties)
-                require(kept is not None and geometry.get('type') in {'LineString', 'MultiLineString'},
-                        'Unexpected Digiroad feature ' + str(feature.get('id')))
-                if properties.get('muokkauspv'):  # Finnish time, as Digiroad writes it: 31.10.2020 13:48:30
-                    edited = max(edited, datetime.strptime(properties['muokkauspv'], '%d.%m.%Y %H:%M:%S'))
-                lines = [geometry['coordinates']] if geometry['type'] == 'LineString' else geometry['coordinates']
-                key = feature['id'].rpartition('.')[2]
-                element = {'id': int(key) if key.isdigit() else key, **kept,
-                           'lines': [[[round(p[0], 6), round(p[1], 6)] for p in line] for line in lines]}
-                points = [p for line in element['lines'] for p in line]
+                road = element(name, feature)
+                if feature['properties'].get('muokkauspv'):  # Finnish time, as Digiroad writes it: 31.10.2020 13:48:30
+                    edited = max(edited, datetime.strptime(feature['properties']['muokkauspv'], '%d.%m.%Y %H:%M:%S'))
+                points = [p for line in road['lines'] for p in line]
                 extent = [min(p[0] for p in points), min(p[1] for p in points),
                           max(p[0] for p in points), max(p[1] for p in points)]
                 for x in range(mml.column(extent[0], ZOOM), mml.column(extent[2], ZOOM) + 1):
                     for y in range(mml.row(extent[3], ZOOM), mml.row(extent[1], ZOOM) + 1):
-                        tiles.setdefault(zxy_to_tileid(ZOOM, x, y), []).append(element)
+                        tiles.setdefault(zxy_to_tileid(ZOOM, x, y), []).append(road)
                 extents.append(extent)
         require(extents, f'No {name} features')
-        bounds = [min(e[0] for e in extents), min(e[1] for e in extents), max(e[2] for e in extents), max(e[3] for e in extents)]
-        source = {'url': SOURCE, 'layer': layer} | ({'filter': where} if where else {})
-        archive = f'{name}.pmtiles'
+        bounds = union(extents)
+        # the newest edit, where the layer has edit times: the private roads have none
+        source = ({'url': SOURCE, 'layer': layer} | ({'filter': where} if where else {})
+                  | ({'timestamp': stamp(edited.replace(tzinfo=ZoneInfo('Europe/Helsinki')))}
+                     if edited > datetime.min else {}))
+        archive, fetched = f'{name}.pmtiles', f'{name}.jsonl.xz'
         with (directory / archive).open('wb') as stream:
             writer = Writer(stream)
             for tile in sorted(tiles):
-                elements = sorted(tiles[tile], key=lambda element: element['id'])
+                elements = sorted(tiles[tile], key=lambda road: road['id'])
                 body = json.dumps({'schema': 1, 'elements': elements}, separators=(',', ':')).encode()
                 require(len(body) <= 32 * 1024 * 1024, 'Tile over the browser limit')  # as the OSM builder's
                 writer.write_tile(tile, gzip.compress(body, 6, mtime=0))
@@ -154,18 +177,20 @@ def build(directory, now=None):
                              'max_lon_e7': round(bounds[2] * 1e7), 'max_lat_e7': round(bounds[3] * 1e7)},
                             {'name': f'Polku Digiroad {name}', 'format': 'json', 'schema': 1,
                              'attribution': ATTRIBUTION, 'license': LICENSE, 'source': source})
-        files += [entry(archive), entry(f'{name}.jsonl.xz')]
+        files[archive], files[fetched] = entry(archive), entry(fetched)
         datasets[name] = {'format': 'pmtiles-json', 'schema': 1, 'zoom': ZOOM, 'url': archive,
-                          'bytes': files[-2]['bytes'], 'sha256': files[-2]['sha256'], 'tiles': len(tiles),
-                          'features': len(extents), 'source': source, 'raw': f'{name}.jsonl.xz'}
+                          'bytes': files[archive]['bytes'], 'sha256': files[archive]['sha256'], 'tiles': len(tiles),
+                          'features': len(extents), 'source': source, 'raw': fetched}
         boxes.append(bounds)
-    require(edited > datetime.min, 'Digiroad gave no edit times')
+    edits = [d['source']['timestamp'] for d in datasets.values() if 'timestamp' in d['source']]
+    require(edits, 'Digiroad gave no edit times')
     (directory / 'LICENSE.txt').write_text(LICENSE_TEXT, encoding='utf-8')
-    files.append(entry('LICENSE.txt'))
-    release = stamp(now).replace('-', '').replace(':', '') + '-' + files[0]['sha256'][:12]
+    files['LICENSE.txt'] = entry('LICENSE.txt')
+    files = list(files.values())
+    content = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
+    release = stamp(now).replace('-', '').replace(':', '') + '-' + content[:12]
     manifest = {'schema': 1, 'release': release, 'built_at': stamp(now),
-                'source': {'url': SOURCE, 'timestamp': stamp(edited.replace(tzinfo=ZoneInfo('Europe/Helsinki')))},
-                'bounds': [min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes)],
+                'source': {'url': SOURCE, 'timestamp': max(edits)}, 'bounds': union(boxes),
                 'datasets': datasets, 'files': files, 'attribution': ATTRIBUTION, 'license': LICENSE}
     (directory / 'manifest.json').write_bytes(json.dumps(publish.validate(manifest), sort_keys=True).encode())
     return manifest
@@ -188,16 +213,18 @@ def install_hosting():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
-    commands.add_parser('build', help='fetch the four layers and write the release').add_argument('output', type=Path)
+    commands.add_parser('fetch', help='fetch the four layers into a new folder').add_argument('output', type=Path)
+    commands.add_parser('build', help='write the release in a folder of fetched features').add_argument('directory', type=Path)
     commands.add_parser('upload', help='upload the release as the candidate (in cells with OSM_CELLS=true)').add_argument('directory', type=Path)
     commands.add_parser('install-hosting')
     args = parser.parse_args()
     try:
-        if args.command == 'build':
+        if args.command == 'fetch':
             args.output.mkdir(parents=True)
             for name in DATASETS:
                 fetch(name, args.output)
-            manifest = build(args.output)
+        elif args.command == 'build':
+            manifest = build(args.directory)
             print(json.dumps({'release': manifest['release'], 'datasets': manifest['datasets']}))
         elif args.command == 'upload':
             publish.upload(args.directory, folder=FOLDER, budget=BUDGET)
