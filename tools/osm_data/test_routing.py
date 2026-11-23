@@ -96,6 +96,9 @@ def fake_brouter(*args):
     if args[0] == 'apply':
         old, change, new = args[1:]
         Path(new).write_bytes(Path(change).read_bytes() or Path(old).read_bytes())
+    elif args[0] == 'diff':
+        old, new, change = args[1:]
+        Path(change).write_bytes(Path(new).read_bytes())
     else:
         routing.describe(args[1])
 
@@ -117,9 +120,9 @@ class RoutingTests(unittest.TestCase):
         self.host.publish_square('E20_N55.rd5', self.south)
         self.host.files[BASE + '/.htaccess'] = b'installed by hand'
 
-    def run_mirror(self, now=T0, initial=False):
+    def run_mirror(self, now=T0, initial=False, brouter=fake_brouter):
         self.host.requests.clear()
-        return routing.mirror(None, initial, now, routing.Source(self.sleeps.append), fake_brouter)
+        return routing.mirror(None, initial, now, routing.Source(self.sleeps.append), brouter)
 
     def candidate(self):
         raw = self.host.files[BASE + '/candidates/current.json']
@@ -173,10 +176,22 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(squares['E20_N60.rd5']['md5'], md5(newer))
         self.assertEqual(squares['E20_N60.rd5']['downloaded'], '2026-11-22T09:00:00Z', 'a change file is no full download')
         self.assertEqual(squares['E25_N70.rd5']['md5'], md5(self.small))
+        change = squares['E20_N60.rd5']['change']
+        self.assertEqual(change, {'path': 'E20_N60.df5', 'bytes': len(newer), 'sha256': hashlib.sha256(newer).hexdigest(),
+                                  'from': hashlib.sha256(self.big).hexdigest(), 'url': f"../../files/{change['sha256']}.df5"},
+                         "brouter.de's change file from our previous square, published as ours")
+        self.assertEqual(self.host.files[f"{BASE}/files/{change['sha256']}.df5"], newer)
+        self.assertEqual(report['changes'], 1)
+        self.assertNotIn('change', squares['E20_N55.rd5'], 'an unchanged square needs none')
+        self.assertNotIn('change', squares['E25_N70.rd5'])
         self.assertNotIn(f'{BASE}/releases/{first}', self.host.dirs, 'only the live copy and one candidate stay')
 
-    def shared_squares(self):
+    def shared_files(self):
         return sorted(p.removeprefix(BASE + '/') for p in self.host.files if p.startswith(BASE + '/files/'))
+
+    def named(self, manifest):
+        """The shared files a manifest names: its squares and their change files."""
+        return sorted(f"files/{f['sha256']}.{f['path'][-3:]}" for s in manifest['squares'] for f in (s, s.get('change')) if f)
 
     def test_a_square_that_didnt_change_is_not_sent_again(self):
         self.run_mirror(initial=True)
@@ -185,11 +200,10 @@ class RoutingTests(unittest.TestCase):
         self.host.uploads.clear()
         report = self.run_mirror(T0 + timedelta(days=7))
         self.assertEqual((report['unchanged'], report['kept'], report['shared']), (1, ['E25_N70.rd5'], 2))
-        self.assertEqual([name.removeprefix(BASE + '/') for name, _, _ in self.host.uploads if name.endswith('.rd5')],
-                         ['staging/E20_N60.rd5'])
+        self.assertEqual([name.removeprefix(BASE + '/') for name, _, _ in self.host.uploads if name.startswith(BASE + '/staging/E')],
+                         ['staging/E20_N60.rd5', 'staging/E20_N60.df5'])
         manifest = self.candidate()
-        self.assertEqual(self.shared_squares(), sorted(f"files/{s['sha256']}.rd5" for s in manifest['squares']),
-                         "the old E20_N60 goes with the candidate that named it")
+        self.assertEqual(self.shared_files(), self.named(manifest), "the old E20_N60 goes with the candidate that named it")
         self.assertEqual(routing.check(PUBLIC, T0 + timedelta(days=8)), [manifest['release']])
 
     def test_the_first_update_reads_a_candidate_from_before_the_shared_files(self):
@@ -208,7 +222,7 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual((report['diff'], report['shared']), (1, 0), 'its squares go among the shared files, once')
         self.assertNotIn(f"{BASE}/releases/{old['release']}", self.host.dirs)
         manifest = self.candidate()
-        self.assertEqual(self.shared_squares(), sorted(f"files/{s['sha256']}.rd5" for s in manifest['squares']))
+        self.assertEqual(self.shared_files(), self.named(manifest))
 
     def test_a_square_without_its_change_file_waits_for_its_quarter(self):
         self.run_mirror(initial=True)
@@ -216,10 +230,20 @@ class RoutingTests(unittest.TestCase):
         self.host.publish_square('E20_N60.rd5', newer)
         report = self.run_mirror(T0 + timedelta(days=20))
         self.assertEqual((report['kept'], report['quarterly']), (['E20_N60.rd5', 'E25_N70.rd5'], []))
+        def broken(*args):
+            fake_brouter(*args)
+            if args[0] == 'diff':
+                Path(args[3]).write_bytes(self.big)
+        with self.assertRaisesRegex(RuntimeError, 'Our change file fails: E20_N60.rd5'):
+            self.run_mirror(T0 + timedelta(days=91), brouter=broken)
         report = self.run_mirror(T0 + timedelta(days=91))
-        self.assertEqual((report['quarterly'], report['small']), (['E20_N60.rd5'], 1))
+        self.assertEqual((report['quarterly'], report['small'], report['changes']), (['E20_N60.rd5'], 1, 1))
         squares = {s['path']: s for s in self.candidate()['squares']}
         self.assertEqual((squares['E20_N60.rd5']['md5'], squares['E20_N60.rd5']['downloaded']), (md5(newer), '2027-02-21T09:00:00Z'))
+        change = squares['E20_N60.rd5']['change']
+        self.assertEqual((change['from'], change['sha256']), (hashlib.sha256(self.big).hexdigest(), hashlib.sha256(newer).hexdigest()),
+                         'ours, made from the previous square and checked by applying it')
+        self.assertNotIn('change', squares['E25_N70.rd5'], 'none for a square under 1 MiB, as brouter.de')
 
     def test_a_stopped_run_resumes_without_downloading_again(self):
         self.host.failing['E25_N70.rd5'] = 2
@@ -258,6 +282,16 @@ class RoutingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'no valid index: E20_N60.rd5'):
             routing.check(PUBLIC, T0 + timedelta(days=1))
 
+    def test_the_daily_check_reads_each_change_file_by_range(self):
+        self.run_mirror(initial=True)
+        self.host.publish_square('E20_N60.rd5', square(1, T0 + timedelta(days=7), size=5100), previous=[self.big])
+        self.run_mirror(T0 + timedelta(days=7))
+        change = next(s['change'] for s in self.candidate()['squares'] if 'change' in s)
+        path = f"{BASE}/files/{change['sha256']}.df5"
+        self.host.files[path] = self.big[:200] + self.host.files[path][200:]
+        with self.assertRaisesRegex(ValueError, 'change file differs from its square: E20_N60.rd5'):
+            routing.check(PUBLIC, T0 + timedelta(days=8))
+
     def test_a_manifest_needs_each_squares_size_hashes_and_version(self):
         self.run_mirror(initial=True)
         manifest = self.candidate()
@@ -268,6 +302,17 @@ class RoutingTests(unittest.TestCase):
                 broken['squares'][0].update(change)
                 with self.assertRaises(ValueError):
                     routing.validate(broken)
+        sha = 'a' * 64
+        good = {'path': manifest['squares'][0]['path'][:-4] + '.df5', 'bytes': 5000, 'sha256': sha, 'from': 'b' * 64,
+                'url': f'../../files/{sha}.df5'}
+        for change in [{'bytes': 199}, {'path': 'E0_N0.df5'}, {'from': 'x'}, {'url': f'../../files/{sha}.rd5'}, {'url': None}]:
+            with self.subTest(change):
+                broken = json.loads(json.dumps(manifest))
+                broken['squares'][0]['change'] = {k: v for k, v in (good | change).items() if v is not None}
+                with self.assertRaises(ValueError):
+                    routing.validate(broken)
+        manifest['squares'][0]['change'] = good
+        routing.validate(manifest)
 
     def test_hosting_is_installed_once_and_never_replaced(self):
         del self.host.files[BASE + '/.htaccess']
@@ -302,6 +347,20 @@ class RoutingTests(unittest.TestCase):
             (tmp / 'bad.rd5').write_bytes(empty[:100] + b'\x01' + empty[101:])
             with self.assertRaises(subprocess.CalledProcessError):
                 brouter('check', tmp / 'bad.rd5')
+
+    @unittest.skipUnless(JAR, "BRouter's release jar")
+    def test_brouters_own_change_file_makes_the_new_square_from_the_old(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            with patch.dict('os.environ', {'PATH': PATH}):
+                brouter = routing.BRouter(JAR, tmp)
+            old, new = square(0, T0, size=0), square(0, T0 + timedelta(days=7), size=0)
+            (tmp / 'old.rd5').write_bytes(old)
+            (tmp / 'new.rd5').write_bytes(new)
+            brouter('diff', tmp / 'old.rd5', tmp / 'new.rd5', tmp / 'change.df5')
+            self.assertEqual((tmp / 'change.df5').read_bytes()[:200], new[:200], 'it starts with the new index')
+            brouter('apply', tmp / 'old.rd5', tmp / 'change.df5', tmp / 'applied.rd5')
+            self.assertEqual((tmp / 'applied.rd5').read_bytes(), new)
 
 
 if __name__ == '__main__':

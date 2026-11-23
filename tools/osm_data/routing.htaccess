@@ -1,9 +1,9 @@
-# polku-routing's own copy of hosting.htaccess, with the routing squares' type. The workflow's install-hosting puts it
-# in place once (#7); a change after that is made by hand.
+# polku-routing's own copy of hosting.htaccess, with the type of the routing squares and their change files. The
+# workflow's install-hosting puts it in place once (#7); a change after that is made by hand.
 Options -Indexes
 SetEnv no-gzip 1
 SetEnv no-brotli 1
-AddType application/octet-stream .rd5
+AddType application/octet-stream .rd5 .df5
 AddType application/json .json
 
 Header always set Access-Control-Allow-Origin "*"

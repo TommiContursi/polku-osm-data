@@ -218,10 +218,11 @@ change files, one file at a time and at most 16 Mbit/s.
 - **check**, daily at 07:43 UTC: the candidate, and `current.json` once there is one.
 - **install-hosting**, once: puts [`routing.htaccess`](../tools/osm_data/routing.htaccess) into `polku-routing/`.
 
-Each square goes in `polku-routing/files/`, named by its SHA-256, and is read back with it before the release is
-named in `candidates/current.json`. A square the folder already holds (one that didn't change) isn't sent again, and a
-stopped run goes on from where it stopped. Releases other than the candidate and the live one are removed, then the
-squares neither of them names. A failed update
+Each square that changed also gets the mirror's change file from the previous release's square: brouter.de's own, or
+one made with the same jar and checked by applying it. Each square and change file goes in `polku-routing/files/`,
+named by its SHA-256, and is read back with it before the release is named in `candidates/current.json`. A square the
+folder already holds (one that didn't change) isn't sent again, and a stopped run goes on from where it stopped.
+Releases other than the candidate and the live one are removed, then the files neither of them names. A failed update
 or check opens a `watch` issue. The manifest is in [tools/osm_data/README.md](../tools/osm_data/README.md#routing-data).
 
 ## Licensing
