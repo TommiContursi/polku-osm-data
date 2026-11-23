@@ -264,13 +264,19 @@ which holds its `manifest.json`; the squares, as brouter.de serves them, are in 
  "source": "https://brouter.de/brouter/segments4/", "engine": "BRouter 1.7.10", "attribution": "Routing data © OpenStreetMap contributors, …",
  "squares": [{"path": "E25_N60.rd5", "bytes": 38812345, "sha256": "…", "md5": "…",
               "created": "2026-11-22T02:44:23Z", "downloaded": "2026-11-22T10:01:12Z", "version": 11,
-              "url": "../../files/<sha256>.rd5"}]}
+              "url": "../../files/<sha256>.rd5",
+              "change": {"path": "E25_N60.df5", "from": "<previous sha256>", "bytes": 401234, "sha256": "…",
+                         "url": "../../files/<sha256>.df5"}}]}
 ```
 
 `created` is brouter.de's build of the square, `downloaded` our last full download of it, and `version` BRouter's
 lookup version. `url` is where the square lies, relative to its release's `manifest.json`: among the shared files,
 named by its SHA-256, so a square that doesn't change keeps its URL. A release from before the shared files has no
 `url`; its squares are at `releases/<release>/<path>`. `candidates/current.json` holds the candidate's manifest.
+
+`change` is the mirror's change file for a square that changed since the previous release: applied with BRouter's
+`Rd5DiffTool.recoverFromDelta` to the square whose SHA-256 is `from`, it gives this square. Like brouter.de, the mirror
+has none when the new square is under 1 MiB, when the square is new, or when it didn't change.
 
 ## NLS background map
 
