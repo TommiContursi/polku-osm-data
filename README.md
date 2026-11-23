@@ -37,7 +37,8 @@ is not open source: see [LICENSE](LICENSE). The data keeps OpenStreetMap's licen
    browser.
 
 A failed scheduled run opens a `watch` issue here, and a build that Geofabrik refused on
-every failed job is re-run on new runners (`osm-data-alerts.yml`).
+every failed job is re-run on new runners after 30 minutes, 1 hour and 2 hours
+(`osm-data-alerts.yml`).
 
 ## The contract
 

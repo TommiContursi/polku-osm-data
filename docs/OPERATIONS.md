@@ -27,8 +27,10 @@ in its first five. Every Geofabrik download after the snapshot step retries any 
 Geofabrik refuses whole /24 networks, two of GitHub's runner networks among them, and a job
 keeps its runner's address. Some it leaves unanswered: a request times out with no bytes
 received. So when every failed job of a build on `main` was refused or unanswered,
-**Polku OSM alerts** re-runs the failed jobs on new runners, up to 15 attempts in all,
-unless a newer build exists. A re-run that succeeds goes on to upload. The checksum and
+**Polku OSM alerts** re-runs the failed jobs on new runners, 30 minutes after the first
+attempt, then 1 hour and 2 hours after the next ones, so four attempts in all, unless a newer
+build exists by then. Re-running at once looked like a burst to Geofabrik (15 attempts in 24
+minutes, 2026-11-23). A re-run that succeeds goes on to upload. The checksum and
 polygon come from beside the file actually served, since Geofabrik is moving countries into
 folders of their own. The source must be at most 14 days old. Source and release artifacts
 are kept 14 days.
