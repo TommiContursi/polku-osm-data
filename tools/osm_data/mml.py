@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """A copy of the National Land Survey of Finland's (MML) background-map vector tiles, taustakartta v21, zooms 11-14
 over a box, fetched once at a paced rate, packed into one PMTiles archive and uploaded as a candidate in polku-mml.
+Polku's mml-promote.yml checks the candidate in the app and promotes it: polku-mml/current.json, the manifest's own
+bytes, is the release people get.
 
 The tiles are CC BY 4.0. MML may limit a user whose volume disturbs its service, so the fetch halves its rate at any
 sign of load and stops when MML refuses the key. Each tile's Last-Modified goes with the release, so a later update
@@ -11,6 +13,7 @@ from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import gzip
+import hashlib
 import http.client
 import io
 import json
@@ -23,6 +26,7 @@ import sqlite3
 import sys
 import threading
 import time
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 
 if not __package__:
@@ -380,18 +384,24 @@ def pack(path, out, now=None):
     return manifest
 
 
+def folder_url(osm_url):
+    """polku-mml's public URL, beside polku-osm's."""
+    require(osm_url.endswith('/polku-osm'), 'OSM_PUBLIC_URL must end in /polku-osm')
+    return osm_url.removesuffix('/polku-osm') + '/' + FOLDER
+
+
 @contextmanager
 def mml_host():
     """The pinned-key SFTP login, in polku-mml beside polku-osm, and the folder's public URL."""
     config = publish.settings()
-    require(config[4].endswith('/polku-osm'), 'OSM_PUBLIC_URL must end in /polku-osm')
+    url = folder_url(config[4])
     with publish.connection(config) as ftp:
         ftp.cwd('..')
         if FOLDER not in maintenance.children(ftp):
             ftp.mkd(FOLDER)
         require(ftp.kind(FOLDER) == 'directory', f'{FOLDER} needs a real directory')
         ftp.cwd(FOLDER)
-        yield ftp, config[4].removesuffix('/polku-osm') + '/' + FOLDER
+        yield ftp, url
 
 
 def remove_tree(ftp, base):
@@ -470,6 +480,95 @@ def upload(directory):
     print(f'Candidate {release}: {url}/releases/{release}/manifest.json', flush=True)
 
 
+def candidate():
+    """The uploaded candidate built after the live release, for Polku's checks, or None. Reads only public HTTP."""
+    url = folder_url(publish.public_url(os.environ.get('OSM_PUBLIC_URL', '')))
+    raw, live = (public_bytes(url + path) for path in ('/candidates/current.json', '/current.json'))
+    if raw is None:
+        return None  # nothing uploaded yet
+    manifest = publish.validate(json.loads(raw))
+    live = live and json.loads(live)  # None: nothing promoted yet
+    if live and manifest['built_at'] <= live['built_at']:
+        return None
+    location = f"{url}/releases/{manifest['release']}/manifest.json"
+    require(publish.get(location, immutable=True) == raw, 'Candidate pointer differs from its release')
+    return {'release': manifest['release'], 'manifest': location, 'sha256': hashlib.sha256(raw).hexdigest()}
+
+
+def public_bytes(url):
+    """A pointer's bytes over HTTPS, or None where there is none (404)."""
+    try:
+        return publish.get(url)
+    except HTTPError as error:
+        if error.code != 404:
+            raise
+        error.close()
+        return None
+
+
+def require_release(ftp, raw):
+    """The release a manifest names is on the host with every file at its size: the upload hashed them and is their
+    only writer, and an upload's retention removes a release that is neither the candidate nor live."""
+    manifest = publish.validate(json.loads(raw))
+    base = f"releases/{manifest['release']}"
+    require(manifest['release'] in maintenance.children(ftp, 'releases') and publish.retrieve(ftp, base + '/manifest.json') == raw,
+            f"Release {manifest['release']} is not on the host")
+    names = maintenance.children(ftp, base)
+    for f in manifest['files']:
+        require(f['path'] in names and ftp.size(f"{base}/{f['path']}") == f['bytes'], 'Release file is missing or differs: ' + f['path'])
+    return manifest
+
+
+def put_back(ftp, url, previous):
+    """The live pointer as it was: the saved bytes, or none at all, so the app reads MML's own service."""
+    if previous is None:
+        ftp.remove('current.json')
+    else:
+        publish.replace_pointer(ftp, previous)
+    require(public_bytes(url + '/current.json') == previous, 'Restored pointer differs')
+
+
+def promote(release, sha256, directory):
+    """Make the candidate Polku checked live: current.json gets the manifest's same bytes. The pointer it replaces goes
+    to DIRECTORY/previous.json (null where there was none), for restore."""
+    require(os.environ.get('OSM_ALLOW_PUBLISH') == 'true', 'Publication requires approved OSM_ALLOW_PUBLISH=true')
+    require(publish.NAME.fullmatch(release) and re.fullmatch('[a-f0-9]{64}', sha256), 'Invalid candidate')
+    with mml_host() as (ftp, url):
+        raw = publish.retrieve(ftp, f'releases/{release}/manifest.json')
+        require(hashlib.sha256(raw).hexdigest() == sha256, 'Candidate manifest differs from the one checked')
+        # Still the candidate: an upload that has named another prunes this release unless it is live
+        require(publish.retrieve(ftp, 'candidates/current.json') == raw, 'Another candidate was uploaded meanwhile; check it first')
+        manifest = require_release(ftp, raw)
+        require(manifest['release'] == release, 'Candidate release differs')
+        previous = publish.retrieve(ftp, 'current.json') if 'current.json' in maintenance.children(ftp) else None
+        directory = Path(directory)
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / 'previous.json').write_bytes(previous or b'null')
+        if previous == raw:
+            return  # promoted already: a restore puts back the same
+        require(not previous or manifest['built_at'] > json.loads(previous)['built_at'], 'Candidate is not newer than the live release')
+        publish.probe(url, manifest, raw)
+        publish.replace_pointer(ftp, raw)
+        try:
+            require(publish.get(url + '/current.json') == raw, 'Promoted pointer differs')
+        except Exception:
+            put_back(ftp, url, previous)
+            raise
+
+
+def restore(directory, expected_current):
+    """Back to the pointer promote replaced, unless another release went live meanwhile."""
+    require(os.environ.get('OSM_ALLOW_PUBLISH') == 'true', 'Publication requires approved OSM_ALLOW_PUBLISH=true')
+    previous = Path(directory, 'previous.json').read_bytes()
+    with mml_host() as (ftp, url):
+        live = json.loads(publish.retrieve(ftp, 'current.json'))['release'] if 'current.json' in maintenance.children(ftp) else None
+        require(live == expected_current, 'Live release changed; do not roll back another publication')
+        previous = None if previous == b'null' else previous
+        if previous is not None:
+            require_release(ftp, previous)
+        put_back(ftp, url, previous)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
@@ -483,6 +582,14 @@ def main():
     packing.add_argument('store', type=Path)
     packing.add_argument('out', type=Path)
     commands.add_parser('upload').add_argument('directory', type=Path)
+    commands.add_parser('candidate')
+    promotion = commands.add_parser('promote')
+    promotion.add_argument('release')
+    promotion.add_argument('--sha256', required=True, help="the checked manifest's SHA-256, from `candidate`")
+    promotion.add_argument('--directory', type=Path, required=True, help='where the replaced pointer is kept for restore')
+    back = commands.add_parser('restore')
+    back.add_argument('--directory', type=Path, required=True, help="promote's directory")
+    back.add_argument('--expected-current', required=True, help='only if this release is live: never undo another publication')
     args = parser.parse_args()
     try:
         if args.command == 'sample':
@@ -494,8 +601,15 @@ def main():
             fetch(args.store, box, args.until, args.limit)
         elif args.command == 'pack':
             pack(args.store, args.out)
-        else:
+        elif args.command == 'upload':
             upload(args.directory)
+        elif args.command == 'candidate':
+            print(json.dumps(candidate() or {}, sort_keys=True))
+            return
+        elif args.command == 'promote':
+            promote(args.release, args.sha256, args.directory)
+        else:
+            restore(args.directory, args.expected_current)
     except Exception as error:
         key = os.environ.get('MML_API_KEY')
         parser.exit(1, f"{args.command} failed: {str(error).replace(key, '[key]') if key else error}\n")
