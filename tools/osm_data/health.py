@@ -34,12 +34,18 @@ def verify(output,release_dir=None):
         for row in cases:
             for product in [row,row['lighting'],*row['details'].values()]:
                 urls.update(n['url'] for n in product['network'] if '.pmtiles' in n['url'])
-    expected_urls={url.removesuffix('/current.json')+'/'+dataset['url'] for dataset in live['datasets'].values()}
+    base=url.removesuffix('/current.json')
+    reads={}  # each dataset's URLs: its archive, or the cells its index names
+    for name,dataset in live['datasets'].items():
+        reads[name]={base+'/'+dataset['url']}
+        if dataset.get('format')==p.CELLS:
+            body=p.get(base+'/'+dataset['url'],immutable=True)
+            reads[name]={base+'/'+p.shared_path(c) for c in p.cells_of(body,p.index_entry(dataset))}
     extended = 'geometry' in live['datasets']
     # four countries' products: seven in a release from before reedbeds (Polku #1144), eight from before the points (Polku
     # #1179), which a rollback can restore
     expected_count = 4 * (7 + ('wetlands' in live['datasets']) + ('points' in live['datasets'])) + extended
-    p.require(len(expected_urls)==expected_count and urls==expected_urls,
+    p.require(len(reads)==expected_count and all(urls & r for r in reads.values()) and urls<=set().union(*reads.values()),
               'Browser consumers did not verify all current release archives')
     if extended:
         p.require(all(len(result.get('geometry_checks',{}).get(profile,[]))==6 and

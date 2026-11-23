@@ -7,7 +7,7 @@ import tempfile
 import unittest
 
 from pmtiles.reader import MemorySource, Reader
-from tools.osm_data import builder
+from tools.osm_data import builder, cells
 from tools.osm_data.test_builder import OSM
 
 EXTRA = '''
@@ -152,3 +152,5 @@ class ProductTests(unittest.TestCase):
         self.assertEqual(sorted(els), [50, 51, 52, 53, 54, 55, 56, 60])
         self.assertEqual(els[52]['tags']['drinking_water'], 'yes')
         self.assertIn('center', els[60])  # a bunker drawn as a building: its point is its centre
+        cut = cells.index(out / manifest['datasets']['points']['url'])  # goes up in cells as every product does
+        self.assertEqual((cut['zoom'], len(cut['cells'])), (12, 1))

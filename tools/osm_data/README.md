@@ -29,9 +29,18 @@ network requests or publication happen in the builder.
 
 The output has seven PMTiles products, `manifest.json`, `measurements.json`,
 `identities.jsonl.gz` and `LICENSE.txt`. The manifest identifies the exact source and checksums every
-deployable file except itself. Its local dataset URL is relative to this
-immutable release directory. The publication tool gives `current.json` a URL
-under `releases/<release>/`; it does not modify this release's manifest.
+deployable file except itself. `source.url` names Geofabrik's country export, or, when the
+build was clipped here from the mirrored Europe export because Geofabrik refused the runners,
+that export, with `source.clipped` naming the clipping tool (`--source-url` and
+`--clipped-with`). `source.coverage` names the polygon either way (`--coverage`).
+`source_kind()` accepts only these two shapes, and one release cannot mix them across countries.
+The geometry's Europe export may be Geofabrik's or the mirror's byte-identical copy, whatever the countries' source. Its local
+dataset URL is relative to this
+immutable release directory. The publication tool gives `current.json` URLs
+relative to `polku-osm/`, under `releases/<release>/`. With `OSM_SHARED_FILES`
+the uploaded manifest gives each file a `url` beside its `path`,
+`../../files/<sha256><suffix>`, relative to the release's folder, and its
+datasets the same URLs; `current.json` names them as `files/<sha256><suffix>`.
 Release IDs contain the source timestamp, source digest and a digest of every
 dataset record plus coverage. Lighting-only changes can therefore be published
 for an unchanged source snapshot. Timing measurements do not affect identity.
@@ -79,7 +88,7 @@ reported total is the bytes and number of files needed without PMTiles.
 
 ## Additional named products
 
-The same stage emits trail/barrier nodes and ways at z13, winter ways at z12 (including ski tracks without highways), water hazards at z11, and overnight places at z12. Predicates mirror the existing browser queries, before their slim display adapters. Features retain original type/ID, all tags, way nodes/geometry and place centres. Place relation members/roles are retained, and unavailable member geometry rejects the build. Gzip tiles above 8 MiB or decoded JSON above 32 MiB reject the candidate. `measurements.json.products` reports counts and compressed/raw tile distributions.
+The same stage emits trail/barrier nodes and ways at z13, winter ways at z12 (including ski tracks without highways), water hazards at z11, overnight places at z12, and points (fire places, springs, cave entrances, bunkers, tar kilns and anything with `fireplace=yes`) at z12. Predicates mirror the existing browser queries, before their slim display adapters. Features retain original type/ID, all tags, way nodes/geometry and place centres. Place relation members/roles are retained, and unavailable member geometry rejects the build. Gzip tiles above 8 MiB or decoded JSON above 32 MiB reject the candidate. `measurements.json.products` reports counts and compressed/raw tile distributions.
 
 These optional datasets are additive to schema 1; old clients continue reading ways/lighting, and new clients fall back when a product has not been published.
 
@@ -220,3 +229,103 @@ country artifacts; it does not download country PBFs or rebuild those archives.
 The separate candidate concurrency group keeps the experiment independent of
 live checks and weekly country updates. The same-epoch reference, area
 completeness, size and publication checks remain.
+
+## Cells
+
+With `OSM_CELLS` each archive is uploaded as cells (`cells.py`). A quadtree
+splits the archive's tiles from the whole world down, a quadrant at a time,
+until each quadrant holds at most 1 MiB (a tile stored once counts once) or is
+a single tile. Each quadrant is a cell: a plain PMTiles file of its tiles,
+unchanged, at the archive's zoom, type and compression. Its header bounds are
+the quadrant's, and its metadata only the archive's `name`, `format`,
+`schema`, `attribution` and `license`. So a cell's bytes depend only on its
+tiles and its quadrant, and it keeps its name while they don't change. The
+cut checks that the cells give back every tile of the archive.
+
+The dataset's `format` is then `pmtiles-json-cells`, and its `url`, `bytes` and
+`sha256` are those of its index, `<name>.cells.json`, among the shared files:
+
+```json
+{"schema": 1, "zoom": 14, "cells": [[9, 290, 140, 812345, "<sha256>"], …]}
+```
+
+Each row is a cell's quadrant `z, x, y`, its bytes and its SHA-256. The cell
+lies beside the index, as `<sha256>.pmtiles`. A tile `zoom/x/y` is in the cell
+whose quadrant is `z/(x >> (zoom - z))/(y >> (zoom - z))` for some `z`; a tile
+in no cell is empty, as in an archive. Every other field of the dataset is as
+before. `tools/fixtures/osm-geometry-cells/` is the cut of
+`osm-geometry.pmtiles` at a 4 KiB target.
+
+## Routing data
+
+`routing.py` mirrors brouter.de's squares (docs/OPERATIONS.md). Each release is `polku-routing/releases/<release>/`,
+which holds its `manifest.json`; the squares, as brouter.de serves them, are in `polku-routing/files/`:
+
+```json
+{"schema": 1, "release": "20261122T101500Z", "built_at": "2026-11-22T10:20:31Z",
+ "source": "https://brouter.de/brouter/segments4/", "engine": "BRouter 1.7.10", "attribution": "Routing data © OpenStreetMap contributors, …",
+ "squares": [{"path": "E25_N60.rd5", "bytes": 38812345, "sha256": "…", "md5": "…",
+              "created": "2026-11-22T02:44:23Z", "downloaded": "2026-11-22T10:01:12Z", "version": 11,
+              "url": "../../files/<sha256>.rd5",
+              "change": {"path": "E25_N60.df5", "from": "<previous sha256>", "bytes": 401234, "sha256": "…",
+                         "url": "../../files/<sha256>.df5"}}]}
+```
+
+`created` is brouter.de's build of the square, `downloaded` our last full download of it, and `version` BRouter's
+lookup version. `url` is where the square lies, relative to its release's `manifest.json`: among the shared files,
+named by its SHA-256, so a square that doesn't change keeps its URL. A release from before the shared files has no
+`url`; its squares are at `releases/<release>/<path>`. `candidates/current.json` holds the candidate's manifest.
+
+`change` is the mirror's change file for a square that changed since the previous release: applied with BRouter's
+`Rd5DiffTool.recoverFromDelta` to the square whose SHA-256 is `from`, it gives this square. Like brouter.de, the mirror
+has none when the new square is under 1 MiB, when the square is new, or when it didn't change.
+
+## NLS background map
+
+`mml.py` copies the National Land Survey's background-map vector tiles (docs/OPERATIONS.md). Each release is
+`polku-mml/releases/<release>/`: `taustakartta.pmtiles` (MML's own tiles, gzipped; a 404 is an empty tile),
+`tiles.tsv.gz` (each tile's `z x y status last_modified`), `LICENSE.txt` and `manifest.json`:
+
+```json
+{"schema": 1, "release": "20261123T040000Z", "built_at": "2026-11-23T04:00:00Z",
+ "source": "https://avoin-karttakuva.maanmittauslaitos.fi/vectortiles/taustakartta/wmts/1.0.0/taustakartta/default/v21/WGS84_Pseudo-Mercator/{z}/{y}/{x}.pbf",
+ "fetched_from": "2026-11-22T21:00:05Z", "fetched_to": "2026-11-23T03:20:41Z",
+ "attribution": "© Maanmittauslaitos, Maastotietokanta 11/2026", "license": "CC BY 4.0",
+ "zooms": [11, 14], "bounds": [19.0, 59.3, 31.6, 70.1], "tiles": {"200": 892856},
+ "datasets": {"taustakartta": {"url": "taustakartta.pmtiles", "bytes": 9000000000, "sha256": "…"}},
+ "files": [{"path": "taustakartta.pmtiles", "bytes": 9000000000, "sha256": "…"}, {"path": "tiles.tsv.gz", …}, {"path": "LICENSE.txt", …}]}
+```
+
+`tiles` counts MML's answers by status. A tile with another 4xx is left out of the archive. `candidates/current.json`
+holds the candidate's manifest, and `current.json`, once promoted, the live release's: the same bytes, not rewritten
+as the OSM data's.
+
+## Digiroad traffic volumes
+
+`digiroad.py` copies Digiroad's busy roads (docs/OPERATIONS.md). Its release has the OSM data's layout and goes up
+the same way, in cells among the shared files, into `polku-digiroad/` (Shared files, Cells). Its manifest, as
+`build` writes it:
+
+```json
+{"schema": 1, "release": "20261123T181942Z-9a1d648460f7", "built_at": "2026-11-23T18:19:42Z",
+ "source": {"url": "https://avoinapi.vaylapilvi.fi/vaylatiedot/digiroad/ows", "layer": "digiroad:dr_liikennemaara",
+            "filter": "arvo>=800", "timestamp": "2026-06-16T06:29:16Z"},
+ "bounds": [21.174094, 59.843474, 31.005393, 69.907816],
+ "attribution": "Traffic volumes: © Fintraffic / Digiroad, from Väylävirasto's open data, CC BY 4.0",
+ "license": "CC BY 4.0",
+ "datasets": {"traffic": {"format": "pmtiles-json", "schema": 1, "zoom": 11, "url": "traffic.pmtiles", "bytes": 9492972,
+                          "sha256": "…", "tiles": 1904, "features": 117061}},
+ "files": [{"path": "traffic.pmtiles", …}, {"path": "LICENSE.txt", …}]}
+```
+
+On the host the dataset's `format` is `pmtiles-json-cells`, and its `url`, `bytes` and `sha256` are those of its
+index, `traffic.cells.json`, among the shared files (Cells). `files` lists the index in place of the archive, and each
+entry's `url` is its place among the shared files. `tools/fixtures/digiroad-traffic.pmtiles` is the archive of a WFS
+answer around Tampere, and `tools/fixtures/digiroad-traffic-cells/` its cut at a 4 KiB target.
+
+`source.timestamp` is the time of the newest single edit among the roads (Digiroad's `muokkauspv`, in Finnish time),
+not the data's date: most roads were edited earlier, those in the Tampere fixture from 2020 to 2022. Each zoom-11
+tile is gzipped JSON,
+`{"schema": 1, "elements": [{"id": 104141443, "aadt": 10550, "lines": [[[23.62121, 60.813286], …]]}]}`: every road of
+800 or more vehicles a day (`aadt`) whose extent touches the tile, whole, ordered by Digiroad's ID. `lines` holds its
+line strings in WGS84, rounded to six decimal places, without heights.
