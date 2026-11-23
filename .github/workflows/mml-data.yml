@@ -1,7 +1,7 @@
 name: Polku NLS background map
 run-name: NLS background map / ${{ github.event_name == 'workflow_dispatch' && format('copy {0}', inputs.box) || 'test' }}
 
-# Copies NLS's (MML's) background-map vector tiles once, packs them into PMTiles and uploads a candidate.
+# Copies NLS's (MML's) background-map vector tiles, packs them into PMTiles a zoom and uploads a candidate in cells.
 on:
   pull_request:
     paths: [tools/osm_data/mml.py, tools/osm_data/mml.htaccess, .github/workflows/mml-data.yml]
@@ -148,9 +148,10 @@ jobs:
         with:
           name: mml-release
           path: mml-release
-      - name: Upload, read back and name the candidate in polku-mml
+      - name: Upload the cells the host lacks, read back and name the candidate in polku-mml
         env:
           OSM_ALLOW_PUBLISH: 'true'
+          OSM_CELLS: 'true'
           OSM_FTP_HOST: ${{ secrets.OSM_FTP_HOST }}
           OSM_FTP_USER: ${{ secrets.OSM_FTP_USER }}
           OSM_FTP_PASSWORD: ${{ secrets.OSM_FTP_PASSWORD }}

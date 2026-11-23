@@ -280,23 +280,29 @@ has none when the new square is under 1 MiB, when the square is new, or when it 
 
 ## NLS background map
 
-`mml.py` copies the National Land Survey's background-map vector tiles (docs/OPERATIONS.md). Each release is
-`polku-mml/releases/<release>/`: `taustakartta.pmtiles` (MML's own tiles, gzipped; a 404 is an empty tile),
-`tiles.tsv.gz` (each tile's `z x y status last_modified`), `LICENSE.txt` and `manifest.json`:
+`mml.py` copies the National Land Survey's background-map vector tiles (docs/OPERATIONS.md). A release has one
+PMTiles archive a zoom, `taustakartta-<z>.pmtiles` (MML's own tiles, gzipped; a 404 is an empty tile), cut into cells
+as the OSM data's (Cells), with `tiles.tsv.gz` (each tile's `z x y status last_modified`) and `LICENSE.txt` among the
+shared files (Shared files). Its `manifest.json`, as uploaded:
 
 ```json
-{"schema": 1, "release": "20261123T040000Z", "built_at": "2026-11-23T04:00:00Z",
+{"schema": 1, "release": "20261224T040000Z", "built_at": "2026-12-24T04:00:00Z",
  "source": "https://avoin-karttakuva.maanmittauslaitos.fi/vectortiles/taustakartta/wmts/1.0.0/taustakartta/default/v21/WGS84_Pseudo-Mercator/{z}/{y}/{x}.pbf",
- "fetched_from": "2026-11-22T21:00:05Z", "fetched_to": "2026-11-23T03:20:41Z",
- "attribution": "© Maanmittauslaitos, Maastotietokanta 11/2026", "license": "CC BY 4.0",
+ "fetched_from": "2026-12-23T21:00:05Z", "fetched_to": "2026-12-24T03:20:41Z",
+ "attribution": "© Maanmittauslaitos, Maastotietokanta 12/2026", "license": "CC BY 4.0",
  "zooms": [11, 14], "bounds": [19.0, 59.3, 31.6, 70.1], "tiles": {"200": 892856},
- "datasets": {"taustakartta": {"url": "taustakartta.pmtiles", "bytes": 9000000000, "sha256": "…"}},
- "files": [{"path": "taustakartta.pmtiles", "bytes": 9000000000, "sha256": "…"}, {"path": "tiles.tsv.gz", …}, {"path": "LICENSE.txt", …}]}
+ "datasets": {"taustakartta-11": {"url": "../../files/<sha256>.json", "format": "pmtiles-json-cells", "zoom": 11, "bytes": …, "sha256": "…"},
+              "taustakartta-12": {…}, "taustakartta-13": {…}, "taustakartta-14": {…}},
+ "files": [{"path": "taustakartta-11.cells.json", "url": "../../files/<sha256>.json", …}, …, {"path": "tiles.tsv.gz", "url": "../../files/<sha256>.gz", …}, {"path": "LICENSE.txt", …}]}
 ```
 
-`tiles` counts MML's answers by status. A tile with another 4xx is left out of the archive. `candidates/current.json`
-holds the candidate's manifest, and `current.json`, once promoted, the live release's: the same bytes, not rewritten
-as the OSM data's.
+Each zoom is its own dataset, `taustakartta-<z>`, whose index has that zoom, so a tile's cell is found from its
+parent tiles as in the OSM data. The cells hold vector tiles (MVT in their headers), though the format keeps the OSM
+data's name. Their metadata credits `© Maanmittauslaitos` without a date, so a cell changes only with its tiles; the
+dated credit is the manifest's `attribution`. `tiles` counts MML's answers by status. A tile with another 4xx is left
+out of the archive. `candidates/current.json` holds the candidate's manifest, and `current.json` the live release's,
+its URLs relative to `polku-mml/`, as the OSM data's. The first copy (release `20261123T023208Z`) is one archive,
+`taustakartta`, in its release's folder: its pointer is put in that form once, by the first upload in cells.
 
 ## Digiroad traffic volumes
 
