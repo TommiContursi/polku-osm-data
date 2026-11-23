@@ -301,7 +301,8 @@ as the OSM data's.
 ## Digiroad traffic volumes
 
 `digiroad.py` copies Digiroad's busy roads (docs/OPERATIONS.md). Its release has the OSM data's layout and goes up
-the same way, in cells among the shared files, into `polku-digiroad/` (Shared files, Cells). Its manifest:
+the same way, in cells among the shared files, into `polku-digiroad/` (Shared files, Cells). Its manifest, as
+`build` writes it:
 
 ```json
 {"schema": 1, "release": "20261123T181942Z-9a1d648460f7", "built_at": "2026-11-23T18:19:42Z",
@@ -315,8 +316,14 @@ the same way, in cells among the shared files, into `polku-digiroad/` (Shared fi
  "files": [{"path": "traffic.pmtiles", …}, {"path": "LICENSE.txt", …}]}
 ```
 
-`source.timestamp` is the newest edit among the roads (Digiroad's `muokkauspv`, in Finnish time), so it says how old
-the data is, not when it was copied. Each zoom-11 tile is gzipped JSON,
+On the host the dataset's `format` is `pmtiles-json-cells`, and its `url`, `bytes` and `sha256` are those of its
+index, `traffic.cells.json`, among the shared files (Cells). `files` lists the index in place of the archive, and each
+entry's `url` is its place among the shared files. `tools/fixtures/digiroad-traffic.pmtiles` is the archive of a WFS
+answer around Tampere, and `tools/fixtures/digiroad-traffic-cells/` its cut at a 4 KiB target.
+
+`source.timestamp` is the time of the newest single edit among the roads (Digiroad's `muokkauspv`, in Finnish time),
+not the data's date: most roads were edited earlier, those in the Tampere fixture from 2020 to 2022. Each zoom-11
+tile is gzipped JSON,
 `{"schema": 1, "elements": [{"id": 104141443, "aadt": 10550, "lines": [[[23.62121, 60.813286], …]]}]}`: every road of
 800 or more vehicles a day (`aadt`) whose extent touches the tile, whole, ordered by Digiroad's ID. `lines` holds its
 line strings in WGS84, rounded to six decimal places, without heights.

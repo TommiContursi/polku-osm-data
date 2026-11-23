@@ -156,9 +156,9 @@ def validate_files(ftp,base,expected,partial=False):
 
 
 
-def prune(ftp, apply=False, incoming_bytes=0, now=None, incoming=None, incoming_files=()):
+def prune(ftp, apply=False, incoming_bytes=0, now=None, incoming=None, incoming_files=(), budget=BUDGET, product='OSM'):
     """incoming is the manifest an upload is putting on the host, and incoming_files all the shared files it names,
-    cells too: they all stay."""
+    cells too: they all stay. budget is the folder's size limit, and product names it in the error."""
     now=now or datetime.now(timezone.utc)
     p.require(type(incoming_bytes) is int and incoming_bytes>=0,'Invalid incoming byte budget')
     incoming_release=incoming and p.validate(incoming)['release']
@@ -266,7 +266,8 @@ def prune(ftp, apply=False, incoming_bytes=0, now=None, incoming=None, incoming_
         else: keep[p.SHARED]='a release that stays has no manifest to read, or the live receipt is unavailable'
     used=usage(ftp)
     after=used-sum(remove.values())
-    p.require(after+incoming_bytes+4096<=BUDGET,'OSM storage budget exceeded (80 GiB); retain live data and inspect storage')
+    p.require(after+incoming_bytes+4096<=budget,
+              f'{product} storage budget exceeded ({budget/1024**3:g} GiB); retain live data and inspect storage')
     result={'delete':sorted(remove),'keep':keep,'bytes_before':used,'bytes_after':after,'incoming_bytes':incoming_bytes,
             'applied':apply,'recover_receipt':live['release'] if pending else None,'previous_release':predecessor}
     if apply:

@@ -57,12 +57,14 @@ class CellTests(unittest.TestCase):
         for row in second['cells']:
             self.assertLessEqual(row[3], 4096 + 1024, 'at most the target, beside its header and directory')
 
-    def test_the_fixture_is_the_cut_of_the_geometry_fixture(self):
+    def test_the_cell_fixtures_are_the_cuts_of_the_geometry_and_traffic_fixtures(self):
         fixtures = Path(__file__).resolve().parents[1] / 'fixtures'
-        made = {hashlib.sha256(data).hexdigest() + '.pmtiles': data
-                for _, data in cells.cells(fixtures / 'osm-geometry.pmtiles', 4096)}
-        made['index.json'] = cells.encoded(cells.index(fixtures / 'osm-geometry.pmtiles', 4096))
-        self.assertEqual({p.name: p.read_bytes() for p in (fixtures / 'osm-geometry-cells').iterdir()}, made)
+        for name in ('osm-geometry', 'digiroad-traffic'):
+            with self.subTest(name):
+                made = {hashlib.sha256(data).hexdigest() + '.pmtiles': data
+                        for _, data in cells.cells(fixtures / f'{name}.pmtiles', 4096)}
+                made['index.json'] = cells.encoded(cells.index(fixtures / f'{name}.pmtiles', 4096))
+                self.assertEqual({p.name: p.read_bytes() for p in (fixtures / f'{name}-cells').iterdir()}, made)
 
     def test_a_tile_larger_than_the_target_is_a_cell_of_its_own(self):
         big = write(self.tmp / 'big.pmtiles', {(14, 9100, 4600): bytes(5000), (14, 9101, 4600): b'small'}, {})
