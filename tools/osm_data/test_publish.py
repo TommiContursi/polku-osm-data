@@ -366,9 +366,9 @@ class PublishTests(unittest.TestCase):
         # curl's --retry alone gives up at once when Geofabrik refuses the runner or briefly answers 404 for a file it has (#1131)
         workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/osm-data.yml').read_text().replace('\\\n', ' ')
         requests = [line for line in workflow.splitlines() if 'curl ' in line and '127.0.0.1' not in line]
-        self.assertEqual(len(requests), 12, "the snapshot check and its mirror fallback, the countries and their checksums, the "
-                         "mirror's Europe export and checksum, the reference check and its mirror fallback, the reference size and "
-                         "its two downloads, and BRouter's release for the tests")
+        self.assertEqual(len(requests), 14, "the snapshot check and its mirror fallback, the countries, their checksums and "
+                         "their mirror fallback, the mirror's Europe export and checksum, the reference check and its mirror fallback, "
+                         "the reference size, its two downloads and their mirror fallback, and BRouter's release for the tests")
         for line in requests:
             with self.subTest(line=line.strip()[:90]):
                 # the snapshot check reads a 404 as a date not ready yet, so it retries only a refusal; the Europe
@@ -377,22 +377,23 @@ class PublishTests(unittest.TestCase):
                 self.assertTrue(resumable or ('--retry-connrefused' if '$osm_region' in line else '--retry-all-errors') in line, line)
 
     def test_europe_download_goes_on_from_where_it_stopped(self):
-        # Geofabrik's 35 GB export stopped at 91 % on 2026-11-21 after 2 hours, and curl's own --retry starts again from nothing
+        # Geofabrik's 35 GB export stopped at 91 % on 2026-11-21 after 2 hours, and curl's own --retry starts again from nothing.
+        # When the mirror holds the same dated export, the rest comes from there (#1).
         workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/osm-data.yml').read_text()
         step = workflow.split('      - name: Download dated reference and checksum\n', 1)[1].split('\n      - name:', 1)[0]
         script = dedent(step.split('        run: |\n', 1)[1])
         export = bytes(range(256)) * 4096
-        requests = []
-        failing = []
+        requests, mirrored, failing, offered = [], [], [], []
 
-        class Geofabrik(BaseHTTPRequestHandler):
+        class Hosts(BaseHTTPRequestHandler):
             def do_GET(self):
-                requests.append((self.path, self.headers.get('Range')))
-                if failing:
+                mirror = self.path.startswith('/mirror/')
+                (mirrored if mirror else requests).append((self.path, self.headers.get('Range')))
+                if failing and not mirror:
                     self.send_error(503)
                     return
                 if self.path.endswith('.md5'):
-                    body = hashlib.md5(export).hexdigest().encode() + b'  europe-261120.osm.pbf\n'
+                    body = hashlib.md5(export).hexdigest().encode() + f'  europe-{offered[0] if mirror else "261120"}.osm.pbf\n'.encode()
                     self.send_response(200)
                     self.send_header('Content-Length', str(len(body)))
                     self.end_headers()
@@ -404,14 +405,14 @@ class PublishTests(unittest.TestCase):
                 if start:
                     self.send_header('Content-Range', f'bytes {start}-{len(export) - 1}/{len(export)}')
                 self.end_headers()
-                # the first two transfers stop part of the way, as a dropped or stalled connection does
-                self.wfile.write(export[start:start + 300000] if len(requests) <= 2 else export[start:])
+                # Geofabrik's first two transfers stop part of the way, as a dropped or stalled connection does
+                self.wfile.write(export[start:start + 300000] if not mirror and len(requests) <= 2 else export[start:])
                 self.close_connection = True
 
             def log_message(self, *args):
                 pass
 
-        with HTTPServer(('127.0.0.1', 0), Geofabrik) as server, tempfile.TemporaryDirectory() as tmp:
+        with HTTPServer(('127.0.0.1', 0), Hosts) as server, tempfile.TemporaryDirectory() as tmp:
             worker = Thread(target=server.serve_forever, daemon=True)
             worker.start()
             try:
@@ -419,24 +420,37 @@ class PublishTests(unittest.TestCase):
                 bin.mkdir()
                 (bin / 'sleep').write_text('#!/bin/sh\n')
                 (bin / 'sleep').chmod(0o755)
-                url = f'http://127.0.0.1:{server.server_port}/europe-261120.osm.pbf'
-                env = dict(os.environ, SOURCE_URL=url, PATH=f'{bin}:{os.defpath}', NO_PROXY='127.0.0.1', no_proxy='127.0.0.1')
-                for case, fail in [('stopped twice', False), ('never answered', True)]:
+                host = f'http://127.0.0.1:{server.server_port}'
+                url, mirror = host + '/europe-261120.osm.pbf', host + '/mirror/europe-latest.osm.pbf'
+                for case, fail, offer in [('stopped twice', False, '261121'), ('never answered', True, '261121'),
+                                          ('stopped, the mirror has the same export', False, '261120')]:
                     with self.subTest(case):
                         build = Path(tmp) / case
                         (build / 'osm-build').mkdir(parents=True)
                         requests.clear()
+                        mirrored.clear()
                         failing[:] = [True] if fail else []
+                        offered[:] = [offer]
+                        output = build / 'output'
+                        env = dict(os.environ, SOURCE_URL=url, SNAPSHOT='261120', MIRROR=host + '/mirror/', GITHUB_OUTPUT=str(output),
+                                   GITHUB_STEP_SUMMARY=os.devnull, PATH=f'{bin}:{os.defpath}', NO_PROXY='127.0.0.1', no_proxy='127.0.0.1')
                         result = subprocess.run(['bash', '-e', '-c', script], cwd=build, env=env, capture_output=True, text=True, timeout=30)
                         if fail:
                             self.assertEqual(result.returncode, 1, result)
                             self.assertIn('The Europe export stopped at 0 bytes', result.stdout)
                             self.assertEqual(len(requests), 4, 'four tries that add no bytes end it')
+                            continue
+                        self.assertEqual(result.returncode, 0, result)
+                        self.assertEqual((build / 'osm-build/europe.osm.pbf').read_bytes(), export)
+                        if offer == '261120':
+                            self.assertEqual(requests, [('/europe-261120.osm.pbf', None)])
+                            self.assertEqual(mirrored, [('/mirror/europe-latest.osm.pbf.md5', None), ('/mirror/europe-latest.osm.pbf', 'bytes=300000-'),
+                                                        ('/mirror/europe-latest.osm.pbf.md5', None)])
+                            self.assertEqual(output.read_text(), f'url={mirror}\n')
                         else:
-                            self.assertEqual(result.returncode, 0, result)
-                            self.assertEqual((build / 'osm-build/europe.osm.pbf').read_bytes(), export)
                             self.assertEqual(requests, [('/europe-261120.osm.pbf', None), ('/europe-261120.osm.pbf', 'bytes=300000-'),
                                                         ('/europe-261120.osm.pbf', 'bytes=600000-'), ('/europe-261120.osm.pbf.md5', None)])
+                            self.assertEqual(output.read_text(), f'url={url}\n')
                             self.assertIn(f'Downloaded {url}', result.stdout)
             finally:
                 server.shutdown()
@@ -670,6 +684,54 @@ class PublishTests(unittest.TestCase):
                             source = Path(tmp) / 'osm-build/sources' / c
                             self.assertEqual((source / 'source.osm.pbf').read_bytes(), pbf[c])
                             self.assertEqual((source / 'source.md5').read_bytes(), md5[c])
+            finally:
+                server.shutdown()
+                worker.join()
+
+    def test_a_failed_country_download_clips_all_four_from_the_mirror_s_same_export(self):
+        # Norway's transfer stalled at 1.01 of 1.38 GB on 2026-11-23; the mirror holds Europe alone, so all four are clipped (#1)
+        workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/osm-data.yml').read_text()
+        step = workflow.split('name: Download the four countries and their checksums', 1)[1].split('\n      - name:', 1)[0]
+        script = dedent(step.split('        run: |\n', 1)[1])
+        offered = []
+
+        class Hosts(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path.startswith('/mirror/'):
+                    body = b'0' * 32 + f'  europe-{offered[0]}.osm.pbf\n'.encode()
+                elif self.path.endswith('.md5'):
+                    body = b'0' * 32 + b'  country.osm.pbf\n'
+                else:
+                    body = b'a country'
+                self.send_response(200)
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        with HTTPServer(('127.0.0.1', 0), Hosts) as server, tempfile.TemporaryDirectory() as tmp:
+            worker = Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            try:
+                host = f'http://127.0.0.1:{server.server_port}'
+                stalled = 'curl() { case "$*" in *norway-261118.osm.pbf*) echo "curl: (28) Operation timed out" >&2; return 28;; esac; command curl "$@"; }\n'
+                local = script.replace('https://download.geofabrik.de', host)
+                for offer, code, source in [('261118', 0, 'source=mirror\n'), ('261119', 1, '')]:
+                    with self.subTest(offer=offer):
+                        offered[:] = [offer]
+                        build = Path(tmp) / offer
+                        build.mkdir()
+                        output = build / 'output'
+                        env = dict(os.environ, SNAPSHOT='261118', MIRROR=host + '/mirror/', GITHUB_OUTPUT=str(output),
+                                   GITHUB_STEP_SUMMARY=os.devnull, NO_PROXY='127.0.0.1', no_proxy='127.0.0.1')
+                        result = subprocess.run(['bash', '-e', '-c', stalled + local], cwd=build, env=env, capture_output=True, text=True, timeout=30)
+                        self.assertEqual(result.returncode, code, result)
+                        self.assertEqual(output.read_text() if output.exists() else '', source)
+                        if code == 0:
+                            self.assertFalse((build / 'osm-build/sources').exists(), "Geofabrik's countries never join clipped ones")
+                        self.assertNotIn('estonia', result.stdout, 'the countries after the failed one are not asked for')
             finally:
                 server.shutdown()
                 worker.join()

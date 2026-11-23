@@ -42,8 +42,11 @@ artifacts are kept 14 days.
 **The second source.** When Geofabrik answers none of the snapshot step's requests (no HTTP
 answer at all; a 404 means a date isn't ready, and the run fails for the alerts' re-run), the
 run takes [GWDG's mirror](https://ftp5.gwdg.de/pub/misc/openstreetmap/download.geofabrik.de/)
-of Geofabrik's Europe export, which carries Geofabrik's own dated file and its MD5. The
-mirror holds Europe alone, so the snapshot job downloads it instead (up to 300 minutes, the same
+of Geofabrik's Europe export, which carries Geofabrik's own dated file and its MD5. So does
+a country download that fails, stalls or times out partway, when the mirror's MD5 file names the
+same dated export (Norway's stopped at 1.01 of 1.38 GB on 2026-11-23); the countries already
+downloaded are dropped, since one run never mixes the two. The
+mirror holds Europe alone, so the snapshot job downloads it instead (up to 185 minutes, the same
 resumable transfer as the geometry job), checks the published MD5, and clips the four
 countries from it in one pass (`osmium extract --strategy complete_ways`, the polygons in
 `data/`), keeping the export's replication timestamp in each country's header. The country
@@ -53,8 +56,9 @@ manifest's `source` names the mirrored export it was clipped from, with the tool
 (`clipped`) and the polygon (`coverage`), so a mirrored release is never mistaken for
 Geofabrik's own: the clipped countries differ slightly from Geofabrik's at the borders. A build mixing the two sources'
 countries is refused. The Europe export is the same file from either place, so when Geofabrik
-doesn't answer the geometry job's runner and the mirror's MD5 file names the same dated export,
-the geometry job takes the mirror's copy, and its manifest names the mirror. The mirror keeps only the newest export, so a build that runs past its nightly
+doesn't answer the geometry job's runner, or its transfer stops, and the mirror's MD5 file names
+the same dated export, the geometry job takes the mirror's copy, going on from where Geofabrik's
+transfer stopped (the MD5 covers both parts), and its manifest names the mirror. The mirror keeps only the newest export, so a build that runs past its nightly
 update (about 23:50 UTC) fails at the geometry job's epoch check rather than mixing two
 dates. The polygons are copies of Geofabrik's of 2026-11-23, updated by hand when Geofabrik
 changes a country's extent (a test pins each one's SHA-256); each manifest records the

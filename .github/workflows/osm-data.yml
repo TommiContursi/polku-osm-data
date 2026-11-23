@@ -113,10 +113,10 @@ jobs:
     # country builds take their sources from this job's artifacts and never ask Geofabrik themselves.
     if: github.event.schedule == '17 3 * * 1' || (github.event_name == 'workflow_dispatch' && inputs.operation == 'build' && inputs.release == '')
     runs-on: ubuntu-24.04
-    timeout-minutes: 300
+    timeout-minutes: 360
     outputs:
       stamp: ${{ steps.snapshot.outputs.stamp }}
-      source: ${{ steps.snapshot.outputs.source }}
+      source: ${{ steps.countries.outputs.source || steps.snapshot.outputs.source }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -166,6 +166,7 @@ jobs:
                "(it offered '$mirror_stamp')" >&2
           exit 1
       - name: Download the four countries and their checksums
+        id: countries
         if: steps.snapshot.outputs.source == 'geofabrik'
         timeout-minutes: 150
         env:
@@ -174,19 +175,32 @@ jobs:
           for country in finland sweden norway estonia; do
             mkdir -p "osm-build/sources/$country"
             # Geofabrik is moving countries into folders of their own: the checksum comes from beside the file served (#1151)
-            source=$(curl --fail --location --retry 3 --retry-all-errors --retry-delay 30 --retry-max-time 300 --connect-timeout 30 --max-time 1800 --write-out '%{url_effective}' "https://download.geofabrik.de/europe/$country-$SNAPSHOT.osm.pbf" -o "osm-build/sources/$country/source.osm.pbf")
-            echo "Downloaded $source"
-            curl --fail --location --retry 3 --retry-all-errors --retry-delay 30 --max-time 60 "$source.md5" -o "osm-build/sources/$country/source.md5"
+            if source=$(curl --fail --location --retry 3 --retry-all-errors --retry-delay 30 --retry-max-time 300 --connect-timeout 30 --max-time 1800 --write-out '%{url_effective}' "https://download.geofabrik.de/europe/$country-$SNAPSHOT.osm.pbf" -o "osm-build/sources/$country/source.osm.pbf") &&
+                curl --fail --location --retry 3 --retry-all-errors --retry-delay 30 --max-time 60 "$source.md5" -o "osm-build/sources/$country/source.md5"; then
+              echo "Downloaded $source"
+              continue
+            fi
+            # A transfer that stalls or times out partway (Norway, 2026-11-23) clips all four from the mirror's copy of the
+            # same dated Europe export instead: the mirror has no countries, and one run never mixes the two (#1)
+            if curl --fail --silent --show-error --location --connect-timeout 10 --max-time 30 --retry 2 --retry-all-errors --retry-delay 5 \
+                "${MIRROR}europe-latest.osm.pbf.md5" | grep -q "  europe-$SNAPSHOT\.osm\.pbf\$"; then
+              rm -rf osm-build/sources
+              echo 'source=mirror' >> "$GITHUB_OUTPUT"
+              echo "Geofabrik's $country download failed: the four countries are clipped from the GWDG mirror's Europe export $SNAPSHOT." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "Geofabrik's $country download failed, and the mirror no longer holds the Europe export $SNAPSHOT" >&2
+            exit 1
           done
           df -h .
       - name: Install the clipping tool
-        if: steps.snapshot.outputs.source == 'mirror'
+        if: steps.snapshot.outputs.source == 'mirror' || steps.countries.outputs.source == 'mirror'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends osmium-tool
           osmium --version | head -1
       - name: Download the mirrored Europe export and check its published MD5
-        if: steps.snapshot.outputs.source == 'mirror'
+        if: steps.snapshot.outputs.source == 'mirror' || steps.countries.outputs.source == 'mirror'
         timeout-minutes: 185
         env:
           SNAPSHOT: ${{ steps.snapshot.outputs.stamp }}
@@ -212,7 +226,7 @@ jobs:
           (cd osm-build && sed "s/  .*/  europe.osm.pbf/" europe.md5 | md5sum --check --strict -)
           df -h .
       - name: Clip the four countries in one pass, keeping the export's replication timestamp
-        if: steps.snapshot.outputs.source == 'mirror'
+        if: steps.snapshot.outputs.source == 'mirror' || steps.countries.outputs.source == 'mirror'
         run: |
           stamp=$(osmium fileinfo -g header.option.osmosis_replication_timestamp osm-build/europe.osm.pbf)
           echo "The mirrored export was made from OSM at $stamp"
@@ -441,28 +455,39 @@ jobs:
           assert size>0 and free>=size+25*1024**3, 'Insufficient reference download/staging disk on this runner'
           PYCODE
       - name: Download dated reference and checksum
+        id: download
         timeout-minutes: 185
         env:
           SOURCE_URL: ${{ steps.europe.outputs.url }}
+          SNAPSHOT: ${{ steps.reference.outputs.stamp }}
         run: |
           # The 35 GB export has taken 42 minutes to over 2 hours, so a stopped or stalled transfer goes on from where it
           # stopped, on a new connection, within 3 hours. curl's own --retry would start again from nothing. Four tries in a
           # row that add no bytes end it, so a refused runner still fails soon and is re-run on a new one (#1043).
-          deadline=$((SECONDS + 10800)) have=0 idle=0
-          until source=$(curl --fail --location --continue-at - --connect-timeout 30 --speed-limit 1000000 --speed-time 300 --max-time $((deadline - SECONDS)) --write-out '%{url_effective}' "$SOURCE_URL" -o osm-build/europe.osm.pbf); do
+          deadline=$((SECONDS + 10800)) have=0 idle=0 url=$SOURCE_URL
+          until source=$(curl --fail --location --continue-at - --connect-timeout 30 --speed-limit 1000000 --speed-time 300 --max-time $((deadline - SECONDS)) --write-out '%{url_effective}' "$url" -o osm-build/europe.osm.pbf); do
             size=0; [ ! -f osm-build/europe.osm.pbf ] || size=$(($(wc -c < osm-build/europe.osm.pbf)))
             if [ "$size" -gt "$have" ]; then idle=0; else idle=$((idle + 1)); fi
             have=$size
+            # Once Geofabrik's transfer stalls or stops, the rest comes from the mirror's copy of the same dated file (#1).
+            # The checksum at the end covers both parts.
+            if [ "$url" != "${MIRROR}europe-latest.osm.pbf" ] && [ "$SNAPSHOT" != latest ] && curl --fail --silent --show-error --location \
+                --connect-timeout 10 --max-time 30 --retry 2 --retry-all-errors --retry-delay 5 "${MIRROR}europe-latest.osm.pbf.md5" \
+                | grep -q "  europe-$SNAPSHOT\.osm\.pbf\$"; then
+              url="${MIRROR}europe-latest.osm.pbf" idle=0
+              echo "Geofabrik's transfer stopped at $have bytes: going on from the GWDG mirror's copy of the same export" | tee -a "$GITHUB_STEP_SUMMARY"
+            fi
             if [ "$idle" -ge 4 ] || [ $((deadline - SECONDS)) -lt 120 ]; then echo "The Europe export stopped at $have bytes"; exit 1; fi
             echo "Going on from $have bytes"; sleep 30
           done
           echo "Downloaded $source"
           curl --fail --location --retry 3 --retry-all-errors --retry-delay 30 --max-time 60 "$source.md5" -o osm-build/europe.md5
+          echo "url=$url" >> "$GITHUB_OUTPUT"
           df -h .
       - name: Complete original references and compile local geometry
         env:
           SNAPSHOT: ${{ steps.reference.outputs.stamp }}
-          SOURCE_URL: ${{ steps.europe.outputs.url }}
+          SOURCE_URL: ${{ steps.download.outputs.url }}
         run: |
           /usr/bin/time -v python -m tools.osm_data.geometry_source osm-build/europe.osm.pbf osm-build/geometry osm-build/inputs/osm-finland-geometry-inputs osm-build/inputs/osm-sweden-geometry-inputs osm-build/inputs/osm-norway-geometry-inputs osm-build/inputs/osm-estonia-geometry-inputs --md5 osm-build/europe.md5 --snapshot "$SNAPSHOT" --source-url "$SOURCE_URL" --remove-source
           test ! -f osm-build/europe.osm.pbf
