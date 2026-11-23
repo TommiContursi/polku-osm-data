@@ -7,29 +7,35 @@ import re
 import urllib.request
 from urllib.error import HTTPError
 
-OPERATIONS={'build':'update','upload-existing':'update','resume-existing':'update','check':'health'}
-TITLES={'update':'OSM data update failed','health':'OSM data health check failed','test':'OSM alert delivery test'}
+WORKFLOWS={'.github/workflows/osm-data.yml':('OSM data / ',{'build':'update','upload-existing':'update','resume-existing':'update','check':'health'}),
+           '.github/workflows/routing-data.yml':('Routing data / ',{'initial':'routing-update','update':'routing-update','check':'routing-health'})}
+TITLES={'update':'OSM data update failed','health':'OSM data health check failed','test':'OSM alert delivery test',
+        'routing-update':'Routing data update failed','routing-health':'Routing data health check failed'}
 
 
 def classify(event,repository,jobs=None):
     run=event.get('workflow_run',{})
     path=run.get('path') or event.get('workflow',{}).get('path')
-    if (path!='.github/workflows/osm-data.yml' or run.get('head_branch')!='main'
+    if (path not in WORKFLOWS or run.get('head_branch')!='main'
         or run.get('head_repository',{}).get('full_name')!=repository
         or run.get('event') not in {'schedule','workflow_dispatch'}): return None
+    prefix,operations=WORKFLOWS[path]
     title=run.get('display_title') or run.get('name','')
-    if not title.startswith('OSM data / '): return None
-    operation=title.removeprefix('OSM data / ')
-    if operation not in OPERATIONS or run.get('conclusion') in {'neutral','skipped'}: return None
+    if not title.startswith(prefix): return None
+    operation=title.removeprefix(prefix)
+    if operation not in operations or run.get('conclusion') in {'neutral','skipped'}: return None
     url=run.get('html_url','')
     if not re.fullmatch(r'https://github\.com/'+re.escape(repository)+r'/actions/runs/[0-9]+',url):
         raise ValueError('Invalid operations run URL')
     failed=run.get('conclusion')!='success'
     reason=run.get('conclusion','missing conclusion')
-    if operation=='build' and not failed:
+    if prefix=='OSM data / ' and operation=='build' and not failed:
+        # A late scheduled build that found its export already built or building stops before its country jobs
+        conclusions={job.get('name'):job.get('conclusion') for job in jobs or []}
+        if conclusions.get('snapshot')=='success' and conclusions.get('build')=='skipped': return None
         failed=not any(job.get('name')=='upload' and job.get('conclusion')=='success' for job in (jobs or []))
         if failed: reason='build completed without a successful upload'
-    return {'kind':OPERATIONS[operation],'failed':failed,'url':url,'reason':reason,'operation':operation}
+    return {'kind':operations[operation],'failed':failed,'url':url,'reason':reason,'operation':operation}
 
 
 def update_incident(api,repository,incident):
@@ -45,7 +51,8 @@ def update_incident(api,repository,incident):
               +'The '+incident['operation']+' operation needs attention: '+incident['reason']+'.\n\n'
               +'Latest run: '+incident['url']+'\n\n'
               +'Open the failed job for diagnostics. A failed build or upload leaves the live release as it is; Polku promotes only a verified candidate. '
-              +'A health failure can affect users; Polku retains cached/Overpass fallback and explicit missing-data states. '
+              +('' if kind.startswith('routing') else
+                'A health failure can affect users; Polku retains cached/Overpass fallback and explicit missing-data states. ')
               +'This issue updates on repeated failure and closes after the corresponding successful recovery. A healthy old release does not clear a failed update.')
         if issue:
             api.request('PATCH','/repos/'+repository+'/issues/'+str(issue['number']),{'body':body})

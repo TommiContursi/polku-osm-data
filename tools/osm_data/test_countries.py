@@ -31,7 +31,7 @@ class CountryTests(unittest.TestCase):
         self.assertEqual(len(result['coordinates'][1]),1)
         with self.assertRaises(ValueError):builder.parse_poly('none\n1\nnan 2\nEND\nEND')
 
-    def inputs(self,root,*,conflict=False,mixed=False):
+    def inputs(self,root,*,conflict=False,mixed=False,mirror=False,mixed_source=False):
         paths=[]
         for i,country in enumerate(COUNTRIES):
             p=root/country;p.mkdir();paths.append(p)
@@ -44,7 +44,11 @@ class CountryTests(unittest.TestCase):
             for name,body in files.items():
                 (p/name).write_bytes(body);records.append({'path':name,'bytes':len(body),'sha256':hashlib.sha256(body).hexdigest()})
             archive=records[0]
-            manifest={'schema':1,'country':country,'release':country+'-fixture','source':{'url':f'https://download.geofabrik.de/europe/{country}-latest.osm.pbf','timestamp':'2026-11-0'+('2' if mixed and i==1 else '1')+'T00:00:00Z','sha256':str(i)*64,'bytes':100},'bounds':[-1,-1,1,1],'coverage':COVERAGE,'files':records,'attribution':'© OpenStreetMap contributors','license':builder.LICENSE,'datasets':{name:{'format':'pmtiles-json','schema':1,'zoom':z,'url':name+'.pmtiles','bytes':len(files[name+'.pmtiles']),'sha256':hashlib.sha256(files[name+'.pmtiles']).hexdigest()} for name,z in zooms.items()}}
+            source={'url':f'https://download.geofabrik.de/europe/{country}-latest.osm.pbf'}
+            if mirror or (mixed_source and i==1):
+                source={'url':builder.MIRROR+'europe-latest.osm.pbf',
+                        'clipped':{'with':'osmium 1.16.0 extract --strategy complete_ways'}}
+            manifest={'schema':1,'country':country,'release':country+'-fixture','source':{**source,'timestamp':'2026-11-0'+('2' if mixed and i==1 else '1')+'T00:00:00Z','sha256':str(i)*64,'bytes':100},'bounds':[-1,-1,1,1],'coverage':COVERAGE,'files':records,'attribution':'© OpenStreetMap contributors','license':builder.LICENSE,'datasets':{name:{'format':'pmtiles-json','schema':1,'zoom':z,'url':name+'.pmtiles','bytes':len(files[name+'.pmtiles']),'sha256':hashlib.sha256(files[name+'.pmtiles']).hexdigest()} for name,z in zooms.items()}}
             (p/'manifest.json').write_text(json.dumps(manifest))
         return paths
 
@@ -80,6 +84,54 @@ class CountryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);paths=self.inputs(root)
             with self.assertRaisesRegex(ValueError,'four|countries'):module.bundle(paths[:3],root/'bundle')
+
+    def test_countries_clipped_from_the_mirror_name_that_source(self):
+        """When Geofabrik refuses the runners, the countries come from the mirror's Europe export, clipped here (#1)."""
+        module=self.module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);paths=self.inputs(root,mirror=True)
+            m=module.bundle(paths,root/'bundle')
+            self.assertEqual(m['sources'][0]['url'],builder.MIRROR+'europe-latest.osm.pbf')
+            self.assertEqual(m['sources'][0]['clipped']['with'],'osmium 1.16.0 extract --strategy complete_ways')
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);paths=self.inputs(root,mixed_source=True);out=root/'bundle'
+            with self.assertRaisesRegex(ValueError,'different sources'):module.bundle(paths,out)
+            self.assertFalse(out.exists())
+
+    def test_source_names_either_geofabrik_or_the_mirror_clipped_here(self):
+        clipped={'with':'osmium 1.16.0 extract --strategy complete_ways'}
+        mirror=builder.MIRROR+'europe-261122.osm.pbf'
+        for url,country,extra,expected in [
+            ('https://download.geofabrik.de/europe/finland-261122.osm.pbf','finland',{},'geofabrik'),
+            ('https://download.geofabrik.de/europe-261122.osm.pbf','europe',{},'geofabrik'),
+            (mirror,'finland',{'clipped':clipped},'mirror'),
+            (mirror,'europe',{},'mirror'),
+            (mirror,'finland',{},None),
+            (mirror,'finland',{'clipped':{'with':''}},None),
+            (mirror,'finland',{'clipped':{**clipped,'polygon':'data/finland.poly'}},None),
+            (mirror,'europe',{'clipped':clipped},None),
+            ('https://download.geofabrik.de/europe/finland-261122.osm.pbf','finland',{'clipped':clipped},None),
+            ('https://example.com/europe-261122.osm.pbf','europe',{},None),
+            (builder.MIRROR+'europe-26112.osm.pbf','europe',{},None)]:
+            with self.subTest(url=url,country=country,clipped=bool(extra)):
+                info={'url':url,**extra}
+                if expected is None:
+                    with self.assertRaisesRegex(ValueError,'Mislabeled'):builder.source_kind(info,country)
+                else:
+                    self.assertEqual(builder.source_kind(info,country),expected)
+
+    def test_checked_in_clipping_polygons_are_geofabrik_s(self):
+        """Every build clips and declares its extent with these, so none waits on Geofabrik for them (#1)."""
+        # Geofabrik's polygons as of 2026-11-23; Estonia's is the one the 2026-11-19 build recorded
+        expected={'finland':'c7d7dce360d2ef3d9b78658b76647410ca59219d6eaa85fa111c638655d8c4e8',
+                  'sweden':'e43c9b349c79aefc5b561dea6f591118cf78a2e890945fa27f5122d03417d3d1',
+                  'norway':'bf08b7f9f070e62d1b64b8950c05dbefaa77bba7c0637394acecb4a959d493b4',
+                  'estonia':'b3b3cd600b60c5321b1fd2090ecd3266f7a9002e5ec3f3ff9281b9759d71d6ca'}
+        for country in COUNTRIES:
+            with self.subTest(country=country):
+                body=(Path(__file__).resolve().parents[2]/f'data/{country}.poly').read_bytes()
+                self.assertEqual(hashlib.sha256(body).hexdigest(),expected[country])
+                builder.parse_poly(body.decode())
 
     def test_missing_product_or_mislabeled_source_cannot_claim_complete_coverage(self):
         module=self.module()

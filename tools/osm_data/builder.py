@@ -29,6 +29,11 @@ from tools.osm_data.geometry import area_tags, inspectable, encoded as json_byte
 ZOOM = 14
 SIDE = 1 << ZOOM
 SOURCE_URL = 'https://download.geofabrik.de/europe/finland-latest.osm.pbf'
+GEOFABRIK = 'https://download.geofabrik.de/'
+# Geofabrik refuses some of GitHub's runner networks. GWDG's mirror carries Geofabrik's own dated Europe export,
+# and only that one file, so the countries are clipped from it here when Geofabrik doesn't answer (#1).
+MIRROR = 'https://ftp5.gwdg.de/pub/misc/openstreetmap/download.geofabrik.de/'
+STAMPED = r'(latest|[0-9]{6})\.osm\.pbf'
 KINDS = re.compile(r'^(trunk|primary|secondary|tertiary|unclassified|residential|'
                    r'living_street|service|pedestrian|track|path|footway|cycleway|'
                    r'bridleway|steps)(_link)?$')
@@ -201,9 +206,8 @@ class PlaceRelations(osmium.SimpleHandler):
         return needed
 LICENSE_TEXT = '''Polku OSM roads, paths, lighting and outdoor details
 
-© OpenStreetMap contributors. Source: the Geofabrik country extracts identified in manifest.json.
+© OpenStreetMap contributors. Source: the OpenStreetMap extracts identified in manifest.json.
 https://www.openstreetmap.org/copyright
-https://download.geofabrik.de/europe.html
 
 This database is made available under the Open Database License (ODbL) 1.0.
 https://opendatacommons.org/licenses/odbl/1-0/
@@ -784,7 +788,23 @@ def build_dataset(source, output, source_info, *, full_country=False, started=No
     return manifest
 
 
-def inspect_source(source, md5_file, country='finland', snapshot='latest'):
+def source_kind(source_info, country='finland'):
+    """Which source a release was built from: Geofabrik's own extract, or the mirror's Europe export clipped here."""
+    url, clipped = source_info['url'], source_info.get('clipped')
+    if country == 'europe':
+        for kind, base in (('geofabrik', GEOFABRIK + 'europe-'), ('mirror', MIRROR + 'europe-')):
+            if clipped is None and re.fullmatch(re.escape(base) + STAMPED, url):
+                return kind
+    elif clipped is None:
+        if re.fullmatch(re.escape(GEOFABRIK + 'europe/' + country + '-') + STAMPED, url):
+            return 'geofabrik'
+    elif (re.fullmatch(re.escape(MIRROR + 'europe-') + STAMPED, url) and set(clipped) == {'with'}
+          and isinstance(clipped['with'], str) and clipped['with']):
+        return 'mirror'
+    raise ValueError(f'Mislabeled {country} source')
+
+
+def inspect_source(source, md5_file, country='finland', snapshot='latest', source_url=None, clipped_with=None):
     if snapshot != 'latest' and not re.fullmatch('[0-9]{6}', snapshot):
         raise ValueError('Invalid OSM snapshot date')
     expected = Path(md5_file).read_text(encoding='ascii').strip()
@@ -810,20 +830,25 @@ def inspect_source(source, md5_file, country='finland', snapshot='latest'):
     if stamp.tzinfo is None or not now - timedelta(days=14) <= stamp <= now + timedelta(days=1):
         raise ValueError('Source replication timestamp must be within 14 days and not in the future')
     timestamp = stamp.astimezone(timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z')
-    base = 'https://download.geofabrik.de/' + ('' if country == 'europe' else 'europe/')
-    return {'url': f'{base}{country}-{snapshot}.osm.pbf', 'timestamp': timestamp,
+    base = GEOFABRIK + ('' if country == 'europe' else 'europe/')
+    info = {'url': source_url or f'{base}{country}-{snapshot}.osm.pbf', 'timestamp': timestamp,
             'sha256': sha256.hexdigest(), 'bytes': source.stat().st_size}
+    if clipped_with:
+        info['clipped'] = {'with': clipped_with}
+    source_kind(info, country)
+    return info
 
 
-def build_release(source, output, md5_file, country='finland', coverage_file=None, snapshot='latest'):
+def build_release(source, output, md5_file, country='finland', coverage_file=None, snapshot='latest',
+                  source_url=None, clipped_with=None):
     source, output = Path(source), Path(output)
     if output.exists():
         raise FileExistsError(f'Release already exists: {output}')
     started = time.monotonic()
-    source_info = inspect_source(source, md5_file, country, snapshot)
+    source_info = inspect_source(source, md5_file, country, snapshot, source_url, clipped_with)
     coverage = parse_poly(Path(coverage_file).read_text()) if coverage_file else None
     if coverage_file:
-        source_info['coverage'] = {'url': f'https://download.geofabrik.de/europe/{country}.poly',
+        source_info['coverage'] = {'path': Path(coverage_file).as_posix(),
                                    'sha256': hashlib.sha256(Path(coverage_file).read_bytes()).hexdigest()}
     return build_dataset(source, output, source_info, full_country=True, started=started, country=country, coverage=coverage)
 
@@ -834,10 +859,13 @@ def main():
     parser.add_argument('output', type=Path, help='fresh immutable release directory')
     parser.add_argument('--md5', required=True, type=Path, help='Geofabrik .md5 checksum file')
     parser.add_argument('--country', choices=COUNTRIES, default='finland')
-    parser.add_argument('--coverage', type=Path, help='matching Geofabrik .poly clipping extent')
+    parser.add_argument('--coverage', type=Path, help="the country's clipping polygon, data/<country>.poly")
     parser.add_argument('--snapshot', default='latest', help='Geofabrik latest or a consistent YYMMDD country snapshot')
+    parser.add_argument('--source-url', help="the mirror's Europe export this country was clipped from")
+    parser.add_argument('--clipped-with', help='the tool and strategy that clipped it with --coverage, for the manifest')
     args = parser.parse_args()
-    manifest = build_release(args.source, args.output, args.md5, args.country, args.coverage, args.snapshot)
+    manifest = build_release(args.source, args.output, args.md5, args.country, args.coverage, args.snapshot,
+                             args.source_url, args.clipped_with)
     print(json.dumps({'release': manifest['release'], 'output': str(args.output),
                       'ways': manifest['datasets']['ways']}, indent=2), flush=True)
 
