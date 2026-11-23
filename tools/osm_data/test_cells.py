@@ -4,20 +4,20 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from pmtiles.reader import MemorySource, all_tiles
+from pmtiles.reader import MemorySource, Reader, all_tiles
 from pmtiles.tile import Compression, TileType, zxy_to_tileid
 from pmtiles.writer import Writer
 
 from tools.osm_data import cells
 
 
-def write(path, tiles, source):
+def write(path, tiles, source, tile_type=TileType.UNKNOWN):
     """An archive as the builder writes one: one zoom, gzip tiles, and metadata that changes every week."""
     with open(path, 'wb') as stream:
         writer = Writer(stream)
         for (z, x, y), data in sorted(tiles.items(), key=lambda item: zxy_to_tileid(*item[0])):
             writer.write_tile(zxy_to_tileid(z, x, y), data)
-        writer.finalize({'tile_type': TileType.UNKNOWN, 'tile_compression': Compression.GZIP, 'min_lon_e7': 200000000,
+        writer.finalize({'tile_type': tile_type, 'tile_compression': Compression.GZIP, 'min_lon_e7': 200000000,
                          'min_lat_e7': 600000000, 'max_lon_e7': 210000000, 'max_lat_e7': 610000000},
                         {'name': 'Polku OSM roads and paths', 'format': 'json', 'schema': 1, 'attribution': 'OSM',
                          'license': 'ODbL', 'source': source, 'bounds': [20, 60, 21, 61]})
@@ -56,6 +56,11 @@ class CellTests(unittest.TestCase):
         self.assertEqual(seen, changed)
         for row in second['cells']:
             self.assertLessEqual(row[3], 4096 + 1024, 'at most the target, beside its header and directory')
+
+    def test_vector_tiles_are_cut_into_cells_of_vector_tiles(self):
+        mvt = write(self.tmp / 'mvt.pmtiles', self.tiles, {}, TileType.MVT)
+        for _, data in cells.cells(mvt, 4096):
+            self.assertEqual(Reader(MemorySource(data)).header()['tile_type'], TileType.MVT)
 
     def test_the_cell_fixtures_are_the_cuts_of_the_geometry_and_traffic_fixtures(self):
         fixtures = Path(__file__).resolve().parents[1] / 'fixtures'

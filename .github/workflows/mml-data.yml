@@ -1,20 +1,12 @@
 name: Polku NLS background map
-run-name: NLS background map / ${{ github.event_name == 'pull_request' && 'test' || format('{0} {1}', (github.event_name == 'schedule' || inputs.update) && 'update' || 'copy', inputs.box || 'Finland') }}
+run-name: NLS background map / ${{ github.event_name == 'workflow_dispatch' && format('copy {0}', inputs.box) || 'test' }}
 
-# Copies NLS's (MML's) background-map vector tiles, packs them into PMTiles and uploads a candidate. An update asks
-# again with If-Modified-Since from the live release and takes the tiles MML answers 304 for from the live archive.
+# Copies NLS's (MML's) background-map vector tiles, packs them into PMTiles a zoom and uploads a candidate in cells.
 on:
   pull_request:
     paths: [tools/osm_data/mml.py, tools/osm_data/mml.htaccess, .github/workflows/mml-data.yml]
-  schedule:
-    # Monthly: MML's tiles change daily, a few thousand at z14, and each update asks for every tile again
-    - cron: '17 1 3 * *'
   workflow_dispatch:
     inputs:
-      update:
-        description: Go on from the live release, asking MML only for tiles changed since
-        type: boolean
-        default: true
       box:
         description: West,south,east,north in degrees; a small box tests the whole job
         type: string
@@ -32,9 +24,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # A pull request updates central Helsinki, in two parts, to test going on from a stopped run
-  BOX: ${{ github.event_name == 'pull_request' && '24.92,60.16,24.96,60.18' || inputs.box || '19.0,59.3,31.6,70.1' }}
-  UPDATE: ${{ github.event_name != 'workflow_dispatch' || inputs.update }}
+  # A pull request fetches central Helsinki, in two parts, to test going on from a stopped run
+  BOX: ${{ inputs.box || '24.92,60.16,24.96,60.18' }}
 
 jobs:
   fetch:
@@ -79,18 +70,12 @@ jobs:
         env:
           MML_API_KEY: ${{ secrets.MML_API_KEY }}
         run: python tools/osm_data/mml.py sample
-      - name: The live release's table, with each tile's Last-Modified
-        if: env.UPDATE == 'true'
-        env:
-          OSM_PUBLIC_URL: ${{ vars.OSM_PUBLIC_URL }}
-        run: python tools/osm_data/mml.py live mml/live
       - name: Fetch the tiles not held yet
         id: fetch
         env:
           MML_API_KEY: ${{ secrets.MML_API_KEY }}
           LIMIT: ${{ github.event_name == 'pull_request' && matrix.part == 1 && '--limit 10' || '' }}
-          SINCE: ${{ env.UPDATE == 'true' && '--since mml/live' || '' }}
-        run: python tools/osm_data/mml.py fetch mml/store.sqlite --box "$BOX" --until "$UNTIL" $LIMIT $SINCE
+        run: python tools/osm_data/mml.py fetch mml/store.sqlite --box "$BOX" --until "$UNTIL" $LIMIT
       - name: Keep what was fetched, for the next part or a later run
         # One artifact a part: a failed upload never loses what an earlier part kept
         if: always() && steps.fetch.outputs.changed == 'true'
@@ -106,7 +91,7 @@ jobs:
   pack:
     needs: fetch
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -134,15 +119,8 @@ jobs:
           path: mml
           github-token: ${{ github.token }}
           run-id: ${{ steps.store.outputs.run }}
-      - name: The live release's archive, for the tiles MML answered 304 for
-        if: env.UPDATE == 'true'
-        env:
-          OSM_PUBLIC_URL: ${{ vars.OSM_PUBLIC_URL }}
-        run: python tools/osm_data/mml.py live mml/live --archive
       - name: One archive of every tile, read back tile for tile, with the manifest
-        env:
-          BASE: ${{ env.UPDATE == 'true' && '--base mml/live/taustakartta.pmtiles' || '' }}
-        run: python tools/osm_data/mml.py pack mml/store.sqlite mml-release $BASE
+        run: python tools/osm_data/mml.py pack mml/store.sqlite mml-release
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: mml-release
@@ -153,7 +131,7 @@ jobs:
 
   upload:
     needs: pack
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     environment: osm-data-production
@@ -170,9 +148,10 @@ jobs:
         with:
           name: mml-release
           path: mml-release
-      - name: Upload, read back and name the candidate in polku-mml
+      - name: Upload the cells the host lacks, read back and name the candidate in polku-mml
         env:
           OSM_ALLOW_PUBLISH: 'true'
+          OSM_CELLS: 'true'
           OSM_FTP_HOST: ${{ secrets.OSM_FTP_HOST }}
           OSM_FTP_USER: ${{ secrets.OSM_FTP_USER }}
           OSM_FTP_PASSWORD: ${{ secrets.OSM_FTP_PASSWORD }}

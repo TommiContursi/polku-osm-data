@@ -246,39 +246,31 @@ attribution, BRouter's, Sonny's (CC BY 4.0, https://sonny.4lima.de) and CIAT's c
 
 ## NLS background map
 
-`mml-data.yml` copies the National Land Survey's (MML) background-map vector tiles (`taustakartta` v21,
-zooms 11–14 over 19.0–31.6°E and 59.3–70.1°N: 892,856 tiles) into one PMTiles archive, and uploads it as a candidate
-to `https://ducksoft.fi/polku-mml/`. It runs on the 3rd of each month as an **update**, and by hand with **update**
-on or off. An update goes on from the live release: it asks for every tile with `If-Modified-Since` from the live
-`tiles.tsv.gz`, and takes the tiles MML answers 304 for from the live archive. MML's tiles change daily, a few
-thousand a day at zoom 14, and 24 % of the first copy's dates are only when MML drew the tile on request. The format is in [tools/osm_data/README.md](../tools/osm_data/README.md#nls-background-map).
+`mml-data.yml`, by hand, copies the National Land Survey's (MML) background-map vector tiles (`taustakartta` v21,
+zooms 11–14 over 19.0–31.6°E and 59.3–70.1°N: 892,856 tiles) into one PMTiles archive a zoom, and uploads them in
+cells as a candidate to `https://ducksoft.fi/polku-mml/`. The format is in [tools/osm_data/README.md](../tools/osm_data/README.md#nls-background-map).
 
 - **fetch** asks about 40 tiles a second over 8 keep-alive connections, with the key in the repository secret
   `MML_API_KEY`, and a User-Agent naming this repository. A 429, 5xx, timeout or answer slower than 2 s halves the
   rate, down to one a second; each 30 s without trouble raises it by one. A 404 is kept as an empty tile, and another
   4xx is recorded and not asked again. A 401 or 403, 5 minutes without a good answer, or 429s at one a second stop the
-  run, and so does a hand check that doesn't find Helsinki in its tile at every zoom. An update asks a tile with no
-  date in the table plainly, and a 304 to a plain request counts as trouble. It runs in up to three parts of
+  run, and so does a hand check that doesn't find Helsinki in its tile at every zoom. It runs in up to three parts of
   5 h 20 min, each keeping its tiles in an `mml-store-<part>` artifact; a later run given the run's ID in **store**
-  goes on from the newest. An update's store holds only what changed, and is tied to the live archive's SHA-256: a
-  release promoted meanwhile stops the next part.
+  goes on from the newest.
 - **pack** needs an answer for every tile and reads the archive back tile for tile. `tiles.tsv.gz` keeps each tile's
-  `Last-Modified`; a tile MML answered 304 for keeps its date. An update's pack downloads the live archive, checks
-  it is the one the fetch went on from, and copies its unchanged tiles.
-- **upload**, only from `main`, puts [`mml.htaccess`](../tools/osm_data/mml.htaccess) into `polku-mml/` once. The
-  release goes through `staging/` (a stopped upload goes on from where it stopped), is read back with its SHA-256,
-  checked over HTTPS and named in `candidates/current.json`. Releases other than the candidate and the live one go,
-  and a release whose box doesn't cover the candidate's is refused.
+  `Last-Modified`, so an update can ask again with `If-Modified-Since`.
+- **upload**, only from `main`, goes through `publish.py`'s upload into `polku-mml/`, as Digiroad's: each zoom's
+  archive is cut into cells, and only the cells and files `files/` lacks go up, read back with their SHA-256. The
+  release is checked over HTTPS and named in `candidates/current.json`, and retention keeps the live release, its
+  predecessor and the candidate. A release whose box doesn't cover the candidate's is refused. The first upload in
+  cells puts the first copy's `current.json`, its manifest's own bytes, in the OSM data's form.
 - **Promotion** is Polku's `mml-promote.yml`, run by hand, like the OSM data's. `mml.py candidate` finds a
   candidate built after the live release, over public HTTP only, and Polku's check reads it in the app. Then
-  `mml.py promote` checks the release's manifest hash and file sizes, and that it is still the candidate, since an
-  upload removes a release that is neither the candidate nor live. It reads the release over HTTPS and puts the
-  manifest's own bytes in `polku-mml/current.json`, the release the app reads. The pointer it replaced is kept. If
-  polku.si then fails its check, `mml.py restore` puts that pointer back, or removes `current.json` if there was
-  none, so the app reads MML's own service. It refuses if another release went live meanwhile or the old release is
-  gone.
+  `mml.py promote` promotes it as `publish.py` does the OSM data's: every file and cell at its size, and the
+  pointer it replaced saved. If polku.si then fails its check, `mml.py restore` puts that pointer back, unless
+  another release went live meanwhile.
 
-A smaller **box** tests the whole job. A pull request that changes the job updates central Helsinki in two parts and
+A smaller **box** tests the whole job. A pull request that changes the job fetches central Helsinki in two parts and
 uploads nothing. The tiles are CC BY 4.0: "© Maanmittauslaitos, Maastotietokanta" and the month fetched, in the
 manifest, the archive's metadata and `LICENSE.txt`.
 
