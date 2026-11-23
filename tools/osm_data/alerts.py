@@ -30,6 +30,8 @@ def classify(event,repository,jobs=None):
     failed=run.get('conclusion')!='success'
     reason=run.get('conclusion','missing conclusion')
     if prefix=='OSM data / ' and operation=='build' and not failed:
+        # A late scheduled build that found its export already built or building stops before its country jobs
+        if any(job.get('name')=='build' and job.get('conclusion')=='skipped' for job in jobs or []): return None
         failed=not any(job.get('name')=='upload' and job.get('conclusion')=='success' for job in (jobs or []))
         if failed: reason='build completed without a successful upload'
     return {'kind':operations[operation],'failed':failed,'url':url,'reason':reason,'operation':operation}
