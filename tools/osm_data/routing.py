@@ -27,7 +27,7 @@ from urllib.error import HTTPError
 
 if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from tools.osm_data import maintenance, publish
+from tools.osm_data import maintenance, promotion, publish
 from tools.osm_data.publish import require
 
 SOURCE = 'https://brouter.de/brouter/segments4/'
@@ -406,6 +406,30 @@ def check(url, now=None):
     return checked
 
 
+def held(ftp, raw):
+    """The release a manifest names is on the host with every square and change file at its size."""
+    manifest = validate(json.loads(raw))
+    base = f"releases/{manifest['release']}"
+    require(manifest['release'] in maintenance.children(ftp, 'releases') and publish.retrieve(ftp, base + '/manifest.json') == raw,
+            f"Release {manifest['release']} is not on the host")
+    shared = maintenance.shared_files(ftp)
+    for f in (f for square in manifest['squares'] for f in (square, square.get('change')) if f):
+        path = publish.place(manifest['release'], f)
+        size = shared.get(path) if 'url' in f else ftp.size(path) if f['path'] in maintenance.children(ftp, base) else None
+        require(size == f['bytes'], 'Release file is missing or differs: ' + f['path'])
+    return manifest
+
+
+def public_folder():
+    """polku-routing's public URL, beside polku-osm's, from OSM_PUBLIC_URL alone: no login."""
+    url = publish.public_url(os.environ.get('OSM_PUBLIC_URL', ''))
+    require(url.endswith('/polku-osm'), 'OSM_PUBLIC_URL must end in /polku-osm')
+    return url.removesuffix('/polku-osm') + '/polku-routing'
+
+
+PRODUCT = promotion.Product(routing_host, public_folder, validate, held, probe)
+
+
 def install_hosting():
     """The routing folder's .htaccess, once: an existing one is changed by hand."""
     with routing_host() as (ftp, _):
@@ -421,12 +445,27 @@ def main():
     run.add_argument('--initial', action='store_true', help='download squares we have no copy of: their one initial download')
     commands.add_parser('check').add_argument('url', help='the public polku-routing URL')
     commands.add_parser('install-hosting')
+    commands.add_parser('candidate', help='the candidate built after the live release, for Polku to check')
+    promoting = commands.add_parser('promote', help='make the candidate Polku checked live')
+    promoting.add_argument('release')
+    promoting.add_argument('--sha256', required=True, help="the checked manifest's SHA-256, from `candidate`")
+    promoting.add_argument('--directory', type=Path, required=True, help='where the replaced pointer is kept for restore')
+    back = commands.add_parser('restore', help='put back the pointer promote replaced')
+    back.add_argument('--directory', type=Path, required=True, help="promote's directory")
+    back.add_argument('--expected-current', required=True, help='only if this release is live: never undo another publication')
     args = parser.parse_args()
     try:
         if args.command == 'mirror':
             mirror(args.jar, args.initial)
         elif args.command == 'check':
             print(json.dumps(check(args.url)))
+        elif args.command == 'candidate':
+            print(json.dumps(promotion.candidate(PRODUCT) or {}, sort_keys=True))
+            return
+        elif args.command == 'promote':
+            promotion.promote(PRODUCT, args.release, args.sha256, args.directory)
+        elif args.command == 'restore':
+            promotion.restore(PRODUCT, args.directory, args.expected_current)
         else:
             install_hosting()
     except Exception as error:

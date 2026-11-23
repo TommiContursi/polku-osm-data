@@ -16,7 +16,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 import zlib
 
-from tools.osm_data import publish, routing
+from tools.osm_data import promotion, publish, routing
 from tools.osm_data.test_publish import ENV, Host, Response, ROOT
 
 SITE = ROOT.removesuffix('/polku-osm')
@@ -277,6 +277,40 @@ class RoutingTests(unittest.TestCase):
         del self.host.brouter[f'diff/E20_N60/{md5(newer)}.df5']
         with self.assertRaisesRegex(RuntimeError, 'no change file for our new E20_N60.rd5'):
             self.run_mirror(T0 + timedelta(days=7))
+
+    def test_a_candidate_goes_live_only_when_promoted_and_keeps_its_files_until_the_next_one_is(self):
+        self.assertIsNone(promotion.candidate(routing.PRODUCT), 'nothing uploaded yet')
+        self.run_mirror(initial=True)
+        first = promotion.candidate(routing.PRODUCT)
+        self.assertNotIn(BASE + '/current.json', self.host.files, 'a mirror run never names the live release')
+        with tempfile.TemporaryDirectory() as tmp:
+            promotion.promote(routing.PRODUCT, first['release'], first['sha256'], Path(tmp, 'one'))
+            live = self.host.files[f"{BASE}/releases/{first['release']}/manifest.json"]
+            self.assertEqual(self.host.files[BASE + '/current.json'], live, "the app reads the manifest's own bytes")
+            self.assertIsNone(promotion.candidate(routing.PRODUCT), 'nothing newer than the live release')
+            self.host.publish_square('E20_N60.rd5', square(1, T0 + timedelta(days=7), size=5100), previous=[self.big])
+            with patch.object(routing, 'datetime', wraps=datetime) as clock:  # built a week later, not this second
+                clock.now.return_value = datetime.now(timezone.utc) + timedelta(days=7)
+                self.run_mirror(T0 + timedelta(days=7))
+            self.assertEqual(self.host.files[BASE + '/current.json'], live, 'the new candidate waits for its promotion')
+            self.assertEqual(self.shared_files(), sorted(set(self.named(json.loads(live))) | set(self.named(self.candidate()))),
+                             'the live squares stay for the readers fetching them')
+            second = promotion.candidate(routing.PRODUCT)
+            promotion.promote(routing.PRODUCT, second['release'], second['sha256'], Path(tmp, 'two'))
+            self.assertEqual(json.loads(self.host.files[BASE + '/current.json'])['release'], second['release'])
+            promotion.restore(routing.PRODUCT, Path(tmp, 'two'), second['release'])
+            self.assertEqual(self.host.files[BASE + '/current.json'], live)
+
+    def test_only_the_checked_candidate_with_every_square_is_promoted(self):
+        self.run_mirror(initial=True)
+        found = promotion.candidate(routing.PRODUCT)
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(Exception, 'differs from the one checked'):
+                promotion.promote(routing.PRODUCT, found['release'], '0' * 64, Path(tmp))
+            self.host.files[f'{BASE}/files/{hashlib.sha256(self.small).hexdigest()}.rd5'] += b'x'
+            with self.assertRaisesRegex(Exception, 'missing or differs: E25_N70.rd5'):
+                promotion.promote(routing.PRODUCT, found['release'], found['sha256'], Path(tmp))
+        self.assertNotIn(BASE + '/current.json', self.host.files)
 
     def test_the_daily_check_needs_fresh_squares_and_public_ranges(self):
         self.run_mirror(initial=True)

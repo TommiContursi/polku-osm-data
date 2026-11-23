@@ -230,6 +230,11 @@ change files, one file at a time and at most 16 Mbit/s.
 - **check**, daily at 07:43 UTC: the candidate, and `current.json` once there is one.
 - **install-hosting**, once: puts [`routing.htaccess`](../tools/osm_data/routing.htaccess) into `polku-routing/`.
 
+A candidate goes live only when Polku promotes it, as the NLS background map's does: `routing.py candidate` names the
+candidate built after the live release, `promote` gives `polku-routing/current.json` the manifest's same bytes once every
+square and change file is on the host at its size, and `restore` puts the replaced pointer back
+([`promotion.py`](../tools/osm_data/promotion.py)).
+
 Each square that changed also gets the mirror's change file from the previous release's square: brouter.de's own, or
 one made with the same jar and checked by applying it. One that fails its check is left out, so a reader fetches that
 square whole, and the run's report names the square (`unmade`). Each square and change file goes in `polku-routing/files/`,

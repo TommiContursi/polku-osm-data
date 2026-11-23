@@ -16,7 +16,7 @@ from unittest.mock import patch
 from pmtiles.reader import MmapSource, Reader
 from pmtiles.tile import Compression, TileType, tileid_to_zxy, zxy_to_tileid
 
-from tools.osm_data import mml, publish
+from tools.osm_data import mml, promotion, publish
 from tools.osm_data.test_publish import ENV
 from tools.osm_data.test_routing import RoutingHost, SITE
 
@@ -311,44 +311,44 @@ class PackAndUploadTests(unittest.TestCase):
     def candidate_of(self, now):
         out, manifest = self.pack(now)
         mml.upload(out)
-        found = mml.candidate()
+        found = promotion.candidate(mml.PRODUCT)
         self.assertEqual(found['release'], manifest['release'])
         return found
 
     def test_a_candidate_reaches_the_live_pointer_only_when_promoted_and_restore_puts_it_back(self):
         first = self.candidate_of(T0)
         self.assertNotIn(FOLDER + '/current.json', self.host.files, 'an upload never names the live release')
-        mml.promote(first['release'], first['sha256'], self.tmp / 'one')
+        promotion.promote(mml.PRODUCT, first['release'], first['sha256'], self.tmp / 'one')
         raw = self.host.files[f"{FOLDER}/releases/{first['release']}/manifest.json"]
         self.assertEqual(self.host.files[FOLDER + '/current.json'], raw, "the app reads the manifest's own bytes")
         self.assertEqual((self.tmp / 'one/previous.json').read_bytes(), b'null')
-        self.assertIsNone(mml.candidate(), 'nothing newer than the live release')
+        self.assertIsNone(promotion.candidate(mml.PRODUCT), 'nothing newer than the live release')
 
         second = self.candidate_of(T0.replace(hour=4))
         self.assertEqual(self.host.files[FOLDER + '/current.json'], raw, 'the new candidate waits for its promotion')
-        mml.promote(second['release'], second['sha256'], self.tmp / 'two')
+        promotion.promote(mml.PRODUCT, second['release'], second['sha256'], self.tmp / 'two')
         self.assertEqual((self.tmp / 'two/previous.json').read_bytes(), raw)
-        mml.restore(self.tmp / 'two', second['release'])
+        promotion.restore(mml.PRODUCT, self.tmp / 'two', second['release'])
         self.assertEqual(self.host.files[FOLDER + '/current.json'], raw)
         with self.assertRaisesRegex(Exception, 'Live release changed'):
-            mml.restore(self.tmp / 'two', second['release'])
-        mml.restore(self.tmp / 'one', first['release'])
+            promotion.restore(mml.PRODUCT, self.tmp / 'two', second['release'])
+        promotion.restore(mml.PRODUCT, self.tmp / 'one', first['release'])
         self.assertNotIn(FOLDER + '/current.json', self.host.files, 'without a predecessor the app reads MML')
 
     def test_only_the_checked_candidate_with_all_its_files_is_promoted(self):
         found = self.candidate_of(T0)
         with self.assertRaisesRegex(Exception, 'differs from the one checked'):
-            mml.promote(found['release'], '0' * 64, self.tmp / 'p')
+            promotion.promote(mml.PRODUCT, found['release'], '0' * 64, self.tmp / 'p')
         self.host.files[f"{FOLDER}/releases/{found['release']}/{mml.ARCHIVE}"] += b'x'
         with self.assertRaisesRegex(Exception, 'missing or differs: ' + mml.ARCHIVE):
-            mml.promote(found['release'], found['sha256'], self.tmp / 'p')
+            promotion.promote(mml.PRODUCT, found['release'], found['sha256'], self.tmp / 'p')
         self.assertNotIn(FOLDER + '/current.json', self.host.files)
 
     def test_a_promoted_pointer_that_reads_wrong_over_https_is_taken_back(self):
         found = self.candidate_of(T0)
         self.host.pointer_cache = 'public, max-age=31536000, immutable'  # what the app would never read again
         with self.assertRaisesRegex(Exception, 'current.json must disable caching'):
-            mml.promote(found['release'], found['sha256'], self.tmp / 'p')
+            promotion.promote(mml.PRODUCT, found['release'], found['sha256'], self.tmp / 'p')
         self.assertNotIn(FOLDER + '/current.json', self.host.files, 'the pointer that was there before: none')
 
     def test_a_new_pointer_the_host_still_answers_404_is_waited_for(self):
@@ -361,28 +361,28 @@ class PackAndUploadTests(unittest.TestCase):
                 raise publish.HTTPError(url, 404, 'missing', {}, None)
             return real(url, *args, **kwargs)
         with patch.object(publish, 'get', get), patch.object(publish.time, 'sleep'):
-            mml.promote(found['release'], found['sha256'], self.tmp / 'p')
+            promotion.promote(mml.PRODUCT, found['release'], found['sha256'], self.tmp / 'p')
         self.assertEqual(stale['left'], 0)
         self.assertIn(FOLDER + '/current.json', self.host.files)
         stale['left'] = 10**6
         with patch.object(publish, 'get', get), patch.object(publish.time, 'sleep'), \
                 patch.object(publish.time, 'monotonic', side_effect=range(0, 10**6, 60)):
-            mml.restore(self.tmp / 'p', found['release'])  # a removed pointer may answer 404 at once
+            promotion.restore(mml.PRODUCT, self.tmp / 'p', found['release'])  # a removed pointer may answer 404 at once
         self.assertNotIn(FOLDER + '/current.json', self.host.files)
 
     def test_a_candidate_replaced_meanwhile_is_not_promoted_nor_a_pruned_release_restored(self):
-        self.assertIsNone(mml.candidate(), 'nothing uploaded yet')
+        self.assertIsNone(promotion.candidate(mml.PRODUCT), 'nothing uploaded yet')
         first = self.candidate_of(T0)
         raw = self.host.files[FOLDER + '/candidates/current.json']
         self.host.files[FOLDER + '/candidates/current.json'] = b'{}'  # another upload named its release, not pruned yet
         with self.assertRaisesRegex(Exception, 'Another candidate was uploaded meanwhile'):
-            mml.promote(first['release'], first['sha256'], self.tmp / 'p')
+            promotion.promote(mml.PRODUCT, first['release'], first['sha256'], self.tmp / 'p')
         self.host.files[FOLDER + '/candidates/current.json'] = raw
         second = self.candidate_of(T0.replace(hour=4))  # prunes the first: it was never live
-        mml.promote(second['release'], second['sha256'], self.tmp / 'p')
+        promotion.promote(mml.PRODUCT, second['release'], second['sha256'], self.tmp / 'p')
         (self.tmp / 'p/previous.json').write_bytes(raw)
         with self.assertRaisesRegex(Exception, f"Release {first['release']} is not on the host"):
-            mml.restore(self.tmp / 'p', second['release'])
+            promotion.restore(mml.PRODUCT, self.tmp / 'p', second['release'])
         self.assertEqual(json.loads(self.host.files[FOLDER + '/current.json'])['release'], second['release'])
 
     def test_the_fetch_never_holds_the_hosts_secrets_and_only_main_uploads(self):
