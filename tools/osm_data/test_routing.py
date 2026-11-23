@@ -230,12 +230,6 @@ class RoutingTests(unittest.TestCase):
         self.host.publish_square('E20_N60.rd5', newer)
         report = self.run_mirror(T0 + timedelta(days=20))
         self.assertEqual((report['kept'], report['quarterly']), (['E20_N60.rd5', 'E25_N70.rd5'], []))
-        def broken(*args):
-            fake_brouter(*args)
-            if args[0] == 'diff':
-                Path(args[3]).write_bytes(self.big)
-        with self.assertRaisesRegex(RuntimeError, 'Our change file fails: E20_N60.rd5'):
-            self.run_mirror(T0 + timedelta(days=91), brouter=broken)
         report = self.run_mirror(T0 + timedelta(days=91))
         self.assertEqual((report['quarterly'], report['small'], report['changes']), (['E20_N60.rd5'], 1, 1))
         squares = {s['path']: s for s in self.candidate()['squares']}
@@ -244,6 +238,22 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual((change['from'], change['sha256']), (hashlib.sha256(self.big).hexdigest(), hashlib.sha256(newer).hexdigest()),
                          'ours, made from the previous square and checked by applying it')
         self.assertNotIn('change', squares['E25_N70.rd5'], 'none for a square under 1 MiB, as brouter.de')
+
+    def test_a_change_file_that_fails_its_check_is_left_out_and_reported(self):
+        self.run_mirror(initial=True)
+        newer = square(1, T0 + timedelta(days=20))
+        self.host.publish_square('E20_N60.rd5', newer)
+        self.run_mirror(T0 + timedelta(days=20))
+        def broken(*args):
+            fake_brouter(*args)
+            if args[0] == 'diff':
+                Path(args[3]).write_bytes(self.big)
+        report = self.run_mirror(T0 + timedelta(days=91), brouter=broken)
+        self.assertEqual((report['quarterly'], report['unmade'], report['changes']), (['E20_N60.rd5'], ['E20_N60.rd5'], 0))
+        squares = {s['path']: s for s in self.candidate()['squares']}
+        self.assertEqual(squares['E20_N60.rd5']['md5'], md5(newer), 'the new square is published')
+        self.assertNotIn('change', squares['E20_N60.rd5'], 'without the change file that failed')
+        self.assertEqual(self.shared_files(), self.named(self.candidate()))
 
     def test_a_stopped_run_resumes_without_downloading_again(self):
         self.host.failing['E25_N70.rd5'] = 2

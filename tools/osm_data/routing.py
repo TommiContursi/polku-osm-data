@@ -4,8 +4,8 @@
 brouter.de's terms (abrensch/brouter#1011, 2026-11-12): one initial download, then regular syncs by its change files,
 as BRouter's Android app does. So each square is our last copy plus brouter.de's .df5 named by that copy's MD5,
 applied and checked by BRouter's own code (Rd5.java), one file at a time and at most 16 Mbit/s (#7). Each changed square
-also has the mirror's change file from the previous release's square: brouter.de's own, or one made and checked by
-applying it with the same code."""
+also has the mirror's change file from the previous release's square: brouter.de's own, or one that the same code makes
+and then checks by applying it."""
 
 import argparse
 from contextlib import contextmanager
@@ -261,7 +261,7 @@ def mirror(jar, initial=False, now=None, source=None, brouter=None):
     now, source = now or datetime.now(timezone.utc), source or Source()
     require(os.environ.get('OSM_ALLOW_PUBLISH') == 'true', 'Publication requires approved OSM_ALLOW_PUBLISH=true')
     report = {'initial': [], 'diff': 0, 'unchanged': 0, 'quarterly': [], 'small': 0, 'kept': [], 'waiting': [], 'shared': 0,
-              'changes': 0}
+              'changes': 0, 'unmade': []}
     with tempfile.TemporaryDirectory() as tmp, routing_host() as (ftp, url):
         work = Path(tmp)
         require('.htaccess' in maintenance.children(ftp), 'polku-routing has no .htaccess: run install-hosting first')
@@ -316,11 +316,19 @@ def mirror(jar, initial=False, now=None, source=None, brouter=None):
                 if old and entry['sha256'] != old['sha256']:
                     if kind != 'diff':
                         delta = work / 'change.df5'
-                        brouter('diff', copy, new, delta)
-                        brouter('apply', copy, delta, work / 'applied.rd5')
-                        require(publish.digest_file(work / 'applied.rd5') == entry['sha256'], 'Our change file fails: ' + name)
-                    entry['change'] = publish.share({'path': name[:-4] + '.df5', 'bytes': delta.stat().st_size,
-                                                     'sha256': publish.digest_file(delta), 'from': old['sha256']})
+                        try:
+                            brouter('diff', copy, new, delta)
+                            brouter('apply', copy, delta, work / 'applied.rd5')
+                            made = publish.digest_file(work / 'applied.rd5') == entry['sha256']
+                        except subprocess.CalledProcessError:
+                            made = False
+                        if not made:  # the square goes without one, and a reader fetches it whole
+                            print(f'Our change file for {name} does not give the new square; published without one', flush=True)
+                            report['unmade'].append(name)
+                            delta = None
+                    if delta:
+                        entry['change'] = publish.share({'path': name[:-4] + '.df5', 'bytes': delta.stat().st_size,
+                                                         'sha256': publish.digest_file(delta), 'from': old['sha256']})
             if not put(ftp, release, new, entry, have):
                 report['shared'] += 1
             if 'change' in entry:
