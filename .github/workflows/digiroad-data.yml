@@ -1,13 +1,14 @@
-name: Polku Digiroad traffic volumes
+name: Polku Digiroad
 run-name: Digiroad / ${{ inputs.operation }}
 
-# Copies Digiroad's busy roads, by hand, into PMTiles and uploads a candidate in cells. Its source stopped updating on
-# 2026-09-18, so the copy runs again only when a newer source exists. Its tests run with the others in osm-data.yml.
+# Copies four Digiroad layers (busy roads, paved roads, private roads and speed limits), by hand, into PMTiles beside
+# the features as served, and uploads a candidate in cells. Its source stopped updating on 2026-09-18, so the copy runs
+# again only when a newer source exists. Its tests run with the others in osm-data.yml.
 on:
   workflow_dispatch:
     inputs:
       operation:
-        description: Install polku-digiroad and its .htaccess once, or copy the busy roads and upload the candidate
+        description: Install polku-digiroad and its .htaccess once, or copy the four layers and upload the candidate
         type: choice
         options: [install-hosting, copy]
         default: copy
@@ -47,8 +48,9 @@ jobs:
   copy:
     if: inputs.operation == 'copy'
     runs-on: ubuntu-24.04
-    # The fetch is about 3 minutes, the upload of about 20 cells a few more
-    timeout-minutes: 30
+    # About 530 pages: about 2.5 hours with the 5 s pauses (the private roads' take up to 32 s each to answer), the
+    # build 10 minutes, and the upload of about 1 GB, read back, up to an hour
+    timeout-minutes: 300
     environment: osm-data-production
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -59,7 +61,7 @@ jobs:
           python-version: '3.14.3'
       - name: Install pinned dependencies
         run: python -m pip install --require-hashes -r tools/osm_data/sftp-requirements.txt
-      - name: Fetch the busy roads page by page and build the release
+      - name: Fetch the four layers page by page and build the release
         run: python tools/osm_data/digiroad.py build release
       - name: Upload the release in cells and name the candidate
         env:
