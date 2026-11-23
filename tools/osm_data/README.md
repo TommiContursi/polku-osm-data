@@ -31,9 +31,10 @@ The output has seven PMTiles products, `manifest.json`, `measurements.json`,
 `identities.jsonl.gz` and `LICENSE.txt`. The manifest identifies the exact source and checksums every
 deployable file except itself. `source.url` names Geofabrik's country export, or, when the
 build was clipped here from the mirrored Europe export because Geofabrik refused the runners,
-that export, with `source.clipped` naming the clipping tool and polygon (`--source-url` and
-`--clipped-with`; `source_kind()` accepts only these two shapes, and one release cannot mix
-them). Its local dataset URL is relative to this
+that export, with `source.clipped` naming the clipping tool (`--source-url` and
+`--clipped-with`). `source.coverage` names the polygon either way (`--coverage`).
+`source_kind()` accepts only these two shapes, and one release cannot mix them. Its local
+dataset URL is relative to this
 immutable release directory. The publication tool gives `current.json` URLs
 relative to `polku-osm/`, under `releases/<release>/`. With `OSM_SHARED_FILES`
 the uploaded manifest gives each file a `url` beside its `path`,

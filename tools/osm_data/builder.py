@@ -197,9 +197,8 @@ class PlaceRelations(osmium.SimpleHandler):
         return needed
 LICENSE_TEXT = '''Polku OSM roads, paths, lighting and outdoor details
 
-© OpenStreetMap contributors. Source: the Geofabrik country extracts identified in manifest.json.
+© OpenStreetMap contributors. Source: the OpenStreetMap extracts identified in manifest.json.
 https://www.openstreetmap.org/copyright
-https://download.geofabrik.de/europe.html
 
 This database is made available under the Open Database License (ODbL) 1.0.
 https://opendatacommons.org/licenses/odbl/1-0/
@@ -786,8 +785,8 @@ def source_kind(source_info, country='finland'):
     elif clipped is None:
         if re.fullmatch(re.escape(GEOFABRIK + 'europe/' + country + '-') + STAMPED, url):
             return 'geofabrik'
-    elif (re.fullmatch(re.escape(MIRROR + 'europe-') + STAMPED, url) and set(clipped) == {'with', 'polygon'}
-          and clipped['polygon'] == f'data/{country}.poly' and isinstance(clipped['with'], str) and clipped['with']):
+    elif (re.fullmatch(re.escape(MIRROR + 'europe-') + STAMPED, url) and set(clipped) == {'with'}
+          and isinstance(clipped['with'], str) and clipped['with']):
         return 'mirror'
     raise ValueError(f'Mislabeled {country} source')
 
@@ -822,7 +821,7 @@ def inspect_source(source, md5_file, country='finland', snapshot='latest', sourc
     info = {'url': source_url or f'{base}{country}-{snapshot}.osm.pbf', 'timestamp': timestamp,
             'sha256': sha256.hexdigest(), 'bytes': source.stat().st_size}
     if clipped_with:
-        info['clipped'] = {'with': clipped_with, 'polygon': f'data/{country}.poly'}
+        info['clipped'] = {'with': clipped_with}
     source_kind(info, country)
     return info
 
@@ -836,7 +835,7 @@ def build_release(source, output, md5_file, country='finland', coverage_file=Non
     source_info = inspect_source(source, md5_file, country, snapshot, source_url, clipped_with)
     coverage = parse_poly(Path(coverage_file).read_text()) if coverage_file else None
     if coverage_file:
-        source_info['coverage'] = {'url': f'{GEOFABRIK}europe/{country}.poly',
+        source_info['coverage'] = {'path': Path(coverage_file).as_posix(),
                                    'sha256': hashlib.sha256(Path(coverage_file).read_bytes()).hexdigest()}
     return build_dataset(source, output, source_info, full_country=True, started=started, country=country, coverage=coverage)
 
@@ -847,10 +846,10 @@ def main():
     parser.add_argument('output', type=Path, help='fresh immutable release directory')
     parser.add_argument('--md5', required=True, type=Path, help='Geofabrik .md5 checksum file')
     parser.add_argument('--country', choices=COUNTRIES, default='finland')
-    parser.add_argument('--coverage', type=Path, help='matching Geofabrik .poly clipping extent')
+    parser.add_argument('--coverage', type=Path, help="the country's clipping polygon, data/<country>.poly")
     parser.add_argument('--snapshot', default='latest', help='Geofabrik latest or a consistent YYMMDD country snapshot')
     parser.add_argument('--source-url', help="the mirror's Europe export this country was clipped from")
-    parser.add_argument('--clipped-with', help='the tool and strategy that clipped it, for the manifest')
+    parser.add_argument('--clipped-with', help='the tool and strategy that clipped it with --coverage, for the manifest')
     args = parser.parse_args()
     manifest = build_release(args.source, args.output, args.md5, args.country, args.coverage, args.snapshot,
                              args.source_url, args.clipped_with)
