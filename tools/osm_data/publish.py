@@ -587,14 +587,22 @@ def resume_upload(ftp, base, directory, manifest, raw, send):
             ftp.storbinary('STOR ' + base + '/' + name, body, rest=actual)
 
 
-def upload(directory, resume=False):
+def upload(directory, resume=False, folder=None):
     """Upload, verify and name the candidate; the live pointer is left to Polku's promotion. A file the shared files
-    already hold isn't sent again."""
+    already hold isn't sent again. With folder, into that product's folder beside polku-osm, once its hosting is in."""
     require(os.environ.get('OSM_ALLOW_PUBLISH') == 'true', 'Publication requires approved OSM_ALLOW_PUBLISH=true')
     directory = Path(directory)
     raw, manifest = hosted(directory)
     config = settings()
     with connection(config) as ftp:
+        url = config[-2]
+        if folder:
+            require(url.endswith('/polku-osm'), 'OSM_PUBLIC_URL must end in /polku-osm')
+            ftp.cwd('..')
+            require(folder in maintenance.children(ftp), f'{folder} is missing: run install-hosting first')
+            ftp.cwd(folder)
+            require('.htaccess' in maintenance.children(ftp), f'{folder} has no .htaccess: run install-hosting first')
+            url = url.removesuffix('/polku-osm') + '/' + folder
         previous = previous_pointer(ftp)
         if previous and 'geometry' in json.loads(previous)['datasets']:
             require('geometry' in manifest['datasets'], 'Publication would remove live geometry')
@@ -682,16 +690,16 @@ def upload(directory, resume=False):
             print(f'Rename verified {stage} to {final}', flush=True)
             ftp.rename(stage, final)
         print('Verify public immutable release before naming it the candidate', flush=True)
-        probe(config[-2], manifest, raw, samples)
+        probe(url, manifest, raw, samples)
         # Its _upload.json stays until promotion: retention keeps the candidate until the next upload names another
         if 'candidates' not in maintenance.children(ftp):
             ftp.mkd('candidates')
         replace_pointer(ftp, raw, 'candidates/current.json')
-        require(get(config[-2] + '/candidates/current.json') == raw, 'Public candidate pointer differs')
+        require(get(url + '/candidates/current.json') == raw, 'Public candidate pointer differs')
         if previous is not None:
             print(json.dumps(maintenance.prune(ftp, apply=True, incoming=manifest, incoming_files=naming), sort_keys=True),
                   flush=True)
-        print(f'Candidate {release}: {config[-2]}/{final}/manifest.json', flush=True)
+        print(f'Candidate {release}: {url}/{final}/manifest.json', flush=True)
 
 
 def candidate(url):

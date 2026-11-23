@@ -8,7 +8,8 @@ PMTiles archives at `https://ducksoft.fi/polku-osm/`.
 Beside it, `https://ducksoft.fi/polku-routing/` mirrors BRouter's routing data from brouter.de
 ([docs/OPERATIONS.md](docs/OPERATIONS.md#routing-data)).
 `https://ducksoft.fi/polku-mml/` holds a copy of the National Land Survey's background-map vector tiles
-([docs/OPERATIONS.md](docs/OPERATIONS.md#nls-background-map)).
+([docs/OPERATIONS.md](docs/OPERATIONS.md#nls-background-map)), and `https://ducksoft.fi/polku-digiroad/` a copy of
+Digiroad's busy roads ([docs/OPERATIONS.md](docs/OPERATIONS.md#digiroad-traffic-volumes)).
 
 The repository is public so that its long builds run on GitHub's free runners. Its code
 is not open source: see [LICENSE](LICENSE). The data keeps OpenStreetMap's licence.
@@ -46,8 +47,8 @@ every failed job is re-run on new runners after 30 minutes, 1 hour and 2 hours
 ## The contract
 
 Polku's reader (`js/osm-data.js`, `js/osm-geometry.js`) reads the manifest and the archives'
-format described in [tools/osm_data/README.md](tools/osm_data/README.md). A change to either
-is a PR here first, then a PR in Polku's reader with new fixtures. The fixtures in
+format described in [tools/osm_data/README.md](tools/osm_data/README.md), and so do its readers of the other
+products there. A change to either is a PR here first, then a PR in Polku's reader with new fixtures. The fixtures in
 `tools/fixtures/` are the same files as Polku's.
 
 ## Working on it
