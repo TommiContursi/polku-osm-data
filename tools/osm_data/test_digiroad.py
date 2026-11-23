@@ -136,7 +136,7 @@ class DigiroadTests(unittest.TestCase):
                 patch.object(publish, 'open_sftp', host.ftp), patch.object(publish.urllib.request, 'urlopen', host.http):
             digiroad.build(*fetched, self.tmp / 'release', T0)
             with patch.object(publish.maintenance, 'usage', return_value=digiroad.BUDGET - 4096):
-                with self.assertRaisesRegex(RuntimeError, r'budget exceeded \(1 GiB\)'):
+                with self.assertRaisesRegex(RuntimeError, r'polku-digiroad storage budget exceeded \(1 GiB\)'):
                     publish.upload(self.tmp / 'release', folder=digiroad.FOLDER, budget=digiroad.BUDGET)
             self.assertEqual(host.uploads, [], 'a full folder takes nothing')
             publish.upload(self.tmp / 'release', folder=digiroad.FOLDER, budget=digiroad.BUDGET)
@@ -149,8 +149,13 @@ class DigiroadTests(unittest.TestCase):
             for cell in publish.cells_of(index, publish.index_entry(traffic)):
                 self.assertIn(f"{BASE}/files/{cell['sha256']}.pmtiles", host.files)
             self.assertFalse(any(p.startswith(SITE + '/polku-osm/') for p in host.files), 'nothing in polku-osm')
+            host.files[BASE + '/current.json'] = json.dumps(publish.current(manifest)).encode()  # as a promotion
             host.uploads.clear()
             digiroad.build(*fetched, self.tmp / 'again', datetime(2026, 11, 24, tzinfo=timezone.utc))
+            with patch.object(publish.maintenance, 'usage', return_value=digiroad.BUDGET - 4096):
+                with self.assertRaisesRegex(RuntimeError, r'polku-digiroad storage budget exceeded \(1 GiB\)'):
+                    publish.upload(self.tmp / 'again', folder=digiroad.FOLDER, budget=digiroad.BUDGET)
+            self.assertEqual(host.uploads, [], 'with a live release too')
             publish.upload(self.tmp / 'again', folder=digiroad.FOLDER, budget=digiroad.BUDGET)
             self.assertEqual([p for p, _, _ in host.uploads if p.endswith('.pmtiles')], [], 'the same roads send no cell again')
             del host.files[BASE + '/.htaccess']

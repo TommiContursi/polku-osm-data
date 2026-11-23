@@ -317,8 +317,9 @@ the same way, in cells among the shared files, into `polku-digiroad/` (Shared fi
 ```
 
 On the host the dataset's `format` is `pmtiles-json-cells`, and its `url`, `bytes` and `sha256` are those of its
-index, `traffic.cells.json`, among the shared files (Cells). `tools/fixtures/digiroad-traffic.pmtiles` is the archive
-of a WFS answer around Tampere, and `tools/fixtures/digiroad-traffic-cells/` its cut at a 4 KiB target.
+index, `traffic.cells.json`, among the shared files (Cells). `files` lists the index in place of the archive, and each
+entry's `url` is its place among the shared files. `tools/fixtures/digiroad-traffic.pmtiles` is the archive of a WFS
+answer around Tampere, and `tools/fixtures/digiroad-traffic-cells/` its cut at a 4 KiB target.
 
 `source.timestamp` is the time of the newest single edit among the roads (Digiroad's `muokkauspv`, in Finnish time),
 not the data's date: most roads were edited earlier, those in the Tampere fixture from 2020 to 2022. Each zoom-11

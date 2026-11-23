@@ -589,10 +589,10 @@ def resume_upload(ftp, base, directory, manifest, raw, send):
 
 def upload(directory, resume=False, folder=None, budget=None):
     """Upload, verify and name the candidate; the live pointer is left to Polku's promotion. A file the shared files
-    already hold isn't sent again. With folder, into that product's folder beside polku-osm, once its hosting is in.
-    budget, the folder's own size limit, is checked while it has no live release; otherwise retention checks the OSM
-    data's."""
+    already hold isn't sent again. With folder, into that product's folder beside polku-osm, once its hosting is in;
+    budget is the folder's size limit, the OSM data's by default."""
     require(os.environ.get('OSM_ALLOW_PUBLISH') == 'true', 'Publication requires approved OSM_ALLOW_PUBLISH=true')
+    budget, product = budget or maintenance.BUDGET, folder or 'OSM'
     directory = Path(directory)
     raw, manifest = hosted(directory)
     config = settings()
@@ -643,11 +643,12 @@ def upload(directory, resume=False, folder=None, budget=None):
             incoming = sum(max(0, size - ftp.size(stage + '/' + name)) if name in names else size
                            for name, size in expected.items()) + sum(entry['bytes'] for entry in send_cells.values())
         if previous is not None:
-            retention = maintenance.prune(ftp, apply=True, incoming_bytes=incoming, incoming=manifest, incoming_files=naming)
+            retention = maintenance.prune(ftp, apply=True, incoming_bytes=incoming, incoming=manifest,
+                                          incoming_files=naming, budget=budget, product=product)
             print(json.dumps(retention, sort_keys=True), flush=True)
         else:
-            budget = budget or maintenance.BUDGET
-            require(maintenance.usage(ftp) + incoming + 4096 <= budget, f'Storage budget exceeded ({budget / 1024**3:g} GiB)')
+            require(maintenance.usage(ftp) + incoming + 4096 <= budget,
+                    f'{product} storage budget exceeded ({budget / 1024**3:g} GiB)')
         if resume:
             if stage == final:
                 require(all(ftp.kind(final + '/' + name) == 'file' for name in expected), 'Release needs regular files')
@@ -700,8 +701,8 @@ def upload(directory, resume=False, folder=None, budget=None):
         replace_pointer(ftp, raw, 'candidates/current.json')
         require(get(url + '/candidates/current.json') == raw, 'Public candidate pointer differs')
         if previous is not None:
-            print(json.dumps(maintenance.prune(ftp, apply=True, incoming=manifest, incoming_files=naming), sort_keys=True),
-                  flush=True)
+            print(json.dumps(maintenance.prune(ftp, apply=True, incoming=manifest, incoming_files=naming, budget=budget,
+                                               product=product), sort_keys=True), flush=True)
         print(f'Candidate {release}: {url}/{final}/manifest.json', flush=True)
 
 
