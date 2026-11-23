@@ -39,6 +39,13 @@ of their own; the clipping polygons are this repository's own copies in `data/`,
 waits on Geofabrik for them. The source must be at most 14 days old. Source and release
 artifacts are kept 14 days.
 
+GitHub may start the weekly schedule hours late (the 03:17 UTC schedule began at 12:42 UTC on 2026-11-23,
+after a manual build of the same export). So once the snapshot step has picked its dated
+export, a scheduled build stops when another build of that export is going on or has
+succeeded: each build marks its export with an `osm-snapshot-<date>` artifact. The stopped
+run ends without building anything, and the alerts report nothing for it. A manual build
+always runs, and so does a scheduled one when GitHub's API doesn't answer.
+
 **The second source.** When Geofabrik answers none of the snapshot step's requests (no HTTP
 answer at all; a 404 means a date isn't ready, and the run fails for the alerts' re-run), the
 run takes [GWDG's mirror](https://ftp5.gwdg.de/pub/misc/openstreetmap/download.geofabrik.de/)
