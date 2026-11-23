@@ -249,6 +249,11 @@ to `https://ducksoft.fi/polku-mml/`. The format is in [tools/osm_data/README.md]
   release goes through `staging/` (a stopped upload goes on from where it stopped), is read back with its SHA-256,
   checked over HTTPS and named in `candidates/current.json`. Releases other than the candidate and the live one go,
   and a release whose box doesn't cover the candidate's is refused.
+- **Promotion** is Polku's `mml-promote.yml`, by hand, as the OSM data's: Polku's checks read the candidate
+  (`mml.py candidate`, public HTTP only), then `mml.py promote` checks the release's manifest hash and file sizes,
+  reads it over HTTPS and puts the manifest's own bytes in `polku-mml/current.json`, the release the app reads. The
+  pointer it replaced is kept for `mml.py restore`, which puts it back (or removes the pointer, so the app reads MML's
+  own service) if polku.si then fails its check, unless another release went live meanwhile.
 
 A smaller **box** tests the whole job. A pull request that changes the job fetches central Helsinki in two parts and
 uploads nothing. The tiles are CC BY 4.0: "© Maanmittauslaitos, Maastotietokanta" and the month fetched, in the

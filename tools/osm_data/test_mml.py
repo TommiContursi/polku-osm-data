@@ -308,6 +308,42 @@ class PackAndUploadTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'change it by hand'):
             mml.upload(out)
 
+    def candidate_of(self, now):
+        out, manifest = self.pack(now)
+        mml.upload(out)
+        found = mml.candidate()
+        self.assertEqual(found['release'], manifest['release'])
+        return found
+
+    def test_a_candidate_reaches_the_live_pointer_only_when_promoted_and_restore_puts_it_back(self):
+        first = self.candidate_of(T0)
+        self.assertNotIn(FOLDER + '/current.json', self.host.files, 'an upload never names the live release')
+        mml.promote(first['release'], first['sha256'], self.tmp / 'one')
+        raw = self.host.files[f"{FOLDER}/releases/{first['release']}/manifest.json"]
+        self.assertEqual(self.host.files[FOLDER + '/current.json'], raw, "the app reads the manifest's own bytes")
+        self.assertEqual((self.tmp / 'one/previous.json').read_bytes(), b'null')
+        self.assertIsNone(mml.candidate(), 'nothing newer than the live release')
+
+        second = self.candidate_of(T0.replace(hour=4))
+        self.assertEqual(self.host.files[FOLDER + '/current.json'], raw, 'the new candidate waits for its promotion')
+        mml.promote(second['release'], second['sha256'], self.tmp / 'two')
+        self.assertEqual((self.tmp / 'two/previous.json').read_bytes(), raw)
+        mml.restore(self.tmp / 'two', second['release'])
+        self.assertEqual(self.host.files[FOLDER + '/current.json'], raw)
+        with self.assertRaisesRegex(Exception, 'Live release changed'):
+            mml.restore(self.tmp / 'two', second['release'])
+        mml.restore(self.tmp / 'one', first['release'])
+        self.assertNotIn(FOLDER + '/current.json', self.host.files, 'without a predecessor the app reads MML')
+
+    def test_only_the_checked_candidate_with_all_its_files_is_promoted(self):
+        found = self.candidate_of(T0)
+        with self.assertRaisesRegex(Exception, 'differs from the one checked'):
+            mml.promote(found['release'], '0' * 64, self.tmp / 'p')
+        self.host.files[f"{FOLDER}/releases/{found['release']}/{mml.ARCHIVE}"] += b'x'
+        with self.assertRaisesRegex(Exception, 'missing or differs: ' + mml.ARCHIVE):
+            mml.promote(found['release'], found['sha256'], self.tmp / 'p')
+        self.assertNotIn(FOLDER + '/current.json', self.host.files)
+
     def test_the_fetch_never_holds_the_hosts_secrets_and_only_main_uploads(self):
         workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/mml-data.yml').read_text()
         fetch, rest = workflow.split('\n  pack:')
