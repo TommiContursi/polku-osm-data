@@ -298,13 +298,13 @@ as the OSM data's.
 the same way, in cells among the shared files, into `polku-digiroad/` (Shared files, Cells). Its manifest:
 
 ```json
-{"schema": 1, "release": "20261123T173225Z-36716f407dc9", "built_at": "2026-11-23T17:32:25Z",
+{"schema": 1, "release": "20261123T181942Z-9a1d648460f7", "built_at": "2026-11-23T18:19:42Z",
  "source": {"url": "https://avoinapi.vaylapilvi.fi/vaylatiedot/digiroad/ows", "layer": "digiroad:dr_liikennemaara",
-            "filter": "arvo>=800", "timestamp": "2026-11-23T17:29:47.400Z"},
+            "filter": "arvo>=800", "timestamp": "2026-06-16T06:29:16Z"},
  "bounds": [21.174094, 59.843474, 31.005393, 69.907816],
  "attribution": "Traffic volumes: © Fintraffic / Digiroad, from Väylävirasto's open data, CC BY 4.0",
  "license": "CC BY 4.0",
- "datasets": {"traffic": {"format": "pmtiles-json", "schema": 1, "zoom": 11, "url": "traffic.pmtiles", "bytes": 9492956,
+ "datasets": {"traffic": {"format": "pmtiles-json", "schema": 1, "zoom": 11, "url": "traffic.pmtiles", "bytes": 9492972,
                           "sha256": "…", "tiles": 1904, "features": 117061}},
  "files": [{"path": "traffic.pmtiles", …}, {"path": "LICENSE.txt", …}]}
 ```
