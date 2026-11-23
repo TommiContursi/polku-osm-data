@@ -20,9 +20,12 @@ osm-build/venv/bin/python tools/osm_data/builder.py osm-build/finland.osm.pbf os
 To see a local release in the app, use Polku's `tools/osm_data/preview.py --release DIR`
 from Polku's checkout.
 
-**Actions → Polku OSM data → build** runs the weekly build by hand. Each country job has 150
-minutes, with a 40-minute download step: each PBF transfer gets 30 minutes and retries only
-in its first five. Every Geofabrik download after the snapshot step retries any error, a
+**Actions → Polku OSM data → build** runs the weekly build by hand. The snapshot job picks the
+date and downloads all four countries itself, one after another (a 150-minute step: each PBF
+transfer gets 30 minutes and retries only in its first five), and hands each to its country
+job as an artifact. Geofabrik once answered the snapshot check and then refused two of the
+country jobs' runners (2026-11-23), so the country jobs never ask it themselves; each has 150
+minutes to build. Every Geofabrik download after the snapshot check retries any error, a
 404 included, three times 30 seconds apart. Nothing gets past a refused connection:
 Geofabrik refuses whole /24 networks, two of GitHub's runner networks among them, and a job
 keeps its runner's address. Some it leaves unanswered: a request times out with no bytes
@@ -40,11 +43,11 @@ artifacts are kept 14 days.
 answer at all; a 404 means a date isn't ready, and the run fails for the alerts' re-run), the
 run takes [GWDG's mirror](https://ftp5.gwdg.de/pub/misc/openstreetmap/download.geofabrik.de/)
 of Geofabrik's Europe export, which carries Geofabrik's own dated file and its MD5. The
-mirror holds Europe alone, so the **mirror** job downloads it (up to 300 minutes, the same
+mirror holds Europe alone, so the snapshot job downloads it instead (up to 300 minutes, the same
 resumable transfer as the geometry job), checks the published MD5, and clips the four
 countries from it in one pass (`osmium extract --strategy complete_ways`, the polygons in
 `data/`), keeping the export's replication timestamp in each country's header. The country
-jobs then build from those artifacts instead of downloading, and the geometry job takes its
+jobs build from those artifacts, as on Geofabrik's path, and the geometry job takes its
 Europe export from the mirror too. The run's summary says which source it used, and each
 manifest's `source` names the mirrored export it was clipped from, with the tool
 (`clipped`) and the polygon (`coverage`), so a mirrored release is never mistaken for
