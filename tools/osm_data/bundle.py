@@ -6,11 +6,10 @@ import heapq
 import json
 import os
 from pathlib import Path
-import re
 import tempfile
 import time
 
-from tools.osm_data.builder import COUNTRIES, PRODUCT_ZOOMS, LICENSE_TEXT, file_record, json_bytes, identity_rows
+from tools.osm_data.builder import COUNTRIES, PRODUCT_ZOOMS, LICENSE_TEXT, file_record, json_bytes, identity_rows, source_kind
 from tools.osm_data.publish import local_release, validate
 from tools.osm_data.geometry_source import load_inputs, input_receipt
 from pmtiles.reader import Reader, MmapSource
@@ -22,18 +21,19 @@ def bundle(releases, output, *, geometry=None):
     started=time.monotonic()
     output=Path(output)
     if output.exists():raise FileExistsError(output)
-    inputs={}
+    inputs={};kinds=set()
     for path in map(Path,releases):
         _,m=local_release(path)
         country=m.get('country')
         if country not in COUNTRIES:raise ValueError('Unsupported country')
         if country in inputs:raise ValueError('Duplicate country')
-        if not re.fullmatch(r'https://download\.geofabrik\.de/europe/'+country+r'-(latest|[0-9]{6})\.osm\.pbf',m['source']['url']):raise ValueError('Mislabeled country source')
+        kinds.add(source_kind(m['source'],country))
         if set(m['datasets'])!={'ways','lit',*PRODUCT_ZOOMS}:raise ValueError('Country product set is incomplete')
         inputs[country]=(path,m)
     if set(inputs)!=set(COUNTRIES):raise ValueError('Exactly the four supported countries are required')
     stamps={m['source']['timestamp'] for _,m in inputs.values()}
     if len(stamps)!=1:raise ValueError('Country source timestamps differ; build one consistent OSM epoch')
+    if len(kinds)!=1:raise ValueError('Countries come from different sources; build one consistent OSM epoch')
     stamp=next(iter(stamps))
     if not datetime.fromisoformat(stamp.replace('Z','+00:00')).tzinfo:raise ValueError('Invalid source timestamp')
     shared = None
@@ -44,7 +44,7 @@ def bundle(releases, output, *, geometry=None):
         expected_coverage = {'type':'GeometryCollection','geometries':[inputs[c][1]['coverage'] for c in COUNTRIES]}
         d = geo.get('datasets',{}).get('geometry',{})
         if (set(geo.get('datasets',{}))!={'geometry'} or geo.get('inputs')!=input_receipt(expected_inputs) or
-            geo['source']['timestamp']!=stamp or not re.fullmatch(r'https://download\.geofabrik\.de/europe-(latest|[0-9]{6})\.osm\.pbf',geo['source']['url']) or
+            geo['source']['timestamp']!=stamp or source_kind(geo['source'],'europe')!=next(iter(kinds)) or
             d.get('kind')!='geometry' or d.get('format')!='pmtiles-json' or d.get('schema')!=2 or d.get('zoom')!=13 or
             d.get('source')!=geo['source'] or d.get('coverage')!=expected_coverage or geo.get('coverage')!=expected_coverage or
             d.get('areas_complete') is not True or type(d.get('nearby_complete')) is not bool):

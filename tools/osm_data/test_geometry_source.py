@@ -2,6 +2,10 @@
 import gzip
 import hashlib
 import json
+import textwrap
+import sys
+import subprocess
+import os
 import importlib
 from datetime import datetime, timezone
 import osmium
@@ -57,9 +61,9 @@ class GeometrySourceTests(unittest.TestCase):
             self.assertEqual(next(o[3] for o in objects if o[:2]==('relation',101)),[('r',100,'part')])
             self.assertIn(10,tracker.way_ids());self.assertNotIn(11,tracker.way_ids())
 
-    def inputs(self,root):
+    def inputs(self,root,**fixture):
         from tools.osm_data.test_countries import CountryTests
-        paths=CountryTests().inputs(root)
+        paths=CountryTests().inputs(root,**fixture)
         for p in paths:
             body=gzip.compress(b'["way",10,true,true,"'+b'a'*64+b'"]\n',mtime=0)
             (p/'geometry-roots.jsonl.gz').write_bytes(body)
@@ -67,6 +71,26 @@ class GeometrySourceTests(unittest.TestCase):
             m['files'].append({'path':'geometry-roots.jsonl.gz','bytes':len(body),'sha256':hashlib.sha256(body).hexdigest()})
             (p/'manifest.json').write_text(json.dumps(m))
         return paths
+
+    def test_the_geometry_takes_its_europe_export_from_the_countries_source(self):
+        # Countries clipped from the mirror's newest export need that same export, which has no date in its name (#1)
+        workflow=(Path(__file__).resolve().parents[2]/'.github/workflows/osm-data.yml').read_text()
+        step=workflow.split('      - name: Derive one dated reference, from the same source as the country inputs\n',1)[1]
+        code=textwrap.dedent(step.split("python - <<'PYCODE'\n",1)[1].split('\n          PYCODE\n',1)[0])
+        for mirror,stamp,url in [(False,'261101',builder.GEOFABRIK+'europe-261101.osm.pbf'),
+                                 (True,'latest',builder.MIRROR+'europe-latest.osm.pbf')]:
+            with self.subTest(mirror=mirror),tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp)/'osm-build'/'inputs';root.mkdir(parents=True)
+                for p in self.inputs(root,mirror=mirror):
+                    m=json.loads((p/'manifest.json').read_text())
+                    m['source']['url']=m['source']['url'].replace('-latest.osm.pbf','-261101.osm.pbf') if not mirror else m['source']['url']
+                    (p/'manifest.json').write_text(json.dumps(m))
+                    p.rename(root/f'osm-{p.name}-geometry-inputs')
+                output=Path(tmp)/'output';output.write_text('')
+                env=dict(os.environ,GITHUB_OUTPUT=str(output),PYTHONPATH=str(Path(__file__).resolve().parents[2]))
+                result=subprocess.run([sys.executable,'-c',code],cwd=tmp,env=env,capture_output=True,text=True,timeout=30)
+                self.assertEqual(result.returncode,0,result.stderr)
+                self.assertEqual(output.read_text(),f'stamp={stamp}\nurl={url}\n')
 
     def test_small_input_artifacts_verify_checksums_epochs_and_original_root_agreement(self):
         module=importlib.import_module('tools.osm_data.geometry_source')

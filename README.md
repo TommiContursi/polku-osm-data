@@ -17,7 +17,10 @@ is not open source: see [LICENSE](LICENSE). The data keeps OpenStreetMap's licen
 
 1. **Monday 03:17 UTC**, `osm-data.yml` picks one dated Geofabrik export shared by all four
    countries, builds each country, completes the area geometry from the same Europe export
-   and bundles the four into one release. Hashes, the schema, sample roads in every country
+   and bundles the four into one release. When Geofabrik answers none of the runner's
+   requests, the run takes GWDG's mirror of Geofabrik's Europe export instead and clips the
+   four countries from it with the polygons in `data/`; the manifest names the source each
+   release was built from. Hashes, the schema, sample roads in every country
    and the Python tests are checked before anything is uploaded.
 2. **The upload** (only when `OSM_UPLOAD_ENABLED` is `true`) puts the release in
    `releases/<release>/`, reads every file it sends back to check its SHA-256, checks the public
