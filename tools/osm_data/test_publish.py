@@ -256,6 +256,7 @@ class PublishTests(unittest.TestCase):
         for publication in (automatic,recovery):
             self.assertIn('\n    timeout-minutes: 120\n',publication,
                           'Slow artifact download must leave time for full verification')
+            self.assertIn('OSM_SHARED_FILES: ${{ vars.OSM_SHARED_FILES }}',publication,'a resume keeps the layout it began with')
 
     def test_recovery_source_accepts_failed_publication_with_verified_main_bundle(self):
         run={'id':123,'status':'completed','conclusion':'failure','head_branch':'main',
@@ -819,7 +820,7 @@ class PublishTests(unittest.TestCase):
         self.assertTrue(result['sftp_write_and_rename'])
         self.assertTrue(result['posix_overwrite'])
         self.assertTrue(result['http_range_cors_and_cache'])
-        self.assertEqual(result['retention']['deleted_entries'], 2)
+        self.assertEqual(result['retention']['deleted_entries'], 3, 'a release, staging and a shared file')
         self.assertEqual(self.host.files, original_files)
         self.assertEqual(self.host.dirs, original_dirs)
         self.assertEqual(self.host.pointer_writes, 0)
@@ -1050,6 +1051,136 @@ class PublishTests(unittest.TestCase):
         with self.assertRaisesRegex(OSError, 'extension unavailable'):
             remote.replace('pointer.tmp', 'current.json')
         self.assertEqual(fake.posix_rename_calls, [('pointer.tmp', 'current.json')])
+
+
+def shared(data, suffix='.pmtiles'):
+    return f'files/{hashlib.sha256(data).hexdigest()}{suffix}'
+
+
+class SharedFilesTests(unittest.TestCase):
+    """OSM_SHARED_FILES: every file among the shared files, named by its SHA-256; a release folder holds its manifest."""
+    stage = PublishTests.stage
+
+    def setUp(self):
+        PublishTests.setUp(self)
+        switch = patch.dict('os.environ', {'OSM_SHARED_FILES': 'true'})
+        switch.start()
+        self.addCleanup(switch.stop)
+
+    def publish(self, directory=None, resume=False):
+        directory = directory or self.release_dir
+        publish.upload(directory, resume=resume)
+        raw, hosted = publish.hosted(directory)
+        publish.promote_candidate(hosted['release'], hashlib.sha256(raw).hexdigest(), directory)
+
+    def build(self, name, archive, built_at):
+        """A local release of the given archive, beside the same licence."""
+        directory = Path(self.tmp.name) / name
+        directory.mkdir()
+        value = manifest(name, built_at)
+        digest = hashlib.sha256(archive).hexdigest()
+        value['files'][0].update(bytes=len(archive), sha256=digest)
+        value['datasets']['ways'].update(bytes=len(archive), sha256=digest)
+        for path, data in [('ways.pmtiles', archive), ('LICENSE.txt', LICENSE), ('manifest.json', encoded(value))]:
+            (directory / path).write_bytes(data)
+        return directory
+
+    def sent(self):
+        return sorted(name.rsplit('/', 1)[1] for name, _, _ in self.host.uploads if '/.upload-' in name)
+
+    def test_a_rebuild_sends_only_its_manifest_and_every_release_keeps_its_files(self):
+        self.publish()
+        self.assertEqual(self.sent(), ['LICENSE.txt', '_upload.json', 'manifest.json', 'ways.pmtiles'])
+        self.assertEqual((self.host.files[ROOT + '/' + shared(ARCHIVE)], self.host.files[ROOT + '/' + shared(LICENSE, '.txt')]),
+                         (ARCHIVE, LICENSE))
+        self.assertEqual([name for name in self.host.files if name.startswith(ROOT + '/releases/new-release/')],
+                         [ROOT + '/releases/new-release/manifest.json'], 'a release is its manifest')
+        live = json.loads(self.host.files[ROOT + '/current.json'])
+        self.assertEqual(live['datasets']['ways']['url'], shared(ARCHIVE))
+        publish.check(PUBLIC + '/current.json')
+        # The same files built again: only the manifest goes up, and it names the files already there
+        rebuilt = self.build('rebuilt-release', ARCHIVE, '2026-11-21T00:00:00Z')
+        self.host.uploads.clear()
+        self.publish(rebuilt)
+        self.assertEqual(self.sent(), ['_upload.json', 'manifest.json'])
+        self.assertEqual(json.loads(self.host.files[ROOT + '/current.json'])['datasets']['ways']['url'], shared(ARCHIVE))
+        publish.check(PUBLIC + '/current.json')
+        # Polku's rollback to the predecessor hashes the shared files it names in full
+        saved = next(p for p in rebuilt.glob('rollback-*.json') if json.loads(p.read_bytes())['release'] == 'new-release')
+        with patch.object(publish, 'verify_file', wraps=publish.verify_file) as verify:
+            publish.rollback(saved, expected_current='rebuilt-release')
+        self.assertEqual({call.args[1] for call in verify.call_args_list}, {shared(ARCHIVE), shared(LICENSE, '.txt')})
+        self.assertEqual(json.loads(self.host.files[ROOT + '/current.json'])['release'], 'new-release')
+        # A changed archive is all the next upload sends, and retention keeps what the releases that stay name
+        changed = self.build('changed-release', ARCHIVE + b'!', '2026-11-22T00:00:00Z')
+        self.host.uploads.clear()
+        self.publish(changed)
+        self.assertEqual(self.sent(), ['_upload.json', 'manifest.json', 'ways.pmtiles'])
+        for data in (ARCHIVE, ARCHIVE + b'!'):
+            self.assertIn(ROOT + '/' + shared(data), self.host.files)
+        publish.check(PUBLIC + '/current.json')
+
+    def test_a_resumed_upload_sends_only_what_neither_the_stage_nor_the_shared_files_hold(self):
+        raw, hosted = publish.hosted(self.release_dir)
+        # another upload put the same licence among the shared files after this one stopped
+        self.host.dirs.add(ROOT + '/files')
+        self.host.files[ROOT + '/' + shared(LICENSE, '.txt')] = LICENSE
+        stage = self.stage({'ways.pmtiles': ARCHIVE[:4000], 'LICENSE.txt': LICENSE})
+        with patch.dict('os.environ', {'OSM_ALLOW_PUBLISH': ''}):
+            self.assertEqual(publish.inspect_release(self.release_dir)['shared'], ['LICENSE.txt'])
+        self.publish(resume=True)
+        self.assertEqual([(name.removeprefix(ROOT + '/'), offset, size) for name, offset, size in self.host.uploads
+                          if '/.upload-' in name],
+                         [(stage + '/ways.pmtiles', 4000, len(ARCHIVE) - 4000), (stage + '/manifest.json', None, len(raw))])
+        self.assertEqual(self.host.files[ROOT + '/' + shared(ARCHIVE)], ARCHIVE)
+        self.assertEqual([name for name in self.host.files if name.startswith(ROOT + '/releases/new-release/')],
+                         [ROOT + '/releases/new-release/manifest.json'])
+
+    def test_the_same_content_twice_in_a_release_is_sent_once(self):
+        value = json.loads((self.release_dir / 'manifest.json').read_bytes())
+        value['files'].append({**value['files'][0], 'path': 'lit.pmtiles'})
+        value['datasets']['lit'] = {**value['datasets']['ways'], 'url': 'lit.pmtiles'}
+        (self.release_dir / 'lit.pmtiles').write_bytes(ARCHIVE)
+        (self.release_dir / 'manifest.json').write_bytes(encoded(value))
+        self.publish()
+        self.assertEqual(self.sent(), ['LICENSE.txt', '_upload.json', 'manifest.json', 'ways.pmtiles'])
+        live = json.loads(self.host.files[ROOT + '/current.json'])
+        self.assertEqual(live['datasets']['lit']['url'], live['datasets']['ways']['url'])
+        publish.check(PUBLIC + '/current.json')
+
+    def test_promotion_needs_every_shared_file_at_its_size(self):
+        publish.upload(self.release_dir)
+        raw, hosted = publish.hosted(self.release_dir)
+        path = ROOT + '/' + shared(ARCHIVE)
+        for change in ('short', 'missing'):
+            with self.subTest(change=change):
+                files = dict(self.host.files)
+                if change == 'short':
+                    self.host.files[path] = ARCHIVE[:-1]
+                else:
+                    del self.host.files[path]
+                with self.assertRaisesRegex(RuntimeError, 'Shared file is missing or differs'):
+                    publish.promote_candidate('new-release', hashlib.sha256(raw).hexdigest(), self.release_dir)
+                self.assertEqual(self.host.pointer_writes, 0)
+                self.host.files = files
+
+    def test_a_manifest_names_a_shared_file_only_by_its_own_digest(self):
+        _, hosted = publish.hosted(self.release_dir)
+        ways = shared(ARCHIVE)
+        self.assertEqual((hosted['datasets']['ways']['url'], publish.current(hosted)['datasets']['ways']['url']),
+                         ('../../' + ways, ways))
+        publish.validate(publish.current(hosted), pointed=True)
+        for url, pointed in [('../../files/' + 'a' * 64 + '.pmtiles', False), ('../../' + ways[:-8] + '.json', False),
+                             ('../../../' + ways, False), ('/' + ways, False), (ways, False), ('../x/../../' + ways, False),
+                             ('../../' + ways, True), ('releases/../' + ways, True),
+                             ('../../files/' + hashlib.sha256(ARCHIVE).hexdigest() + '.tar_gz', False)]:
+            with self.subTest(url=url, pointed=pointed):
+                broken = copy.deepcopy(publish.current(hosted) if pointed else hosted)
+                broken['files'][0]['url'] = broken['datasets']['ways']['url'] = url
+                if url.endswith('.tar_gz'):  # a suffix the shared files can't hold
+                    broken['files'][0]['path'] = 'ways.tar_gz'
+                with self.assertRaises(ValueError):
+                    publish.validate(broken, pointed)
 
 
 if __name__ == '__main__':

@@ -430,6 +430,7 @@ jobs:
           OSM_SFTP_HOST_KEY_SHA256: ${{ secrets.OSM_SFTP_HOST_KEY_SHA256 }}
           OSM_FTP_ROOT: ${{ vars.OSM_FTP_ROOT }}
           OSM_PUBLIC_URL: ${{ vars.OSM_PUBLIC_URL }}
+          OSM_SHARED_FILES: ${{ vars.OSM_SHARED_FILES }}
         run: python tools/osm_data/publish.py upload osm-build/release
 
   upload-existing:
@@ -483,6 +484,7 @@ jobs:
           OSM_SFTP_HOST_KEY_SHA256: ${{ secrets.OSM_SFTP_HOST_KEY_SHA256 }}
           OSM_FTP_ROOT: ${{ vars.OSM_FTP_ROOT }}
           OSM_PUBLIC_URL: ${{ vars.OSM_PUBLIC_URL }}
+          OSM_SHARED_FILES: ${{ vars.OSM_SHARED_FILES }}
         run: |
           case "$OSM_OPERATION" in
             inspect-existing) python tools/osm_data/publish.py inspect osm-build/release ;;

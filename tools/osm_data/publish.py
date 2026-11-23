@@ -30,6 +30,8 @@ from tools.osm_data import maintenance
 NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,120}\Z')
 BLOCK = 4096
 MAX_JSON = 2 * 1024 * 1024
+SHARED = 'files'  # every release's files, named by their SHA-256, shared by the releases that name them
+SHARED_NAME = re.compile(r'[a-f0-9]{64}(\.[A-Za-z0-9]{1,16})?\Z')
 
 
 def require(ok, message):
@@ -45,12 +47,35 @@ def public_url(url):
     return url.rstrip('/')
 
 
+def shared_path(entry):
+    """A file's place among the shared files: its SHA-256 and its own suffix."""
+    return f"{SHARED}/{entry['sha256']}{posixpath.splitext(entry['path'])[1]}"
+
+
+def share(entry):
+    """The entry with its url among the shared files, relative to its release's folder."""
+    return entry | {'url': '../../' + shared_path(entry)}
+
+
+def place(release, entry, pointed=False):
+    """Where a manifest's file lies in the product's folder. Without a url, in its release's own folder (the layout
+    before the shared files); with one, among the shared files, relative to the release's folder or, in current.json,
+    to the product's."""
+    if 'url' not in entry:
+        return f"releases/{release}/{entry['path']}"
+    url = entry['url']
+    path = url if pointed else posixpath.normpath(f'releases/{release}/{url}')
+    require(isinstance(url, str) and path == shared_path(entry) and url == (path if pointed else '../../' + path)
+            and SHARED_NAME.fullmatch(posixpath.basename(path)), 'Unsafe file URL')
+    return path
+
+
 def validate(manifest, pointed=False):
     release = manifest.get('release', '')
     require(manifest.get('schema') == 1 and isinstance(release, str) and NAME.fullmatch(release), 'Invalid release manifest')
     files = manifest.get('files', [])
     require(isinstance(files, list) and files, 'Manifest files are required')
-    names = set()
+    names, urls = set(), {}
     for f in files:
         name = f.get('path', '')
         require(isinstance(name, str) and NAME.fullmatch(name) and name not in {'current.json', 'manifest.json'}
@@ -58,21 +83,36 @@ def validate(manifest, pointed=False):
         require(type(f.get('bytes')) is int and f['bytes'] >= 0
                 and re.fullmatch('[a-f0-9]{64}', f.get('sha256', '')), 'Invalid file integrity metadata')
         names.add(name)
+        path = place(release, f, pointed)  # checks its url too
+        urls[path if pointed else f.get('url', name)] = f
     require('LICENSE.txt' in names and manifest.get('datasets'), 'Release needs datasets and LICENSE.txt')
     for dataset in manifest['datasets'].values():
-        prefix = f'releases/{release}/' if pointed else ''
-        name = dataset.get('url', '').removeprefix(prefix)
-        require(dataset.get('url') == prefix + name and name in names and name.endswith('.pmtiles'), 'Unsafe dataset URL')
-        entry = next(f for f in files if f['path'] == name)
+        url = dataset.get('url')
+        entry = isinstance(url, str) and urls.get(url)
+        require(entry and url.endswith('.pmtiles'), 'Unsafe dataset URL')
         require(entry['bytes'] == dataset.get('bytes') and entry['sha256'] == dataset.get('sha256') and entry['bytes'] > 0,
                 'Dataset and file integrity disagree')
     return manifest
 
 
 def current(manifest):
+    """current.json: the release's manifest with its URLs relative to the product's folder."""
     result = json.loads(json.dumps(manifest))
+    for entry in [*result['files'], *result['datasets'].values()]:
+        if 'url' in entry:
+            entry['url'] = posixpath.normpath(f"releases/{result['release']}/{entry['url']}")
+    return result
+
+
+def shared_manifest(manifest):
+    """The manifest as uploaded with OSM_SHARED_FILES: every file among the shared files, so a file that hasn't changed
+    keeps its URL and isn't sent again."""
+    result = json.loads(json.dumps(manifest))
+    urls = {}
+    for entry in result['files']:
+        urls[entry['path']] = entry['url'] = share(entry)['url']
     for dataset in result['datasets'].values():
-        dataset['url'] = f"releases/{result['release']}/{posixpath.basename(dataset['url'])}"
+        dataset['url'] = urls[dataset['url']]
     return result
 
 
@@ -222,27 +262,47 @@ def digest_file(path):
     return sha.hexdigest()
 
 
-def verify_remote(ftp, base, manifest, raw):
-    samples = {}
-    for f in manifest['files']:
-        path, size = base + '/' + f['path'], f['bytes']
-        print(f'Verify full SHA-256 {path}', flush=True)
-        require(ftp.size(path) == size, 'Uploaded file size differs')
-        sha, seen = hashlib.sha256(), 0
-        chunks = {s: bytearray() for s, _ in offsets(size)}
-        def take(chunk):
-            nonlocal seen
-            sha.update(chunk)
-            for start, end in offsets(size):
-                a, b = max(start, seen), min(end, seen + len(chunk))
-                if a < b:
-                    chunks[start].extend(chunk[a - seen:b - seen])
-            seen += len(chunk)
-        ftp.retrbinary('RETR ' + path, take)
-        require(seen == size and sha.hexdigest() == f['sha256'], 'Uploaded file SHA-256 differs')
-        samples[f['path']] = {s: bytes(data) for s, data in chunks.items()}
+def verify_file(ftp, path, entry):
+    """The whole file's SHA-256, and its bytes where the public check reads them."""
+    size = entry['bytes']
+    print(f'Verify full SHA-256 {path}', flush=True)
+    require(ftp.size(path) == size, 'Uploaded file size differs')
+    sha, seen = hashlib.sha256(), 0
+    chunks = {s: bytearray() for s, _ in offsets(size)}
+    def take(chunk):
+        nonlocal seen
+        sha.update(chunk)
+        for start, end in offsets(size):
+            a, b = max(start, seen), min(end, seen + len(chunk))
+            if a < b:
+                chunks[start].extend(chunk[a - seen:b - seen])
+        seen += len(chunk)
+    ftp.retrbinary('RETR ' + path, take)
+    require(seen == size and sha.hexdigest() == entry['sha256'], 'Uploaded file SHA-256 differs')
+    return {s: bytes(data) for s, data in chunks.items()}
+
+
+def move_shared(ftp, staged, target):
+    """A verified file into its place among the shared files."""
+    if SHARED not in maintenance.children(ftp):
+        ftp.mkd(SHARED)
+    print(f'Move verified {staged} to {target}', flush=True)
+    ftp.rename(staged, target)
+
+
+def verify_manifest(ftp, base, raw):
     require(ftp.size(base + '/manifest.json') == len(raw) and retrieve(ftp, base + '/manifest.json') == raw,
             'Uploaded manifest differs')
+
+
+def verify_remote(ftp, base, manifest, raw):
+    """Every file the release names, hashed in full: in base (its own folder, or its staging) or among the shared
+    files. The samples are keyed by where each file lies once the release is in place."""
+    samples = {}
+    for f in manifest['files']:
+        path = place(manifest['release'], f)
+        samples[path] = verify_file(ftp, path if 'url' in f else f"{base}/{f['path']}", f)
+    verify_manifest(ftp, base, raw)
     return samples
 
 
@@ -281,15 +341,15 @@ def get(url, byte_range=None, immutable=False, encoding='gzip, br'):
 
 
 def probe(url, manifest, raw, samples=None):
-    base = f"{url}/releases/{manifest['release']}"
-    require(get(base + '/manifest.json', immutable=True) == raw, 'Public manifest differs')
-    for dataset in manifest['datasets'].values():
-        name, size = posixpath.basename(dataset['url']), dataset['bytes']
+    """The public manifest, and each archive's Range reads; compared with the bytes just hashed, where there are any."""
+    require(get(f"{url}/releases/{manifest['release']}/manifest.json", immutable=True) == raw, 'Public manifest differs')
+    for dataset in current(manifest)['datasets'].values():
+        path, size = dataset['url'], dataset['bytes']
         for start, end in offsets(size):
             for encoding in ('identity', 'gzip, br'):
-                body = get(base + '/' + name, (start, end, size), True, encoding)
-                if samples:
-                    require(body == samples[name][start], 'Public archive bytes differ')
+                body = get(f'{url}/{path}', (start, end, size), True, encoding)
+                if samples and path in samples:
+                    require(body == samples[path][start], 'Public archive bytes differ')
 
 
 def replace_pointer(ftp, raw, path='current.json'):
@@ -385,12 +445,24 @@ def recovery_candidates(ftp, release):
     return stages
 
 
+def hosted(directory):
+    """The local release's manifest as the host gets it, and its bytes: with OSM_SHARED_FILES its files go among the
+    shared files."""
+    raw, manifest = local_release(directory)
+    if os.environ.get('OSM_SHARED_FILES') == 'true':
+        manifest = validate(shared_manifest(manifest))
+        raw = json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode()
+    return raw, manifest
+
+
 def inspect_release(directory):
     """Report the interrupted release's metadata without modifying the host."""
-    raw, manifest = local_release(Path(directory))
+    raw, manifest = hosted(Path(directory))
     expected = {f['path']: f['bytes'] for f in manifest['files']} | {'manifest.json': len(raw)}
     result = {'release': manifest['release'], 'candidates': []}
     with connection(settings()) as ftp:
+        have = maintenance.shared_files(ftp)
+        result['shared'] = sorted(f['path'] for f in manifest['files'] if place(manifest['release'], f) in have)
         for base in recovery_candidates(ftp, manifest['release']):
             entry = {'path': base, 'kind': ftp.kind(base), 'files': {}}
             if entry['kind'] == 'directory':
@@ -404,14 +476,20 @@ def inspect_release(directory):
     return result
 
 
-def resume_upload(ftp, base, directory, manifest, raw):
+def resume_upload(ftp, base, directory, manifest, raw, send):
     require(ftp.kind(base) == 'directory', 'Resume needs a real directory, not a symlink')
     names = {posixpath.basename(p) for p in ftp.nlst(base)}
-    expected = {f['path']: f['bytes'] for f in manifest['files']} | {'manifest.json': len(raw)}
-    require(names <= expected.keys() | {maintenance.UPLOAD}, 'Unexpected files in staging directory')
+    record = {f['path']: f['bytes'] for f in manifest['files']} | {'manifest.json': len(raw)}
+    require(names <= record.keys() | {maintenance.UPLOAD}, 'Unexpected files in staging directory')
     if maintenance.UPLOAD in names:
         marker, _ = maintenance.upload_record(ftp, base, manifest['release'], datetime.now(timezone.utc))
-        require(marker['files'] == expected, 'Upload receipt differs from local release')
+        require(marker['files'] == record, 'Upload receipt differs from local release')
+    expected = send | {'manifest.json': len(raw)}
+
+    def source(name):
+        """The manifest goes up as the host gets it, which isn't the local file when the files are shared."""
+        return io.BytesIO(raw) if name == 'manifest.json' else (directory / name).open('rb')
+
     sizes = {}
     # Check every partial prefix before writing anything; complete files get full hash verification below.
     for name, size in expected.items():
@@ -422,26 +500,30 @@ def resume_upload(ftp, base, directory, manifest, raw):
         actual = sizes[name] = ftp.size(path)
         require(actual <= size, 'Staged file is larger than local file')
         if actual < size:
-            with (directory / name).open('rb') as body:
+            with source(name) as body:
                 def compare(chunk):
                     require(body.read(len(chunk)) == chunk, 'Staged file prefix differs')
                 ftp.retrbinary('RETR ' + path, compare)
                 require(body.tell() == actual, 'Staged file prefix size changed')
+    for name in names - expected.keys() - {maintenance.UPLOAD}:
+        print(f'Remove staged {base}/{name}: the shared files hold it already', flush=True)
+        ftp.remove(base + '/' + name)
     for name, size in expected.items():
         actual = sizes.get(name)
         if actual == size:
             print(f'Reuse complete {base}/{name}: {size} bytes; full hash verification follows', flush=True)
             continue
-        with (directory / name).open('rb') as body:
+        with source(name) as body:
             body.seek(actual or 0)
             ftp.storbinary('STOR ' + base + '/' + name, body, rest=actual)
 
 
 def upload(directory, resume=False):
-    """Upload, verify and name the candidate; the live pointer is left to Polku's promotion."""
+    """Upload, verify and name the candidate; the live pointer is left to Polku's promotion. A file the shared files
+    already hold isn't sent again."""
     require(os.environ.get('OSM_ALLOW_PUBLISH') == 'true', 'Publication requires approved OSM_ALLOW_PUBLISH=true')
     directory = Path(directory)
-    raw, manifest = local_release(directory)
+    raw, manifest = hosted(directory)
     config = settings()
     with connection(config) as ftp:
         previous = previous_pointer(ftp)
@@ -449,7 +531,17 @@ def upload(directory, resume=False):
             require('geometry' in manifest['datasets'], 'Publication would remove live geometry')
         release = manifest['release']
         final = f'releases/{release}'
-        expected = {f['path']: f['bytes'] for f in manifest['files']} | {'manifest.json': len(raw)}
+        # A shared file is there only once its upload was hashed in full; retention keeps whatever this release names
+        have, places = maintenance.shared_files(ftp), {f['path']: place(release, f) for f in manifest['files']}
+        for f in manifest['files']:
+            require(have.get(places[f['path']], f['bytes']) == f['bytes'], 'Shared file size differs: ' + places[f['path']])
+        send, sending = {}, set(have)
+        for f in manifest['files']:  # the same content twice in one release lies in one place: sent once
+            if places[f['path']] not in sending:
+                send[f['path']] = f['bytes']
+                sending.add(places[f['path']])
+        print(f'Send {len(send)} of {len(places)} files; the shared files hold the rest', flush=True)
+        expected = send | {'manifest.json': len(raw)}
         incoming = sum(expected.values())
         if resume:
             candidates = recovery_candidates(ftp, release)
@@ -461,16 +553,15 @@ def upload(directory, resume=False):
             incoming = sum(max(0, size - ftp.size(stage + '/' + name)) if name in names else size
                            for name, size in expected.items())
         if previous is not None:
-            retention = maintenance.prune(ftp, apply=True, incoming_bytes=incoming, incoming_release=release)
+            retention = maintenance.prune(ftp, apply=True, incoming_bytes=incoming, incoming=manifest)
             print(json.dumps(retention, sort_keys=True), flush=True)
         else:
             require(maintenance.usage(ftp) + incoming + 4096 <= maintenance.BUDGET, 'OSM storage budget exceeded')
         if resume:
             if stage == final:
-                require(all(ftp.kind(final + '/' + f['path']) == 'file' for f in manifest['files'])
-                        and ftp.kind(final + '/manifest.json') == 'file', 'Release needs regular files')
+                require(all(ftp.kind(final + '/' + name) == 'file' for name in expected), 'Release needs regular files')
             else:
-                resume_upload(ftp, stage, directory, manifest, raw)
+                resume_upload(ftp, stage, directory, manifest, raw, send)
         else:
             if 'releases' not in {posixpath.basename(p) for p in ftp.nlst()}:
                 ftp.mkd('releases')
@@ -478,11 +569,19 @@ def upload(directory, resume=False):
             stage = f'.upload-{release}-{uuid.uuid4().hex}'
             ftp.mkd(stage)
             maintenance.mark_upload(ftp, stage, manifest, raw)
-            for f in manifest['files']:
-                with (directory / f['path']).open('rb') as body:
-                    ftp.storbinary('STOR ' + stage + '/' + f['path'], body)
+            for name in send:
+                with (directory / name).open('rb') as body:
+                    ftp.storbinary('STOR ' + stage + '/' + name, body)
             ftp.storbinary('STOR ' + stage + '/manifest.json', io.BytesIO(raw))
-        samples = verify_remote(ftp, stage, manifest, raw)
+        samples = {}
+        for f in manifest['files']:
+            if f['path'] not in send:
+                continue
+            staged, target = f"{stage}/{f['path']}", places[f['path']]
+            samples[target] = verify_file(ftp, staged, f)
+            if target != f"{final}/{f['path']}":
+                move_shared(ftp, staged, target)
+        verify_manifest(ftp, stage, raw)
         if stage != final:
             if 'releases' not in {posixpath.basename(p) for p in ftp.nlst()}:
                 ftp.mkd('releases')
@@ -496,7 +595,7 @@ def upload(directory, resume=False):
         replace_pointer(ftp, raw, 'candidates/current.json')
         require(get(config[-2] + '/candidates/current.json') == raw, 'Public candidate pointer differs')
         if previous is not None:
-            print(json.dumps(maintenance.prune(ftp, apply=True, incoming_release=release), sort_keys=True), flush=True)
+            print(json.dumps(maintenance.prune(ftp, apply=True, incoming=manifest), sort_keys=True), flush=True)
         print(f'Candidate {release}: {config[-2]}/{final}/manifest.json', flush=True)
 
 
@@ -534,10 +633,14 @@ def promote_candidate(release, sha256, directory):
         manifest = validate(json.loads(raw))
         require(manifest['release'] == release, 'Candidate release differs')
         # The upload hashed every file; its author is the only writer, so sizes find what changed since
-        expected = {f['path']: f['bytes'] for f in manifest['files']} | {'manifest.json': len(raw)}
+        expected = maintenance.own_files(manifest, raw)
         if maintenance.UPLOAD in maintenance.children(ftp, final):
             expected[maintenance.UPLOAD] = ftp.size(final + '/' + maintenance.UPLOAD)
         maintenance.validate_files(ftp, final, expected)
+        have = maintenance.shared_files(ftp)
+        for f in manifest['files']:
+            if 'url' in f:
+                require(have.get(place(release, f)) == f['bytes'], 'Shared file is missing or differs: ' + f['path'])
         live = json.loads(previous) if previous else None
         if not live or live['release'] != release:
             require(not live or manifest['built_at'] > live['built_at'], 'Candidate is not newer than the live release')

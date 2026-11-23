@@ -138,15 +138,15 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(set(squares), {'E20_N55.rd5', 'E20_N60.rd5', 'E25_N70.rd5'})
         big = squares['E20_N60.rd5']
         self.assertEqual((big['bytes'], big['sha256'], big['md5']), (len(self.big), hashlib.sha256(self.big).hexdigest(), md5(self.big)))
-        self.assertEqual(set(big), {'path', 'bytes', 'sha256', 'md5', 'created', 'downloaded', 'version'})
+        self.assertEqual(set(big), {'path', 'bytes', 'sha256', 'md5', 'created', 'downloaded', 'version', 'url'})
         self.assertEqual((big['created'], big['downloaded'], big['version']), ('2026-11-22T09:00:00Z', '2026-11-22T09:00:00Z', 11))
+        self.assertEqual(big['url'], f"../../files/{big['sha256']}.rd5", 'relative to its release, among the shared files')
         self.assertIn('OpenStreetMap contributors', manifest['attribution'])
         self.assertIn('Hole-filled seamless SRTM data V4', manifest['attribution'], "CIAT's citation, as its terms ask")
-        self.assertEqual(self.host.files[f"{BASE}/releases/{manifest['release']}/E20_N60.rd5"], self.big)
+        self.assertEqual(self.host.files[f"{BASE}/files/{big['sha256']}.rd5"], self.big)
         self.assertEqual(sorted(p.removeprefix(BASE) for p in self.host.files),
-                         ['/.htaccess', '/candidates/current.json', f"/releases/{manifest['release']}/E20_N55.rd5",
-                          f"/releases/{manifest['release']}/E20_N60.rd5",
-                          f"/releases/{manifest['release']}/E25_N70.rd5", f"/releases/{manifest['release']}/manifest.json"])
+                         sorted(['/.htaccess', '/candidates/current.json', f"/releases/{manifest['release']}/manifest.json",
+                                 *(f"/files/{s['sha256']}.rd5" for s in squares.values())]))
         self.assertNotIn(BASE + '/staging', self.host.dirs)
         self.assertEqual(routing.check(PUBLIC, T0 + timedelta(days=1)), [manifest['release']])
 
@@ -175,6 +175,41 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(squares['E25_N70.rd5']['md5'], md5(self.small))
         self.assertNotIn(f'{BASE}/releases/{first}', self.host.dirs, 'only the live copy and one candidate stay')
 
+    def shared_squares(self):
+        return sorted(p.removeprefix(BASE + '/') for p in self.host.files if p.startswith(BASE + '/files/'))
+
+    def test_a_square_that_didnt_change_is_not_sent_again(self):
+        self.run_mirror(initial=True)
+        newer = square(1, T0 + timedelta(days=7), size=5100)
+        self.host.publish_square('E20_N60.rd5', newer, previous=[self.big])
+        self.host.uploads.clear()
+        report = self.run_mirror(T0 + timedelta(days=7))
+        self.assertEqual((report['unchanged'], report['kept'], report['shared']), (1, ['E25_N70.rd5'], 2))
+        self.assertEqual([name.removeprefix(BASE + '/') for name, _, _ in self.host.uploads if name.endswith('.rd5')],
+                         ['staging/E20_N60.rd5'])
+        manifest = self.candidate()
+        self.assertEqual(self.shared_squares(), sorted(f"files/{s['sha256']}.rd5" for s in manifest['squares']),
+                         "the old E20_N60 goes with the candidate that named it")
+        self.assertEqual(routing.check(PUBLIC, T0 + timedelta(days=8)), [manifest['release']])
+
+    def test_the_first_update_reads_a_candidate_from_before_the_shared_files(self):
+        self.run_mirror(initial=True)
+        old = self.candidate()
+        for entry in old['squares']:  # as the mirror left them: in the release's own folder
+            del entry['url']
+            self.host.files[f"{BASE}/releases/{old['release']}/{entry['path']}"] = self.host.files.pop(
+                f"{BASE}/files/{entry['sha256']}.rd5")
+        raw = json.dumps(old, sort_keys=True, separators=(',', ':')).encode()
+        self.host.files[f"{BASE}/releases/{old['release']}/manifest.json"] = self.host.files[BASE + '/candidates/current.json'] = raw
+        routing.check(PUBLIC, T0 + timedelta(days=1))
+        newer = square(1, T0 + timedelta(days=7), size=5100)
+        self.host.publish_square('E20_N60.rd5', newer, previous=[self.big])
+        report = self.run_mirror(T0 + timedelta(days=7))
+        self.assertEqual((report['diff'], report['shared']), (1, 0), 'its squares go among the shared files, once')
+        self.assertNotIn(f"{BASE}/releases/{old['release']}", self.host.dirs)
+        manifest = self.candidate()
+        self.assertEqual(self.shared_squares(), sorted(f"files/{s['sha256']}.rd5" for s in manifest['squares']))
+
     def test_a_square_without_its_change_file_waits_for_its_quarter(self):
         self.run_mirror(initial=True)
         newer = square(1, T0 + timedelta(days=20))
@@ -192,6 +227,7 @@ class RoutingTests(unittest.TestCase):
             self.run_mirror(initial=True)
         self.assertEqual([s for s in self.sleeps if s >= 1], [routing.BACK_OFF], 'no quick retries')
         self.assertIn(BASE + '/staging/_E20_N60.rd5.json', self.host.files)
+        self.host.files[BASE + '/staging/E20_N60.rd5'] = self.big[:100]  # left by an upload stopped part way
         report = self.run_mirror(T0 + timedelta(hours=1), initial=True)
         self.assertEqual(report['initial'], ['E25_N70.rd5'])
         self.assertNotIn(('GET', 'E20_N60.rd5'), self.host.requests)
@@ -217,9 +253,8 @@ class RoutingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'wildcard CORS'):
             routing.check(PUBLIC, T0 + timedelta(days=1))
         self.host.release_headers['Access-Control-Allow-Origin'] = '*'
-        release = self.candidate()['release']
-        good = self.host.files[f'{BASE}/releases/{release}/E20_N60.rd5']
-        self.host.files[f'{BASE}/releases/{release}/E20_N60.rd5'] = bytes(200) + good[200:]
+        path = f'{BASE}/files/{hashlib.sha256(self.big).hexdigest()}.rd5'
+        self.host.files[path] = bytes(200) + self.host.files[path][200:]
         with self.assertRaisesRegex(ValueError, 'no valid index: E20_N60.rd5'):
             routing.check(PUBLIC, T0 + timedelta(days=1))
 

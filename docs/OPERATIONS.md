@@ -57,6 +57,13 @@ With `OSM_UPLOAD_ENABLED=true`, a successful weekly or manual build uploads its 
 4. `candidates/current.json` is replaced, atomically, with the release's manifest. The live
    `current.json` is not touched, and the ownership record stays until promotion.
 
+**Shared files.** With the repository variable `OSM_SHARED_FILES` set to `true`, every file goes in
+`files/`, named by its SHA-256 and its suffix, and `releases/<release>/` holds only the manifest, whose
+URLs name those files. A file `files/` already holds at its size isn't sent again; a file that is sent
+is hashed in full in the staging folder before it moves to `files/`. A file that doesn't change keeps
+its URL from release to release. Turn it on only once Polku's promotion is pinned to a commit that
+reads this layout: older code refuses such a candidate and changes nothing.
+
 An interrupted upload is never started again from nothing. **inspect-existing**, with the
 build's run ID in **release**, reports the staged files' sizes without changing the host.
 **resume-existing** then reuses the release if it was already renamed, or exactly one
@@ -83,12 +90,13 @@ credentials apart:
    python tools/osm_data/publish.py promote RELEASE --sha256 SHA --directory osm-promote
    ```
 
-   It requires the manifest bytes Polku checked (by SHA-256), every file at its size and
-   nothing else in the folder, a release built after the live one, and that live geometry
-   isn't dropped. It checks the public Range reads again, writes a pending receipt naming the
-   true predecessor, renames a temporary pointer over `current.json`, reads it back and checks
-   the release over HTTPS, and restores the predecessor if that fails. The predecessor is
-   saved for rollback. A rerun after promotion only finishes the receipt.
+   It requires the manifest bytes Polku checked (by SHA-256), every file at its size (in the
+   release's folder or in `files/`) and nothing else in the folder, a release built after the
+   live one, and that live geometry isn't dropped. It checks the public Range reads again,
+   writes a pending receipt naming the true predecessor, renames a temporary pointer over
+   `current.json`, reads it back and checks the release over HTTPS, and restores the predecessor
+   if that fails. The predecessor is saved for rollback. A rerun after promotion only finishes
+   the receipt.
 3. **live** (Polku's checkout, no credentials): `health.py osm-health --release-dir osm-promote`
    requires the promoted release to be live and runs Polku's browser checks against polku.si.
 4. **rollback**, only when the live check failed (only this repository's checkout, the
@@ -122,7 +130,10 @@ can't go unnoticed for long; re-enable the workflows here when it happens.
 
 Before an upload, `maintenance.py` removes only files it owns. It keeps the live release, its
 saved predecessor (for rollback) and the candidate. An upload keeps the candidate it replaces
-until `candidates/current.json` names the new one, then removes it. Interrupted staging is kept 7 days.
+until `candidates/current.json` names the new one, then removes it. `files/` is the publisher's own: a
+file there goes once nothing that stays names it, neither a release, a stopped upload's staging nor the
+upload under way. They all stay while a release that stays has no manifest; a corrupt manifest, or any
+other name in `files/`, stops retention. Interrupted staging is kept 7 days.
 Unmarked releases and unknown files are never deleted. Receipts live in
 `maintenance/`. The whole deletion plan must validate before anything is removed; unsafe
 paths, symlinks, unexpected files, a changed pointer or corrupt ownership records stop it,
@@ -165,8 +176,10 @@ change files, one file at a time and at most 16 Mbit/s.
 - **check**, daily at 07:43 UTC: the candidate, and `current.json` once there is one.
 - **install-hosting**, once: puts [`routing.htaccess`](../tools/osm_data/routing.htaccess) into `polku-routing/`.
 
-Each square is read back with its SHA-256 before the release is named in `candidates/current.json`, and a stopped
-run goes on from where it stopped. Releases other than the candidate and the live one are removed. A failed update
+Each square goes in `polku-routing/files/`, named by its SHA-256, and is read back with it before the release is
+named in `candidates/current.json`. A square the folder already holds (one that didn't change) isn't sent again, and a
+stopped run goes on from where it stopped. Releases other than the candidate and the live one are removed, then the
+squares neither of them names. A failed update
 or check opens a `watch` issue. The manifest is in [tools/osm_data/README.md](../tools/osm_data/README.md#routing-data).
 
 ## Licensing

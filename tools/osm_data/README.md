@@ -30,8 +30,11 @@ network requests or publication happen in the builder.
 The output has seven PMTiles products, `manifest.json`, `measurements.json`,
 `identities.jsonl.gz` and `LICENSE.txt`. The manifest identifies the exact source and checksums every
 deployable file except itself. Its local dataset URL is relative to this
-immutable release directory. The publication tool gives `current.json` a URL
-under `releases/<release>/`; it does not modify this release's manifest.
+immutable release directory. The publication tool gives `current.json` URLs
+relative to `polku-osm/`, under `releases/<release>/`. With `OSM_SHARED_FILES`
+the uploaded manifest gives each file a `url` beside its `path`,
+`../../files/<sha256><suffix>`, relative to the release's folder, and its
+datasets the same URLs; `current.json` names them as `files/<sha256><suffix>`.
 Release IDs contain the source timestamp, source digest and a digest of every
 dataset record plus coverage. Lighting-only changes can therefore be published
 for an unchanged source snapshot. Timing measurements do not affect identity.
@@ -221,18 +224,21 @@ completeness, size and publication checks remain.
 
 ## Routing data
 
-`routing.py` mirrors brouter.de's squares (docs/OPERATIONS.md). Each release is `polku-routing/releases/<release>/`:
-the squares as brouter.de serves them, and `manifest.json`:
+`routing.py` mirrors brouter.de's squares (docs/OPERATIONS.md). Each release is `polku-routing/releases/<release>/`,
+which holds its `manifest.json`; the squares, as brouter.de serves them, are in `polku-routing/files/`:
 
 ```json
 {"schema": 1, "release": "20261122T101500Z", "built_at": "2026-11-22T10:20:31Z",
  "source": "https://brouter.de/brouter/segments4/", "engine": "BRouter 1.7.10", "attribution": "Routing data © OpenStreetMap contributors, …",
  "squares": [{"path": "E25_N60.rd5", "bytes": 38812345, "sha256": "…", "md5": "…",
-              "created": "2026-11-22T02:44:23Z", "downloaded": "2026-11-22T10:01:12Z", "version": 11}]}
+              "created": "2026-11-22T02:44:23Z", "downloaded": "2026-11-22T10:01:12Z", "version": 11,
+              "url": "../../files/<sha256>.rd5"}]}
 ```
 
 `created` is brouter.de's build of the square, `downloaded` our last full download of it, and `version` BRouter's
-lookup version. `candidates/current.json` holds the candidate's manifest.
+lookup version. `url` is where the square lies, relative to its release's `manifest.json`: among the shared files,
+named by its SHA-256, so a square that doesn't change keeps its URL. A release from before the shared files has no
+`url`; its squares are at `releases/<release>/<path>`. `candidates/current.json` holds the candidate's manifest.
 
 ## NLS background map
 
