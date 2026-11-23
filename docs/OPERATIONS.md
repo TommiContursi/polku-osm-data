@@ -30,10 +30,28 @@ received. So when every failed job of a build on `main` was refused or unanswere
 **Polku OSM alerts** re-runs the failed jobs on new runners, 30 minutes after the first
 attempt, then 1 hour and 2 hours after the next ones, so four attempts in all, unless a newer
 build exists by then. Re-running at once looked like a burst to Geofabrik (15 attempts in 24
-minutes, 2026-11-23). A re-run that succeeds goes on to upload. The checksum and
-polygon come from beside the file actually served, since Geofabrik is moving countries into
-folders of their own. The source must be at most 14 days old. Source and release artifacts
-are kept 14 days.
+minutes, 2026-11-23). A re-run that succeeds goes on to upload. The checksum
+comes from beside the file actually served, since Geofabrik is moving countries into folders
+of their own; the clipping polygons are this repository's own copies in `data/`, so no build
+waits on Geofabrik for them. The source must be at most 14 days old. Source and release
+artifacts are kept 14 days.
+
+**The second source.** When Geofabrik answers none of the snapshot step's requests, the run
+takes [GWDG's mirror](https://ftp5.gwdg.de/pub/misc/openstreetmap/download.geofabrik.de/)
+of Geofabrik's Europe export, which carries Geofabrik's own dated file and its MD5. The
+mirror holds Europe alone, so the **mirror** job downloads it (up to 300 minutes, the same
+resumable transfer as the geometry job), checks the published MD5, and clips the four
+countries from it in one pass (`osmium extract --strategy complete_ways`, the polygons in
+`data/`), keeping the export's replication timestamp in each country's header. The country
+jobs then build from those artifacts instead of downloading, and the geometry job takes its
+Europe export from the mirror too. The run's summary says which source it used, and each
+manifest's `source` names the mirrored export it was clipped from, with the polygon and the
+tool (`clipped`), so a mirrored release is never mistaken for Geofabrik's own: the clipped
+countries differ slightly from Geofabrik's at the borders. A build mixing the two sources is
+refused. The mirror keeps only the newest export, so a build that runs past its nightly
+update (about 23:50 UTC) fails at the geometry job's epoch check rather than mixing two
+dates. The polygons are updated by hand when Geofabrik changes a country's extent; each
+manifest records the polygon's SHA-256.
 
 The geometry job then completes the area roots from the same dated Europe export (350
 minutes, a 185-minute download step). The 35 GB export has taken from 42 minutes to over 2

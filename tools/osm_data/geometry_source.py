@@ -15,7 +15,7 @@ import time
 from datetime import datetime, timezone
 import osmium
 
-from tools.osm_data.builder import COUNTRIES, PRODUCT_ZOOMS, LICENSE_TEXT, ATTRIBUTION, LICENSE, file_record, identity_rows, inspect_source
+from tools.osm_data.builder import COUNTRIES, PRODUCT_ZOOMS, LICENSE_TEXT, ATTRIBUTION, LICENSE, file_record, identity_rows, inspect_source, source_kind
 from tools.osm_data.publish import validate
 from tools.osm_data.geometry import compile_geometry, combine_bounds, coverage_bounds, encoded
 
@@ -35,14 +35,13 @@ def reference_subset(source, roots, output):
 
 
 def load_inputs(paths):
-    inputs = {}
+    inputs, kinds = {}, set()
     for root in map(Path,paths):
         m = validate(json.loads((root/'manifest.json').read_bytes()))
         country = m.get('country')
         if country not in COUNTRIES or country in inputs:
             raise ValueError('Exactly the four distinct supported countries are required')
-        if not re.fullmatch(r'https://download\.geofabrik\.de/europe/'+country+r'-(latest|[0-9]{6})\.osm\.pbf',m['source']['url']):
-            raise ValueError('Mislabeled country source')
+        kinds.add(source_kind(m['source'],country))
         if set(m['datasets']) != {'ways','lit',*PRODUCT_ZOOMS} or not m.get('coverage'):
             raise ValueError('Incomplete country products or coverage')
         records = {f['path']:f for f in m['files']}
@@ -54,6 +53,8 @@ def load_inputs(paths):
         raise ValueError('Exactly the four supported countries are required')
     if len({m['source']['timestamp'] for _,m in inputs.values()}) != 1:
         raise ValueError('Country source epochs/timestamps differ')
+    if len(kinds) != 1:
+        raise ValueError('Country sources differ; one consistent OSM epoch from one source is required')
     return {c:inputs[c] for c in COUNTRIES}
 
 
@@ -176,6 +177,7 @@ def main():
     parser.add_argument('countries',nargs=4,type=Path,help='verified small country geometry input artifacts')
     parser.add_argument('--md5',required=True,type=Path)
     parser.add_argument('--snapshot',required=True)
+    parser.add_argument('--source-url',help="the mirror's Europe export, when Geofabrik refused the runners")
     parser.add_argument('--remove-source',action='store_true',help='remove the sibling CI input after subsetting, before allocating its location index')
     args = parser.parse_args()
     if args.output.exists():raise FileExistsError(args.output)
@@ -190,7 +192,7 @@ def main():
                            free_bytes=shutil.disk_usage(args.source.parent).free,**fields)).decode(),file=sys.stderr,flush=True)
     progress('verify_reference')
     inputs = load_inputs(args.countries)
-    source_info = inspect_source(args.source,args.md5,'europe',args.snapshot)
+    source_info = inspect_source(args.source,args.md5,'europe',args.snapshot,args.source_url)
     if shutil.disk_usage(args.source.parent).free < 25*1024**3:
         raise ValueError('Geometry subsetting requires 25 GiB free staging disk after download')
     m = build_geometry(args.source,inputs,args.output,source_info,remove_source=args.remove_source,progress=progress)

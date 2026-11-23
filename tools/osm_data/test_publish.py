@@ -23,7 +23,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
 
-from tools.osm_data import cells, publish
+from tools.osm_data import builder, cells, publish
 from tools.osm_data.publish import open_sftp as real_open_sftp
 from tools.osm_data.test_cells import tile, write
 
@@ -365,12 +365,14 @@ class PublishTests(unittest.TestCase):
         # curl's --retry alone gives up at once when Geofabrik refuses the runner or briefly answers 404 for a file it has (#1131)
         workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/osm-data.yml').read_text().replace('\\\n', ' ')
         requests = [line for line in workflow.splitlines() if 'curl ' in line and '127.0.0.1' not in line]
-        self.assertEqual(len(requests), 8, "the snapshot check, three country downloads, the reference size and its two downloads, and BRouter's release for the tests")
+        self.assertEqual(len(requests), 10, "the snapshot check and its mirror fallback, two country downloads, the "
+                         "mirror's Europe export and checksum, the reference size and its two downloads, and BRouter's release for the tests")
         for line in requests:
             with self.subTest(line=line.strip()[:90]):
                 # the snapshot check reads a 404 as a date not ready yet, so it retries only a refusal; the Europe
-                # download retries in its own loop, which goes on from where it stopped
-                self.assertIn('--retry-connrefused' if '$osm_region' in line else 'until source=$(curl' if '--continue-at -' in line else '--retry-all-errors', line)
+                # exports retry in a loop of their own, which goes on from where the transfer stopped
+                resumable = '--continue-at -' in line and line.lstrip().startswith('until ')
+                self.assertTrue(resumable or ('--retry-connrefused' if '$osm_region' in line else '--retry-all-errors') in line, line)
 
     def test_europe_download_goes_on_from_where_it_stopped(self):
         # Geofabrik's 35 GB export stopped at 91 % on 2026-11-21 after 2 hours, and curl's own --retry starts again from nothing
@@ -438,14 +440,16 @@ class PublishTests(unittest.TestCase):
                 server.shutdown()
                 worker.join()
 
-    def test_snapshot_retries_temporary_failure_and_requires_one_complete_date(self):
+    def test_snapshot_retries_temporary_failure_and_takes_the_mirror_when_geofabrik_is_silent(self):
         workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/osm-data.yml').read_text()
-        step = workflow.split('\n  snapshot:\n', 1)[1].split('\n  build:', 1)[0]
+        step = workflow.split('\n  snapshot:\n', 1)[1].split('\n  mirror:', 1)[0]
         script = dedent(step.split('        run: |\n', 1)[1])
         latest = '/europe-261115.osm.pbf.md5'
         older = '/europe-261114.osm.pbf.md5'
+        mirrored = '/europe-latest.osm.pbf.md5'
         requests = []
         responses = {}
+        offered = ['261116']
 
         class Checksums(BaseHTTPRequestHandler):
             def do_HEAD(self):
@@ -454,24 +458,50 @@ class PublishTests(unittest.TestCase):
                 self.send_response_only(codes.pop(0) if codes else 200)
                 self.end_headers()
 
+            def do_GET(self):
+                requests.append(self.path)
+                if self.path != mirrored or not offered:
+                    self.send_error(404)
+                    return
+                body = b'7700b4c585e58b1c1f81113168d193de  europe-' + offered[0].encode() + b'.osm.pbf\n'
+                self.send_response(200)
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
         with HTTPServer(('127.0.0.1', 0), Checksums) as server, tempfile.TemporaryDirectory() as tmp:
             worker = Thread(target=server.serve_forever, daemon=True)
             worker.start()
             try:
-                script = script.replace('https://download.geofabrik.de', f'http://127.0.0.1:{server.server_port}')
-                date = 'date() { case "$3" in "1 days ago") echo 261115;; "2 days ago") echo 261114;; esac; }\n'
+                host = f'http://127.0.0.1:{server.server_port}'
+                script = script.replace('https://download.geofabrik.de', host)
+                date = ('date() { case "$3" in "0 days ago") echo 261116;; "1 days ago") echo 261115;;'
+                        ' "2 days ago") echo 261114;; "3 days ago") echo 261113;; esac; }\n')
                 output = Path(tmp) / 'output'
                 env = dict(os.environ, GITHUB_OUTPUT=str(output), GITHUB_STEP_SUMMARY=os.devnull,
-                           NO_PROXY='127.0.0.1', no_proxy='127.0.0.1')
-                for latest_codes, older_codes, selected in [([503, 200], [], '261115'), ([404], [], '261114'), ([404], [404], '')]:
-                    with self.subTest(selected=selected):
-                        responses.update({latest: latest_codes, older: older_codes})
+                           MIRROR=host + '/', NO_PROXY='127.0.0.1', no_proxy='127.0.0.1')
+                cases = [([503, 200], [], ['261116'], '261115', 'geofabrik'),
+                         ([404], [], ['261116'], '261114', 'geofabrik'),
+                         # Geofabrik has no complete date: the mirror's own export, when it is recent enough
+                         ([404], [404], ['261116'], '261116', 'mirror'),
+                         ([404], [404], ['261113'], '261113', 'mirror'),
+                         ([404], [404], ['261110'], '', ''),
+                         ([404], [404], [], '', '')]
+                for latest_codes, older_codes, mirror_offer, selected, source in cases:
+                    with self.subTest(selected=selected, source=source):
+                        responses.update({latest: list(latest_codes), older: list(older_codes)})
+                        offered[:] = mirror_offer
                         requests.clear()
                         output.write_text('')
                         result = subprocess.run(['bash', '-e', '-c', date + script], env=env,
-                                                capture_output=True, text=True, timeout=12)
+                                                capture_output=True, text=True, timeout=40)
                         self.assertEqual(result.returncode, 0 if selected else 1, result)
-                        self.assertEqual(output.read_text(), f'stamp={selected}\n' if selected else '')
+                        self.assertEqual(output.read_text(), f'stamp={selected}\nsource={source}\n' if selected else '')
+                        if source == 'geofabrik':
+                            self.assertNotIn(mirrored, requests, 'the mirror is read only when Geofabrik has no complete date')
                         self.assertEqual(requests.count(latest), 2 if selected == '261115' else 1)
                         self.assertEqual(requests.count(older), 0 if selected == '261115' else 1)
                         for stamp in ['261115'] if selected == '261115' else ['261115', '261114']:
@@ -483,20 +513,35 @@ class PublishTests(unittest.TestCase):
                 server.shutdown()
                 worker.join()
 
-    def test_country_checksum_and_polygon_come_from_beside_the_file_served(self):
+    def test_the_mirror_job_clips_the_countries_here_and_keeps_the_export_s_epoch(self):
+        # Geofabrik refuses some runner networks; the mirror holds Europe alone, so the countries are clipped here (#1)
+        workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/osm-data.yml').read_text()
+        job = workflow.split('\n  mirror:\n', 1)[1].split('\n  build:', 1)[0]
+        self.assertIn(builder.MIRROR + 'europe-latest.osm.pbf', job, "the mirror job and builder.py name one mirror")
+        self.assertIn('md5sum --check --strict', job, 'the published checksum is checked before clipping')
+        self.assertIn('grep -q "  europe-$SNAPSHOT\\.osm\\.pbf\\$"', job, 'the mirror may have moved on to a newer export')
+        self.assertIn('--strategy complete_ways', job)
+        # osmium extract writes its own header, so without this every clipped country would lack the source epoch
+        self.assertIn('--output-header="osmosis_replication_timestamp=$stamp"', job)
+        for country in ('finland', 'sweden', 'norway', 'estonia'):
+            self.assertIn(f'"file_name": "data/{country}.poly"', job, 'clipping waits on no download')
+            self.assertIn(f'name: osm-mirror-{country}', job)
+        build = workflow.split('\n  build:\n', 1)[1].split('\n  geometry:', 1)[0]
+        self.assertIn('name: osm-mirror-${{ matrix.country }}', build)
+        self.assertIn('--coverage "data/$COUNTRY.poly"', build, "the build's declared extent is the same polygon")
+
+    def test_country_checksum_comes_from_beside_the_file_served(self):
         # Geofabrik moves countries into folders of their own; its old addresses keep a different checksum (#1151)
         workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/osm-data.yml').read_text()
-        step = workflow.split('name: Download one complete country, checksum and clipping polygon', 1)[1].split('\n      - name:', 1)[0]
+        step = workflow.split('name: Download one complete country and its checksum', 1)[1].split('\n      - name:', 1)[0]
         script = '\n'.join(line for line in dedent(step.split('        run: |\n', 1)[1]).splitlines() if 'disk' not in line)
-        pbf, poly = b'the country itself', b'estonia\n1\nEND\nEND\n'
+        pbf = b'the country itself'
         moved = {'/europe/estonia-261118.osm.pbf': (308, b'', '/europe/estonia/estonia-261118.osm.pbf'),
                  '/europe/estonia-261118.osm.pbf.md5': (200, b'0' * 32 + b'  estonia-261118.osm.pbf\n', None),
                  '/europe/estonia/estonia-261118.osm.pbf': (200, pbf, None),
-                 '/europe/estonia/estonia-261118.osm.pbf.md5': (200, hashlib.md5(pbf).hexdigest().encode() + b'  estonia-261118.osm.pbf\n', None),
-                 '/europe/estonia/estonia.poly': (200, poly, None)}
+                 '/europe/estonia/estonia-261118.osm.pbf.md5': (200, hashlib.md5(pbf).hexdigest().encode() + b'  estonia-261118.osm.pbf\n', None)}
         kept = {'/europe/estonia-261118.osm.pbf': (200, pbf, None),
-                '/europe/estonia-261118.osm.pbf.md5': (200, hashlib.md5(pbf).hexdigest().encode() + b'  estonia-261118.osm.pbf\n', None),
-                '/europe/estonia.poly': (200, poly, None)}
+                '/europe/estonia-261118.osm.pbf.md5': (200, hashlib.md5(pbf).hexdigest().encode() + b'  estonia-261118.osm.pbf\n', None)}
         files = {}
 
         class Geofabrik(BaseHTTPRequestHandler):
@@ -522,7 +567,6 @@ class PublishTests(unittest.TestCase):
                         self.assertEqual(result.returncode, 0, result.stderr)
                         build = Path(tmp) / 'osm-build'
                         self.assertEqual((build / 'source.md5').read_text()[:32], hashlib.md5((build / 'source.osm.pbf').read_bytes()).hexdigest())
-                        self.assertEqual((build / 'coverage.poly').read_bytes(), poly)
             finally:
                 server.shutdown()
                 worker.join()
