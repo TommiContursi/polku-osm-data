@@ -119,10 +119,10 @@ def is_reedbed(tags):
 
 
 def is_point(tags):
-    """Polku's points with icons of their own (Polku #1179): standalone fire places, springs, cave entrances, bunkers
-    and tar kilns. A shelter's fire place stays on its record in places."""
+    """Polku's points with icons of their own (Polku #1179): fire places, springs, cave entrances, bunkers and tar kilns,
+    and anything with a fire place (a shelter's card says it has one)."""
     return (tags.get('leisure') == 'firepit' or tags.get('amenity') == 'bbq' or tags.get('natural') in {'spring', 'cave_entrance'} or
-            tags.get('military') == 'bunker' or tags.get('historic') == 'tar_kiln')
+            tags.get('military') == 'bunker' or tags.get('historic') == 'tar_kiln' or tags.get('fireplace') == 'yes')
 
 
 class ReedbedWays:
@@ -222,8 +222,8 @@ do not promise coverage outside the declared extract clipping polygons.
 Wetland records are natural=wetland + wetland=reedbed areas, assembled
 from closed ways and multipolygons by osmium, with only their wetland tag.
 
-Point records are fire places, springs, cave entrances, bunkers and tar
-kilns: nodes, and ways with their centre.
+Point records are fire places, springs, cave entrances, bunkers, tar kilns
+and anything with fireplace=yes: nodes, and ways with their centre.
 
 Road/path relation records contain only the eligible way members present in each tile. Overnight place records retain their original member references and roles.
 member_count is the original relation member count; each member's index is
