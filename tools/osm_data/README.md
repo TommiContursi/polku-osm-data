@@ -294,7 +294,8 @@ has none when the new square is under 1 MiB, when the square is new, or when it 
  "files": [{"path": "taustakartta.pmtiles", "bytes": 9000000000, "sha256": "…"}, {"path": "tiles.tsv.gz", …}, {"path": "LICENSE.txt", …}]}
 ```
 
-`tiles` counts MML's answers by status. A tile with another 4xx is left out of the archive. `candidates/current.json`
+`tiles` counts MML's answers by status, a 304 under the status it had. A tile with another 4xx is left out of the
+archive. `candidates/current.json`
 holds the candidate's manifest, and `current.json`, once promoted, the live release's: the same bytes, not rewritten
 as the OSM data's.
 

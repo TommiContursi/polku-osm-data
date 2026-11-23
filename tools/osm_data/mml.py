@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """A copy of the National Land Survey of Finland's (MML) background-map vector tiles, taustakartta v21, zooms 11-14
-over a box, fetched once at a paced rate, packed into one PMTiles archive and uploaded as a candidate in polku-mml.
+over a box, fetched at a paced rate, packed into one PMTiles archive and uploaded as a candidate in polku-mml.
 Polku's mml-promote.yml checks the candidate in the app and promotes it: polku-mml/current.json, the manifest's own
 bytes, is the release people get.
 
 The tiles are CC BY 4.0. MML may limit a user whose volume disturbs its service, so the fetch halves its rate at any
-sign of load and stops when MML refuses the key. Each tile's Last-Modified goes with the release, so a later update
-can ask again with If-Modified-Since. The key (MML_API_KEY) is only ever put into requests: never printed or stored."""
+sign of load and stops when MML refuses the key. Each tile's Last-Modified goes with the release, so an update asks
+again with If-Modified-Since and takes a tile MML answers 304 for from the live archive. The key (MML_API_KEY) is only
+ever put into requests: never printed or stored."""
 
 import argparse
 from collections import Counter
@@ -22,12 +23,14 @@ import os
 from pathlib import Path
 import queue
 import re
+import shutil
 import sqlite3
 import sys
 import threading
 import time
 from urllib.error import HTTPError
 from urllib.parse import urlencode
+import urllib.request
 
 if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -52,6 +55,7 @@ CALM, RAISE = 30, 1  # after CALM seconds without trouble the rate rises by RAIS
 GIVE_UP = 300  # seconds without one good answer, or of 429s at the floor rate, before the run stops
 ATTEMPTS = 3  # per tile in one run; a tile still unanswered waits for the next run
 EMPTY = gzip.compress(b'', 6, mtime=0)  # MML's 404: an empty tile
+KEPT = ('tile', 'empty', 'recorded', 'unchanged')  # answer()'s kinds that a tile keeps
 ARCHIVE, TABLE, LICENSE = 'taustakartta.pmtiles', 'tiles.tsv.gz', 'LICENSE.txt'
 FOLDER, STAGE = 'polku-mml', 'staging'
 SETTLE = 150  # seconds the public pointer may keep its last answer (publish.settle)
@@ -120,14 +124,14 @@ class MML:
         require(re.fullmatch(r'[A-Za-z0-9-]{8,128}', key or ''), 'MML_API_KEY is missing or malformed')
         self.query, self.local = '?' + urlencode({'api-key': key}), threading.local()
 
-    def __call__(self, z, x, y):
+    def __call__(self, z, x, y, since=None):
         connection = getattr(self.local, 'connection', None)
         if connection is None:
             connection = self.local.connection = http.client.HTTPSConnection(HOST, timeout=TIMEOUT)
         start = time.monotonic()
+        headers = {'User-Agent': AGENT, 'Accept-Encoding': 'identity'} | ({'If-Modified-Since': since} if since else {})
         try:
-            connection.request('GET', PATH.format(z=z, x=x, y=y) + self.query,
-                               headers={'User-Agent': AGENT, 'Accept-Encoding': 'identity'})
+            connection.request('GET', PATH.format(z=z, x=x, y=y) + self.query, headers=headers)
             response = connection.getresponse()
             seconds = time.monotonic() - start
             body = response.read()
@@ -168,8 +172,10 @@ class Pace:
 
 
 def answer(status, headers, body):
-    """What a response means: ('tile', gzipped body), ('empty', None), ('recorded', None) for another 4xx,
-    ('refused', reason) or ('trouble', reason)."""
+    """What a response means: ('tile', gzipped body), ('empty', None), ('unchanged', None) for a 304,
+    ('recorded', None) for another 4xx, ('refused', reason) or ('trouble', reason)."""
+    if status == 304:
+        return 'unchanged', None
     if status == 200:
         length = headers.get('Content-Length')
         if headers.get('Content-Encoding', 'identity') != 'identity' or body[:2] == b'\x1f\x8b':
@@ -190,23 +196,41 @@ def answer(status, headers, body):
     return 'trouble', f'HTTP {status}'
 
 
-def store(path, box=None):
+def store(path, box=None, base=None):
+    """The fetched tiles. A tile without data that MML answered 200 for is the base archive's (a 304). The box, and the
+    SHA-256 of the archive an update goes on from ('' for a whole copy), are set by the first fetch."""
     db = sqlite3.connect(path)
     db.execute('CREATE TABLE IF NOT EXISTS tiles (id INTEGER PRIMARY KEY, status INTEGER NOT NULL, modified TEXT, data BLOB)')
     db.execute('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
-    meta = dict(db.execute('SELECT key, value FROM meta'))
-    if box is not None:
-        if 'box' not in meta:
-            db.execute("INSERT INTO meta VALUES ('box', ?)", (json.dumps(list(box)),))
+    for key, value in (('box', box and json.dumps(list(box))), ('base', base)):
+        if value is not None:
+            db.execute('INSERT OR IGNORE INTO meta VALUES (?, ?)', (key, value))
             db.commit()
-        require(json.loads(meta.get('box', json.dumps(list(box)))) == list(box), f"The store is for the box {meta.get('box')}")
+            held = db.execute('SELECT value FROM meta WHERE key = ?', (key,)).fetchone()[0]
+            require(held == value, f'The store is for the {key} {held}')
     return db
 
 
-def fetch(path, box=BOX, until=math.inf, limit=None, request=None, rate=RATE, connections=CONNECTIONS):
-    """Every tile of the box the store doesn't hold yet, until the deadline (epoch seconds) or `limit` tiles. Raises
-    Refused when MML refuses the key or keeps limiting us; what was fetched is kept either way."""
-    db, every = store(path, box), tile_ids(box)
+def previous(directory):
+    """An update's base: the live release's archive SHA-256 and {tile id: (status, Last-Modified)} from its table, for
+    the tiles MML dated."""
+    manifest = publish.validate(json.loads(Path(directory, 'manifest.json').read_bytes()))
+    entry = next(f for f in manifest['files'] if f['path'] == TABLE)
+    require(publish.digest_file(Path(directory, TABLE)) == entry['sha256'], f'{TABLE} differs from its manifest')
+    dated = {}
+    for line in gzip.decompress(Path(directory, TABLE).read_bytes()).decode().splitlines()[1:]:
+        z, x, y, status, modified = line.split('\t')
+        if status in ('200', '404') and modified:
+            dated[zxy_to_tileid(int(z), int(x), int(y))] = (int(status), modified)
+    return manifest['datasets']['taustakartta']['sha256'], dated
+
+
+def fetch(path, box=BOX, until=math.inf, limit=None, request=None, rate=RATE, connections=CONNECTIONS, since=None):
+    """Every tile of the box the store doesn't hold yet, until the deadline (epoch seconds) or `limit` tiles. With
+    `since`, previous()'s base, a tile it dates is asked with If-Modified-Since. Raises Refused when MML refuses the key
+    or keeps limiting us; what was fetched is kept either way."""
+    base, dated = since or ('', {})
+    db, every = store(path, box, base), tile_ids(box)
     held = {tile for (tile,) in db.execute('SELECT id FROM tiles')}
     todo, total = [tile for tile in every if tile not in held][:limit], len(every)
     request = request or MML(os.environ.get('MML_API_KEY'))
@@ -223,7 +247,7 @@ def fetch(path, box=BOX, until=math.inf, limit=None, request=None, rate=RATE, co
                 done.put((item, None, None))
                 continue
             try:
-                done.put((item, request(*tileid_to_zxy(item[0])), None))
+                done.put((item, request(*tileid_to_zxy(item[0]), dated.get(item[0], (0, None))[1]), None))
             except Exception as error:  # the class only: a message could hold the URL
                 done.put((item, None, type(error).__name__))
 
@@ -250,12 +274,15 @@ def fetch(path, box=BOX, until=math.inf, limit=None, request=None, rate=RATE, co
             else:
                 status, headers, body, seconds = result
                 kind, detail = answer(status, headers, body)
-                pause = int(headers.get('Retry-After', '0')) if status == 429 and headers.get('Retry-After', '').isdigit() else 0
+                if kind == 'unchanged' and tile not in dated:
+                    kind, detail = 'trouble', 'HTTP 304 unasked'
+                pause =int(headers.get('Retry-After', '0')) if status == 429 and headers.get('Retry-After', '').isdigit() else 0
                 if kind != 'trouble' and seconds > SLOW:
                     pace.trouble()
                     seen['slow'] += 1
-            if kind in ('tile', 'empty', 'recorded'):
-                db.execute('INSERT INTO tiles VALUES (?, ?, ?, ?)', (tile, status, headers.get('Last-Modified'), detail))
+            if kind in KEPT:
+                row = (tile, *dated[tile], None) if kind == 'unchanged' else (tile, status, headers.get('Last-Modified'), detail)
+                db.execute('INSERT INTO tiles VALUES (?, ?, ?, ?)', row)
                 report[kind] += 1
                 report['bytes'] += len(detail or b'')
                 if kind != 'recorded':  # a 400 or 410 for everything is no good answer either
@@ -284,7 +311,7 @@ def fetch(path, box=BOX, until=math.inf, limit=None, request=None, rate=RATE, co
                 db.commit()
                 last_commit = now
             if now - last_print >= 60:
-                print(json.dumps({'held': len(held) + report['tile'] + report['empty'] + report['recorded'], 'of': total,
+                print(json.dumps({'held': len(held) + sum(report[k] for k in KEPT), 'of': total,
                                   'rate': round(pace.rate, 2), 'per_second': round((answered - printed) / (now - last_print), 1),
                                   'trouble': dict(seen), **report}), flush=True)
                 last_print, printed = now, answered
@@ -292,7 +319,7 @@ def fetch(path, box=BOX, until=math.inf, limit=None, request=None, rate=RATE, co
         stop.set()
         for _ in threads:
             work.put(None)
-        if report['tile'] + report['empty'] + report['recorded']:
+        if any(report[k] for k in KEPT):
             db.execute("INSERT OR REPLACE INTO meta VALUES ('fetched_to', ?)", (stamp(datetime.now(timezone.utc)),))
         db.commit()
         held_now = db.execute('SELECT COUNT(*) FROM tiles').fetchone()[0]
@@ -331,12 +358,30 @@ def sample():
     require(not wrong, f"Helsinki's tiles {wrong} are not what MML should answer; the fetch doesn't start")
 
 
-def pack(path, out, now=None):
+def resolved(db, base):
+    """The store's tiles in order as (id, status, Last-Modified, data), a 304's data from the base archive's stream."""
+    old = all_tiles(MmapSource(base)) if base else iter(())
+    at = None
+    for tile, status, modified, data in db.execute('SELECT id, status, modified, data FROM tiles ORDER BY id'):
+        if status == 200 and data is None:
+            while at is None or zxy_to_tileid(*at[0]) < tile:
+                at = next(old, None)
+                require(at is not None, f'The base archive lacks {tileid_to_zxy(tile)}')
+            require(zxy_to_tileid(*at[0]) == tile, f'The base archive lacks {tileid_to_zxy(tile)}')
+            data = at[1]
+        yield tile, status, modified, data
+
+
+def pack(path, out, now=None, base=None):
     """The release: one PMTiles archive of every tile (404s as empty tiles), tiles.tsv.gz with each tile's status and
-    Last-Modified, the licence and the manifest. Every tile of the box must have its answer."""
+    Last-Modified, the licence and the manifest. Every tile of the box must have its answer. An update's store needs
+    the archive it went on from, as `base`."""
     now, out = now or datetime.now(timezone.utc), Path(out)
     db = store(path)
     meta = dict(db.execute('SELECT key, value FROM meta'))
+    require((publish.digest_file(Path(base)) if base else '') == meta.get('base', ''),
+            'The base archive is not the one the update went on from' if base else 'An update needs its base archive')
+    base = base and open(base, 'rb')
     box = tuple(json.loads(meta['box']))
     expected = tile_ids(box)
     held = [tile for (tile,) in db.execute('SELECT id FROM tiles ORDER BY id')]
@@ -346,7 +391,7 @@ def pack(path, out, now=None):
     statuses, lines = Counter(), [b'z\tx\ty\tstatus\tlast_modified\n']
     with open(out / ARCHIVE, 'wb') as stream:
         writer = Writer(stream)
-        for tile, status, modified, data in db.execute('SELECT id, status, modified, data FROM tiles ORDER BY id'):
+        for tile, status, modified, data in resolved(db, base):
             statuses[str(status)] += 1
             z, x, y = tileid_to_zxy(tile)
             lines.append(f'{z}\t{x}\t{y}\t{status}\t{modified or ""}\n'.encode())
@@ -367,7 +412,7 @@ def pack(path, out, now=None):
         'The tiles are MML\'s own, gzipped and packed into PMTiles; nothing in them is changed.\n')
     # The archive must give back exactly what was fetched, tile for tile
     with open(out / ARCHIVE, 'rb') as stream:
-        rows = db.execute('SELECT id, status, data FROM tiles WHERE status IN (200, 404) ORDER BY id')
+        rows = ((tile, status, data) for tile, status, _, data in resolved(db, base) if status in (200, 404))
         for ((z, x, y), data), (tile, status, held_data) in zip(all_tiles(MmapSource(stream)), rows, strict=True):
             require(zxy_to_tileid(z, x, y) == tile and data == (held_data if status == 200 else EMPTY),
                     f'The archive differs at {z}/{x}/{y}')
@@ -381,6 +426,8 @@ def pack(path, out, now=None):
     publish.validate(manifest)
     (out / 'manifest.json').write_bytes(json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode())
     db.close()
+    if base:
+        base.close()
     print(json.dumps({k: manifest[k] for k in ('release', 'tiles', 'attribution')} | {'bytes': files[0]['bytes']}), flush=True)
     return manifest
 
@@ -507,6 +554,24 @@ def public_bytes(url):
         return None
 
 
+def live(directory, archive=False):
+    """The live release's manifest and table, and with `archive` its archive, over HTTPS and checked against the
+    manifest: what an update goes on from."""
+    url = folder_url(publish.public_url(os.environ.get('OSM_PUBLIC_URL', '')))
+    raw = public_bytes(url + '/current.json')
+    require(raw is not None, 'No live release to update: promote a whole copy first')
+    manifest, directory = publish.validate(json.loads(raw)), Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / 'manifest.json').write_bytes(raw)
+    for f in manifest['files']:
+        if f['path'] == TABLE or archive and f['path'] == ARCHIVE:
+            request = urllib.request.Request(f"{url}/releases/{manifest['release']}/{f['path']}", headers={'User-Agent': AGENT})
+            with urllib.request.urlopen(request, timeout=60) as response, open(directory / f['path'], 'wb') as out:
+                shutil.copyfileobj(response, out, 1 << 20)
+            require(publish.digest_file(directory / f['path']) == f['sha256'], f"{f['path']} differs from the live manifest")
+    print(f"Live release {manifest['release']}", flush=True)
+
+
 def require_release(ftp, raw):
     """The release a manifest names is on the host with every file at its size: the upload hashed them and is their
     only writer, and an upload's retention removes a release that is neither the candidate nor live."""
@@ -579,9 +644,14 @@ def main():
     run.add_argument('--box', default=','.join(map(str, BOX)), help='west,south,east,north in degrees')
     run.add_argument('--until', type=float, default=math.inf, help='stop cleanly at this time (epoch seconds)')
     run.add_argument('--limit', type=int, help='at most this many tiles in this run')
+    run.add_argument('--since', type=Path, help="live's directory: ask with If-Modified-Since, for an update")
     packing = commands.add_parser('pack')
     packing.add_argument('store', type=Path)
     packing.add_argument('out', type=Path)
+    packing.add_argument('--base', type=Path, help="an update's base: the live archive, from live --archive")
+    current = commands.add_parser('live')
+    current.add_argument('directory', type=Path)
+    current.add_argument('--archive', action='store_true', help='the archive too, for pack --base')
     commands.add_parser('upload').add_argument('directory', type=Path)
     commands.add_parser('candidate')
     promotion = commands.add_parser('promote')
@@ -599,9 +669,11 @@ def main():
             box = tuple(float(value) for value in args.box.split(','))
             require(len(box) == 4 and box[0] < box[2] and box[1] < box[3], 'The box is west,south,east,north')
             args.store.parent.mkdir(parents=True, exist_ok=True)
-            fetch(args.store, box, args.until, args.limit)
+            fetch(args.store, box, args.until, args.limit, since=args.since and previous(args.since))
         elif args.command == 'pack':
-            pack(args.store, args.out)
+            pack(args.store, args.out, base=args.base)
+        elif args.command == 'live':
+            live(args.directory, args.archive)
         elif args.command == 'upload':
             upload(args.directory)
         elif args.command == 'candidate':

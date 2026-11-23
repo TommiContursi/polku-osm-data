@@ -42,18 +42,20 @@ def body(z, x, y):
 
 
 class FakeMML:
-    """MML's answers by tile: a status, or an exception, in turn; 200 once they run out."""
-    def __init__(self, answers=None):
-        self.answers, self.asked, self.lock = answers or {}, [], threading.Lock()
+    """MML's answers by tile: a status, or an exception, in turn; once they run out, 304 to If-Modified-Since LM for a
+    tile not in `changed`, else 200 with the tile's body, `changed` naming its layers."""
+    def __init__(self, answers=None, changed=()):
+        self.answers, self.changed, self.asked, self.since, self.lock = answers or {}, changed, [], {}, threading.Lock()
 
-    def __call__(self, z, x, y):
+    def __call__(self, z, x, y, since=None):
         with self.lock:
             self.asked.append((z, x, y))
+            self.since[(z, x, y)] = since
             turn = self.answers.get((z, x, y))
-            answer = turn.pop(0) if turn else 200
+            answer = turn.pop(0) if turn else 304 if since == LM and (z, x, y) not in self.changed else 200
         if isinstance(answer, Exception):
             raise answer
-        data = body(z, x, y) if answer == 200 else b''
+        data = (vector('liikenne', f'{z}/{x}/{y}') if (z, x, y) in self.changed else body(z, x, y)) if answer == 200 else b''
         return answer, {'Last-Modified': LM, 'Content-Length': str(len(data))}, data, 0.01
 
 
@@ -167,6 +169,26 @@ class FetchTests(unittest.TestCase):
         self.assertEqual(report['tile'] + report['left'], len(TILES))
         self.assertGreater(report['left'], 0)
 
+    def test_an_update_asks_with_the_tiles_dates_and_keeps_a_304_as_the_base_s_tile(self):
+        undated, unasked = TILES[0], TILES[1]
+        dated = {mml.zxy_to_tileid(*t): (200, LM) for t in TILES if t != undated}
+        fake = FakeMML({unasked: [200]}, changed={TILES[2]})
+        self.fetch(fake, since=('a' * 64, dated))
+        rows = self.rows()
+        self.assertEqual(fake.since[undated], None, 'a tile the table has no date for is asked plainly')
+        self.assertEqual(fake.since[TILES[3]], LM)
+        self.assertEqual(rows[TILES[3]], (200, LM, None), "a 304 keeps the base's status and date, and its data")
+        self.assertEqual(gzip.decompress(rows[TILES[2]][2]), vector('liikenne', '{}/{}/{}'.format(*TILES[2])))
+        self.assertIsNotNone(rows[undated][2])
+        with self.assertRaisesRegex(ValueError, 'The store is for the base'):
+            self.fetch(FakeMML())
+
+    def test_a_304_mml_was_not_asked_for_is_trouble(self):
+        fake = FakeMML({TILES[0]: [304]})
+        self.fetch(fake)
+        self.assertEqual(fake.asked.count(TILES[0]), 2)
+        self.assertIsNotNone(self.rows()[TILES[0]][2])
+
     def test_mml_answering_400_to_everything_stops_the_run(self):
         with patch.object(mml, 'GIVE_UP', 0), self.assertRaisesRegex(mml.Refused, 'No good answer'):
             self.fetch(FakeMML({tile: [400] for tile in TILES}))
@@ -189,7 +211,7 @@ class FetchTests(unittest.TestCase):
         self.assertLessEqual(len(fake.asked), 5, 'one refusal stops it, with at most one request a connection in flight')
 
     def test_mml_answering_only_errors_stops_the_run_and_the_key_is_never_printed(self):
-        def failing(z, x, y):
+        def failing(z, x, y, since=None):
             raise OSError(f'https://{mml.HOST}/x?api-key={KEY}')
         with patch.object(mml, 'GIVE_UP', 0), self.assertRaisesRegex(mml.Refused, 'No good answer'):
             self.fetch(failing)
@@ -307,6 +329,40 @@ class PackAndUploadTests(unittest.TestCase):
         self.host.files[FOLDER + '/.htaccess'] = b'changed by hand'
         with self.assertRaisesRegex(RuntimeError, 'change it by hand'):
             mml.upload(out)
+
+    def test_an_update_goes_on_from_the_live_release_and_changes_only_the_tiles_mml_changed(self):
+        out, first = self.pack()
+        mml.upload(out)
+        self.host.files[FOLDER + '/current.json'] = (out / 'manifest.json').read_bytes()
+        live = self.tmp / 'live'
+        mml.live(live, archive=True)
+        self.assertEqual((live / mml.ARCHIVE).read_bytes(), (out / mml.ARCHIVE).read_bytes())
+        store = self.tmp / 'update.sqlite'
+        fake = FakeMML(changed={TILES[0]})
+        mml.fetch(store, BOX, request=fake, rate=1000, connections=3, since=mml.previous(live))
+        self.assertEqual(fake.since[TILES[2]], None, 'a 400 is asked again plainly')
+        self.store = store
+        with self.assertRaisesRegex(ValueError, 'needs its base archive'):
+            self.pack(T0.replace(hour=4))
+        with self.assertRaisesRegex(ValueError, 'not the one the update went on from'):
+            mml.pack(store, self.tmp / 'x', T0, base=live / mml.TABLE)
+        out2 = self.tmp / 'second'
+        second = mml.pack(store, out2, T0.replace(hour=4), base=live / mml.ARCHIVE)
+        self.assertEqual(second['tiles'], {'200': len(TILES) - 1, '404': 1})
+        with open(out / mml.ARCHIVE, 'rb') as a, open(out2 / mml.ARCHIVE, 'rb') as b:
+            old, new = Reader(MmapSource(a)), Reader(MmapSource(b))
+            self.assertEqual(gzip.decompress(new.get(*TILES[0])), vector('liikenne', '{}/{}/{}'.format(*TILES[0])))
+            for tile in TILES[1:]:
+                if tile != TILES[2]:
+                    self.assertEqual(new.get(*tile), old.get(*tile), tile)
+        lines = gzip.decompress((out2 / mml.TABLE).read_bytes()).decode().splitlines()
+        self.assertIn('\t'.join(map(str, TILES[3])) + f'\t200\t{LM}', lines)
+        mml.upload(out2)
+        self.assertEqual(mml.candidate()['release'], second['release'])
+
+    def test_an_update_needs_a_live_release(self):
+        with self.assertRaisesRegex(ValueError, 'promote a whole copy first'):
+            mml.live(self.tmp / 'live')
 
     def candidate_of(self, now):
         out, manifest = self.pack(now)
