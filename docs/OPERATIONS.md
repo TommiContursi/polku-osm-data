@@ -285,8 +285,8 @@ Fintraffic took Digiroad over, so the copy runs again only when a source with ne
 - **copy** asks the WFS for 5,000 roads at a time, ordered by ID, with 5 s between pages, and retries a failed page once
   after 5 minutes. The count must equal the WFS's own. The release is about 9.5 MB in 1,904 zoom-11 tiles, and goes up
   as about 20 cells through `publish.py`, as the OSM data does: read back with its SHA-256, checked over HTTPS and
-  named in `candidates/current.json`. A cell the host already holds isn't sent again.
+  named in `candidates/current.json`. A cell the host already holds isn't sent again, and `polku-digiroad/` holds
+  at most 1 GiB.
 
-There is no promotion yet, so Polku reads the candidate. The data is CC BY 4.0: "Traffic
-volumes: © Fintraffic / Digiroad, from Väylävirasto's open data, CC BY 4.0", in the manifest, the archive's metadata and
-`LICENSE.txt`, which also says what was changed.
+There is no promotion yet. The data is CC BY 4.0: "Traffic volumes: © Fintraffic / Digiroad, from Väylävirasto's
+open data, CC BY 4.0", in the manifest, the archive's metadata and `LICENSE.txt`, which also says what was changed.

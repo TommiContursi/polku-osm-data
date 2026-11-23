@@ -587,9 +587,11 @@ def resume_upload(ftp, base, directory, manifest, raw, send):
             ftp.storbinary('STOR ' + base + '/' + name, body, rest=actual)
 
 
-def upload(directory, resume=False, folder=None):
+def upload(directory, resume=False, folder=None, budget=None):
     """Upload, verify and name the candidate; the live pointer is left to Polku's promotion. A file the shared files
-    already hold isn't sent again. With folder, into that product's folder beside polku-osm, once its hosting is in."""
+    already hold isn't sent again. With folder, into that product's folder beside polku-osm, once its hosting is in.
+    budget, the folder's own size limit, is checked while it has no live release; otherwise retention checks the OSM
+    data's."""
     require(os.environ.get('OSM_ALLOW_PUBLISH') == 'true', 'Publication requires approved OSM_ALLOW_PUBLISH=true')
     directory = Path(directory)
     raw, manifest = hosted(directory)
@@ -644,7 +646,8 @@ def upload(directory, resume=False, folder=None):
             retention = maintenance.prune(ftp, apply=True, incoming_bytes=incoming, incoming=manifest, incoming_files=naming)
             print(json.dumps(retention, sort_keys=True), flush=True)
         else:
-            require(maintenance.usage(ftp) + incoming + 4096 <= maintenance.BUDGET, 'OSM storage budget exceeded')
+            budget = budget or maintenance.BUDGET
+            require(maintenance.usage(ftp) + incoming + 4096 <= budget, f'Storage budget exceeded ({budget / 1024**3:g} GiB)')
         if resume:
             if stage == final:
                 require(all(ftp.kind(final + '/' + name) == 'file' for name in expected), 'Release needs regular files')

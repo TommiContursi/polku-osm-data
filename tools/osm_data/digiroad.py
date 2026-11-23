@@ -13,7 +13,6 @@ import gzip
 import http.client
 import io
 import json
-import math
 from pathlib import Path
 import sys
 import time
@@ -24,7 +23,7 @@ if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from pmtiles.tile import Compression, TileType, zxy_to_tileid
 from pmtiles.writer import Writer
-from tools.osm_data import maintenance, publish
+from tools.osm_data import maintenance, mml, publish
 from tools.osm_data.publish import require
 from tools.osm_data.routing import stamp
 
@@ -35,6 +34,7 @@ BUSY = 800  # vehicles a day
 ZOOM = 11
 PAGE, PAUSE, BACK_OFF = 5000, 5, 300  # features a request, and seconds between pages and before the one retry
 FOLDER, ARCHIVE = 'polku-digiroad', 'traffic.pmtiles'
+BUDGET = 1024**3  # the copy is about 10 MB
 ATTRIBUTION = 'Traffic volumes: © Fintraffic / Digiroad, from Väylävirasto\'s open data, CC BY 4.0'
 LICENSE = 'CC BY 4.0'
 LICENSE_TEXT = f'''Traffic volumes from Digiroad, © Fintraffic, from the open data of Väylävirasto (the Finnish Transport
@@ -92,12 +92,6 @@ def fetch(sleep=time.sleep):
     return roads, stamp(max(edited).replace(tzinfo=ZoneInfo('Europe/Helsinki')))
 
 
-def tile_of(lon, lat):
-    side = 1 << ZOOM
-    y = (1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * side
-    return min(side - 1, int((lon + 180) / 360 * side)), min(side - 1, int(y))
-
-
 def build(roads, edited, output, now=None):
     """The release: the archive, LICENSE.txt and a manifest as the OSM data's, so publish.py uploads it. Each road goes
     into every tile its extent touches, whole."""
@@ -108,9 +102,8 @@ def build(roads, edited, output, now=None):
     for road in roads.values():
         points = [p for line in road['lines'] for p in line]
         extent = [min(p[0] for p in points), min(p[1] for p in points), max(p[0] for p in points), max(p[1] for p in points)]
-        (x0, y1), (x1, y0) = tile_of(*extent[:2]), tile_of(*extent[2:])
-        for x in range(x0, x1 + 1):
-            for y in range(y0, y1 + 1):
+        for x in range(mml.column(extent[0], ZOOM), mml.column(extent[2], ZOOM) + 1):
+            for y in range(mml.row(extent[3], ZOOM), mml.row(extent[1], ZOOM) + 1):
                 tiles.setdefault(zxy_to_tileid(ZOOM, x, y), []).append(road)
         extents.append(extent)
     bounds = [min(e[0] for e in extents), min(e[1] for e in extents), max(e[2] for e in extents), max(e[3] for e in extents)]
@@ -167,7 +160,7 @@ def main():
             manifest = build(*fetch(), args.output)
             print(json.dumps({'release': manifest['release'], **manifest['datasets']['traffic']}))
         elif args.command == 'upload':
-            publish.upload(args.directory, folder=FOLDER)
+            publish.upload(args.directory, folder=FOLDER, budget=BUDGET)
         else:
             install_hosting()
     except Exception as error:
