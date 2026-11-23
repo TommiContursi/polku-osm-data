@@ -351,6 +351,25 @@ class PackAndUploadTests(unittest.TestCase):
             mml.promote(found['release'], found['sha256'], self.tmp / 'p')
         self.assertNotIn(FOLDER + '/current.json', self.host.files, 'the pointer that was there before: none')
 
+    def test_a_new_pointer_the_host_still_answers_404_is_waited_for(self):
+        # Polku run 45242600287: current.json, asked for while missing, read 404 just after it was written
+        found = self.candidate_of(T0)
+        real, stale = publish.get, {'left': 2}
+        def get(url, *args, **kwargs):
+            if url.endswith('/polku-mml/current.json') and stale['left']:
+                stale['left'] -= 1
+                raise publish.HTTPError(url, 404, 'missing', {}, None)
+            return real(url, *args, **kwargs)
+        with patch.object(publish, 'get', get), patch.object(publish.time, 'sleep'):
+            mml.promote(found['release'], found['sha256'], self.tmp / 'p')
+        self.assertEqual(stale['left'], 0)
+        self.assertIn(FOLDER + '/current.json', self.host.files)
+        stale['left'] = 10**6
+        with patch.object(publish, 'get', get), patch.object(publish.time, 'sleep'), \
+                patch.object(publish.time, 'monotonic', side_effect=range(0, 10**6, 60)):
+            mml.restore(self.tmp / 'p', found['release'])  # a removed pointer may answer 404 at once
+        self.assertNotIn(FOLDER + '/current.json', self.host.files)
+
     def test_a_candidate_replaced_meanwhile_is_not_promoted_nor_a_pruned_release_restored(self):
         self.assertIsNone(mml.candidate(), 'nothing uploaded yet')
         first = self.candidate_of(T0)

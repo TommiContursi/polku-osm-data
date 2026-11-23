@@ -202,7 +202,10 @@ the Range headers exposed, cache releases as immutable and make `current.json` r
 also covers `candidates/current.json`.
 
 **test-host** writes tiny files into a unique `host-test-*` folder and checks upload, readback,
-renames, public Range, CORS and caching, and the retention rules, then removes the folder.
+renames, public Range, CORS and caching, and the retention rules, then removes the folder. It also
+says how long a file asked for while missing keeps answering 404 after it is written, and how long a
+removed file keeps answering (`seconds_until_public`): a pointer is read again for up to 150 s
+(`publish.settle`) before it counts as wrong.
 **verify-access** checks the login, listing and the public pointer without writing.
 
 The jobs that use the host read the `osm-data-production` environment, limited to `main`, by the

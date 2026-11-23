@@ -1049,10 +1049,22 @@ class PublishTests(unittest.TestCase):
         self.assertTrue(result['sftp_write_and_rename'])
         self.assertTrue(result['posix_overwrite'])
         self.assertTrue(result['http_range_cors_and_cache'])
+        self.assertEqual(result['seconds_until_public'], {'written_after_404': 0, 'removed': 0})
         self.assertEqual(result['retention']['deleted_entries'], 3, 'a release, staging and a shared file')
         self.assertEqual(self.host.files, original_files)
         self.assertEqual(self.host.dirs, original_dirs)
         self.assertEqual(self.host.pointer_writes, 0)
+
+    def test_settle_reads_again_until_the_host_answers_as_written_and_no_longer(self):
+        answers = [HTTPError('u', 404, 'missing', {}, None), HTTPError('u', 404, 'missing', {}, None), b'x']
+        with patch.object(publish, 'get', side_effect=lambda url: (lambda a: (_ for _ in ()).throw(a) if isinstance(a, Exception) else a)(answers.pop(0))), \
+                patch.object(publish.time, 'sleep') as sleep, patch.object(publish.time, 'monotonic', side_effect=[0, 0, 2, 4, 4]):
+            self.assertEqual(publish.settle('u', b'x', 10), 4)
+        self.assertEqual(sleep.call_count, 2)
+        with patch.object(publish, 'get', return_value=b'old'), patch.object(publish.time, 'sleep'), \
+                patch.object(publish.time, 'monotonic', side_effect=[0, 0, 11]):
+            with self.assertRaisesRegex(ValueError, 'did not answer as written within 10 s'):
+                publish.settle('u', b'x', 10)
 
     def test_host_fails_safely_when_posix_overwrite_unsupported(self):
         original_files, original_dirs = dict(self.host.files), set(self.host.dirs)

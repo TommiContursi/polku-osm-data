@@ -54,6 +54,7 @@ ATTEMPTS = 3  # per tile in one run; a tile still unanswered waits for the next 
 EMPTY = gzip.compress(b'', 6, mtime=0)  # MML's 404: an empty tile
 ARCHIVE, TABLE, LICENSE = 'taustakartta.pmtiles', 'tiles.tsv.gz', 'LICENSE.txt'
 FOLDER, STAGE = 'polku-mml', 'staging'
+SETTLE = 150  # seconds the public pointer may keep its last answer (publish.settle)
 BUDGET = 30 * 1024**3  # live, candidate and staging: three copies of about 9 GB
 
 
@@ -525,7 +526,7 @@ def put_back(ftp, url, previous):
         ftp.remove('current.json')
     else:
         publish.replace_pointer(ftp, previous)
-    require(public_bytes(url + '/current.json') == previous, 'Restored pointer differs')
+    publish.settle(url + '/current.json', previous, SETTLE)
 
 
 def promote(release, sha256, directory):
@@ -550,7 +551,7 @@ def promote(release, sha256, directory):
         publish.probe(url, manifest, raw)
         publish.replace_pointer(ftp, raw)
         try:
-            require(publish.get(url + '/current.json') == raw, 'Promoted pointer differs')
+            print(f"Public pointer after {publish.settle(url + '/current.json', raw, SETTLE):.0f} s", flush=True)
         except Exception:
             put_back(ftp, url, previous)
             raise

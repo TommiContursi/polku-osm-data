@@ -18,6 +18,7 @@ import posixpath
 import re
 import stat
 import sys
+import time
 import urllib.request
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
@@ -418,6 +419,24 @@ def probe(url, manifest, raw, samples=None):
                     if samples and path in samples:
                         require(body == samples[path][start], 'Public archive bytes differ')
 
+
+def settle(url, expected, limit, pause=2):
+    """Seconds until the public URL answers `expected` (None: a 404), read again every `pause` s for up to `limit` s.
+    The host can keep answering a name as it last did: polku-mml/current.json, asked for while missing, stayed 404
+    after it was written (Polku run 45242600287)."""
+    start = time.monotonic()
+    while True:
+        try:
+            body = get(url)
+        except HTTPError as error:
+            if error.code != 404:
+                raise
+            error.close()
+            body = None
+        if body == expected:
+            return time.monotonic() - start
+        require(time.monotonic() - start < limit, f'{url} did not answer as written within {limit} s')
+        time.sleep(pause)
 
 def replace_pointer(ftp, raw, path='current.json'):
     name = posixpath.join(posixpath.dirname(path), f'current.{uuid.uuid4().hex}.tmp')
@@ -827,13 +846,21 @@ def test_host():
             sample = get(config[-2] + '/' + active + '/sample.pmtiles',
                          (0, 10, len(body)), immutable=True)
             require(sample == body[:10], 'Public HTTP Range bytes differ from SFTP upload')
+            # A name asked for while missing, then written, then removed: how long each answer lasts publicly
+            fresh = config[-2] + '/' + active + '/fresh.json'
+            settle(fresh, None, 0)
+            ftp.storbinary('STOR ' + active + '/fresh.json', io.BytesIO(replacement))
+            written = settle(fresh, replacement, 150)
+            ftp.remove(active + '/fresh.json')
+            removed = settle(fresh, None, 150)
             ftp.cwd(active)
             try:
                 retention = maintenance.test_retention(ftp)
             finally:
                 ftp.cwd('..')
-            return {'sftp_write_and_rename': True, 'posix_overwrite': True,
-                    'http_range_cors_and_cache': True, 'test_cleanup': 'complete', 'retention': retention}
+            return {'sftp_write_and_rename': True, 'posix_overwrite': True, 'http_range_cors_and_cache': True,
+                    'seconds_until_public': {'written_after_404': round(written, 1), 'removed': round(removed, 1)},
+                    'test_cleanup': 'complete', 'retention': retention}
         finally:
             if active is not None:
                 # Only descend into this invocation's uniquely named disposable test folder.

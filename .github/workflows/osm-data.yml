@@ -87,7 +87,8 @@ jobs:
   test-host:
     if: github.event_name == 'workflow_dispatch' && inputs.operation == 'test-host'
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    # (up to 2 x 150 s for how long a written or removed file keeps its old public answer)
+    timeout-minutes: 10
     environment: osm-data-production
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
