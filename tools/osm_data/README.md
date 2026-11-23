@@ -289,7 +289,8 @@ named by its SHA-256, so a square that doesn't change keeps its URL. A release f
 ```
 
 `tiles` counts MML's answers by status. A tile with another 4xx is left out of the archive. `candidates/current.json`
-holds the candidate's manifest.
+holds the candidate's manifest, and `current.json`, once promoted, the live release's: the same bytes, not rewritten
+as the OSM data's.
 
 ## Digiroad traffic volumes
 

@@ -174,7 +174,8 @@ class Host:
                     raise ftplib.error_perm('550 missing')
                 callback(host.files[name])
             def replace(self, old, new):
-                if new.endswith('/pointer.json') or new.startswith('maintenance/') or new == 'candidates/current.json':
+                if (new.endswith('/pointer.json') or new.startswith('maintenance/') or new == 'candidates/current.json'
+                        or self.abs(new).endswith('/polku-mml/current.json')):
                     old, new = self.abs(old), self.abs(new)
                     if host.fail_pointer:
                         raise OSError('POSIX rename extension unsupported')

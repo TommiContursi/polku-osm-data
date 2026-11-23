@@ -117,6 +117,7 @@ jobs:
     outputs:
       stamp: ${{ steps.snapshot.outputs.stamp }}
       source: ${{ steps.countries.outputs.source || steps.snapshot.outputs.source }}
+      skip: ${{ steps.late.outputs.skip }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -165,9 +166,43 @@ jobs:
           echo "Geofabrik did not answer, and the mirror has no Europe export from the last three days" \
                "(it offered '$mirror_stamp')" >&2
           exit 1
+      - name: Mark this build's export, unless it is a late scheduled build that another build has already
+        id: late
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SNAPSHOT: ${{ steps.snapshot.outputs.stamp }}
+        run: |
+          # GitHub may start a schedule hours late: a second build of one export asks Geofabrik for it all again and fails
+          # at upload, the release being there already. A build going on or succeeded has the export's marker artifact.
+          # When GitHub's API doesn't answer, the build goes on as before rather than lose the week's build.
+          if [ "$GITHUB_EVENT_NAME" = schedule ]; then
+            runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/osm-data.yml/runs?branch=main&created=%3E%3D$(date -u -d '5 days ago' +%F)&per_page=100" \
+              --jq ".workflow_runs[] | select(.id != $GITHUB_RUN_ID and .display_title == \"OSM data / build\" and (.status != \"completed\" or .conclusion == \"success\")) | .id") \
+              || echo "::warning::GitHub's API didn't list the builds: this scheduled build goes on without checking for another build of $SNAPSHOT"
+            for run in $runs; do
+              count=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts?name=osm-snapshot-$SNAPSHOT" --jq .total_count) || count=0
+              if [ "$count" != 0 ]; then
+                echo 'skip=true' >> "$GITHUB_OUTPUT"
+                echo "Build $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$run has the export $SNAPSHOT: this scheduled build stops." >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+              fi
+            done
+          fi
+          mkdir -p osm-build
+          echo "$SNAPSHOT" > osm-build/snapshot.txt
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: steps.late.outputs.skip != 'true'
+        with:
+          name: osm-snapshot-${{ steps.snapshot.outputs.stamp }}
+          path: osm-build/snapshot.txt
+          # A re-run of a failed snapshot job uploads it again under the same run
+          overwrite: true
+          retention-days: 14
+          if-no-files-found: error
       - name: Download the four countries and their checksums
         id: countries
-        if: steps.snapshot.outputs.source == 'geofabrik'
+        if: steps.snapshot.outputs.source == 'geofabrik' && steps.late.outputs.skip != 'true'
         timeout-minutes: 150
         env:
           SNAPSHOT: ${{ steps.snapshot.outputs.stamp }}
@@ -194,13 +229,13 @@ jobs:
           done
           df -h .
       - name: Install the clipping tool
-        if: steps.snapshot.outputs.source == 'mirror' || steps.countries.outputs.source == 'mirror'
+        if: steps.late.outputs.skip != 'true' && (steps.snapshot.outputs.source == 'mirror' || steps.countries.outputs.source == 'mirror')
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends osmium-tool
           osmium --version | head -1
       - name: Download the mirrored Europe export and check its published MD5
-        if: steps.snapshot.outputs.source == 'mirror' || steps.countries.outputs.source == 'mirror'
+        if: steps.late.outputs.skip != 'true' && (steps.snapshot.outputs.source == 'mirror' || steps.countries.outputs.source == 'mirror')
         timeout-minutes: 185
         env:
           SNAPSHOT: ${{ steps.snapshot.outputs.stamp }}
@@ -226,7 +261,7 @@ jobs:
           (cd osm-build && sed "s/  .*/  europe.osm.pbf/" europe.md5 | md5sum --check --strict -)
           df -h .
       - name: Clip the four countries in one pass, keeping the export's replication timestamp
-        if: steps.snapshot.outputs.source == 'mirror' || steps.countries.outputs.source == 'mirror'
+        if: steps.late.outputs.skip != 'true' && (steps.snapshot.outputs.source == 'mirror' || steps.countries.outputs.source == 'mirror')
         run: |
           stamp=$(osmium fileinfo -g header.option.osmosis_replication_timestamp osm-build/europe.osm.pbf)
           echo "The mirrored export was made from OSM at $stamp"
@@ -253,6 +288,7 @@ jobs:
           ls -l osm-build/sources/*
           df -h .
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: steps.late.outputs.skip != 'true'
         with:
           name: osm-finland-source
           path: osm-build/sources/finland
@@ -260,6 +296,7 @@ jobs:
           retention-days: 14
           if-no-files-found: error
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: steps.late.outputs.skip != 'true'
         with:
           name: osm-sweden-source
           path: osm-build/sources/sweden
@@ -267,6 +304,7 @@ jobs:
           retention-days: 14
           if-no-files-found: error
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: steps.late.outputs.skip != 'true'
         with:
           name: osm-norway-source
           path: osm-build/sources/norway
@@ -274,6 +312,7 @@ jobs:
           retention-days: 14
           if-no-files-found: error
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: steps.late.outputs.skip != 'true'
         with:
           name: osm-estonia-source
           path: osm-build/sources/estonia
@@ -283,7 +322,7 @@ jobs:
 
   build:
     needs: snapshot
-    if: github.event.schedule == '17 3 * * 1' || (github.event_name == 'workflow_dispatch' && inputs.operation == 'build' && inputs.release == '')
+    if: needs.snapshot.outputs.skip != 'true' && (github.event.schedule == '17 3 * * 1' || (github.event_name == 'workflow_dispatch' && inputs.operation == 'build' && inputs.release == ''))
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     strategy:
