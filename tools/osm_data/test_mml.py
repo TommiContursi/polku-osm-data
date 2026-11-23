@@ -344,6 +344,21 @@ class PackAndUploadTests(unittest.TestCase):
             mml.promote(found['release'], found['sha256'], self.tmp / 'p')
         self.assertNotIn(FOLDER + '/current.json', self.host.files)
 
+    def test_a_candidate_replaced_meanwhile_is_not_promoted_nor_a_pruned_release_restored(self):
+        self.assertIsNone(mml.candidate(), 'nothing uploaded yet')
+        first = self.candidate_of(T0)
+        raw = self.host.files[FOLDER + '/candidates/current.json']
+        self.host.files[FOLDER + '/candidates/current.json'] = b'{}'  # another upload named its release, not pruned yet
+        with self.assertRaisesRegex(Exception, 'Another candidate was uploaded meanwhile'):
+            mml.promote(first['release'], first['sha256'], self.tmp / 'p')
+        self.host.files[FOLDER + '/candidates/current.json'] = raw
+        second = self.candidate_of(T0.replace(hour=4))  # prunes the first: it was never live
+        mml.promote(second['release'], second['sha256'], self.tmp / 'p')
+        (self.tmp / 'p/previous.json').write_bytes(raw)
+        with self.assertRaisesRegex(Exception, f"Release {first['release']} is not on the host"):
+            mml.restore(self.tmp / 'p', second['release'])
+        self.assertEqual(json.loads(self.host.files[FOLDER + '/current.json'])['release'], second['release'])
+
     def test_the_fetch_never_holds_the_hosts_secrets_and_only_main_uploads(self):
         workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/mml-data.yml').read_text()
         fetch, rest = workflow.split('\n  pack:')

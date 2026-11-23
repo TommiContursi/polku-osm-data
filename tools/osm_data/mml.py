@@ -483,15 +483,11 @@ def upload(directory):
 def candidate():
     """The uploaded candidate built after the live release, for Polku's checks, or None. Reads only public HTTP."""
     url = folder_url(publish.public_url(os.environ.get('OSM_PUBLIC_URL', '')))
-    raw = publish.get(url + '/candidates/current.json')
+    raw, live = (public_json(url + path) for path in ('/candidates/current.json', '/current.json'))
+    if raw is None:
+        return None  # nothing uploaded yet
     manifest = publish.validate(json.loads(raw))
-    try:
-        live = json.loads(publish.get(url + '/current.json'))
-    except HTTPError as error:
-        if error.code != 404:
-            raise
-        error.close()
-        live = None  # nothing promoted yet
+    live = live and json.loads(live)  # None: nothing promoted yet
     if live and manifest['built_at'] <= live['built_at']:
         return None
     location = f"{url}/releases/{manifest['release']}/manifest.json"
@@ -499,12 +495,37 @@ def candidate():
     return {'release': manifest['release'], 'manifest': location, 'sha256': hashlib.sha256(raw).hexdigest()}
 
 
-def put_back(ftp, previous):
+def public_json(url):
+    """A pointer's bytes over HTTPS, or None where there is none (404)."""
+    try:
+        return publish.get(url)
+    except HTTPError as error:
+        if error.code != 404:
+            raise
+        error.close()
+        return None
+
+
+def require_release(ftp, raw):
+    """The release a manifest names is on the host with every file at its size: the upload hashed them and is their
+    only writer, and an upload's retention removes a release that is neither the candidate nor live."""
+    manifest = publish.validate(json.loads(raw))
+    base = f"releases/{manifest['release']}"
+    require(manifest['release'] in maintenance.children(ftp, 'releases') and publish.retrieve(ftp, base + '/manifest.json') == raw,
+            f"Release {manifest['release']} is not on the host")
+    names = maintenance.children(ftp, base)
+    for f in manifest['files']:
+        require(f['path'] in names and ftp.size(f"{base}/{f['path']}") == f['bytes'], 'Release file is missing or differs: ' + f['path'])
+    return manifest
+
+
+def put_back(ftp, url, previous):
     """The live pointer as it was: the saved bytes, or none at all, so the app reads MML's own service."""
     if previous is None:
         ftp.remove('current.json')
     else:
         publish.replace_pointer(ftp, previous)
+    require(public_json(url + '/current.json') == previous, 'Restored pointer differs')
 
 
 def promote(release, sha256, directory):
@@ -513,28 +534,25 @@ def promote(release, sha256, directory):
     require(os.environ.get('OSM_ALLOW_PUBLISH') == 'true', 'Publication requires approved OSM_ALLOW_PUBLISH=true')
     require(publish.NAME.fullmatch(release) and re.fullmatch('[a-f0-9]{64}', sha256), 'Invalid candidate')
     with mml_host() as (ftp, url):
-        base = f'releases/{release}'
-        raw = publish.retrieve(ftp, base + '/manifest.json')
+        raw = publish.retrieve(ftp, f'releases/{release}/manifest.json')
         require(hashlib.sha256(raw).hexdigest() == sha256, 'Candidate manifest differs from the one checked')
-        manifest = publish.validate(json.loads(raw))
+        # Still the candidate: an upload that has named another prunes this release unless it is live
+        require(publish.retrieve(ftp, 'candidates/current.json') == raw, 'Another candidate was uploaded meanwhile; check it first')
+        manifest = require_release(ftp, raw)
         require(manifest['release'] == release, 'Candidate release differs')
-        # The upload hashed every file and is their only writer, so sizes find what changed since
-        names = maintenance.children(ftp, base)
-        for f in manifest['files']:
-            require(f['path'] in names and ftp.size(f"{base}/{f['path']}") == f['bytes'], 'Candidate file is missing or differs: ' + f['path'])
         previous = publish.retrieve(ftp, 'current.json') if 'current.json' in maintenance.children(ftp) else None
-        if previous == raw:
-            return  # promoted already
-        require(not previous or manifest['built_at'] > json.loads(previous)['built_at'], 'Candidate is not newer than the live release')
-        publish.probe(url, manifest, raw)
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
         (directory / 'previous.json').write_bytes(previous or b'null')
+        if previous == raw:
+            return  # promoted already: a restore puts back the same
+        require(not previous or manifest['built_at'] > json.loads(previous)['built_at'], 'Candidate is not newer than the live release')
+        publish.probe(url, manifest, raw)
         publish.replace_pointer(ftp, raw)
         try:
             require(publish.get(url + '/current.json') == raw, 'Promoted pointer differs')
         except Exception:
-            put_back(ftp, previous)
+            put_back(ftp, url, previous)
             raise
 
 
@@ -545,7 +563,10 @@ def restore(directory, expected_current):
     with mml_host() as (ftp, url):
         live = json.loads(publish.retrieve(ftp, 'current.json'))['release'] if 'current.json' in maintenance.children(ftp) else None
         require(live == expected_current, 'Live release changed; do not roll back another publication')
-        put_back(ftp, None if previous == b'null' else previous)
+        previous = None if previous == b'null' else previous
+        if previous is not None:
+            require_release(ftp, previous)
+        put_back(ftp, url, previous)
 
 
 def main():
