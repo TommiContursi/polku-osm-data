@@ -483,7 +483,7 @@ def upload(directory):
 def candidate():
     """The uploaded candidate built after the live release, for Polku's checks, or None. Reads only public HTTP."""
     url = folder_url(publish.public_url(os.environ.get('OSM_PUBLIC_URL', '')))
-    raw, live = (public_json(url + path) for path in ('/candidates/current.json', '/current.json'))
+    raw, live = (public_bytes(url + path) for path in ('/candidates/current.json', '/current.json'))
     if raw is None:
         return None  # nothing uploaded yet
     manifest = publish.validate(json.loads(raw))
@@ -495,7 +495,7 @@ def candidate():
     return {'release': manifest['release'], 'manifest': location, 'sha256': hashlib.sha256(raw).hexdigest()}
 
 
-def public_json(url):
+def public_bytes(url):
     """A pointer's bytes over HTTPS, or None where there is none (404)."""
     try:
         return publish.get(url)
@@ -525,7 +525,7 @@ def put_back(ftp, url, previous):
         ftp.remove('current.json')
     else:
         publish.replace_pointer(ftp, previous)
-    require(public_json(url + '/current.json') == previous, 'Restored pointer differs')
+    require(public_bytes(url + '/current.json') == previous, 'Restored pointer differs')
 
 
 def promote(release, sha256, directory):

@@ -344,6 +344,13 @@ class PackAndUploadTests(unittest.TestCase):
             mml.promote(found['release'], found['sha256'], self.tmp / 'p')
         self.assertNotIn(FOLDER + '/current.json', self.host.files)
 
+    def test_a_promoted_pointer_that_reads_wrong_over_https_is_taken_back(self):
+        found = self.candidate_of(T0)
+        self.host.pointer_cache = 'public, max-age=31536000, immutable'  # what the app would never read again
+        with self.assertRaisesRegex(Exception, 'current.json must disable caching'):
+            mml.promote(found['release'], found['sha256'], self.tmp / 'p')
+        self.assertNotIn(FOLDER + '/current.json', self.host.files, 'the pointer that was there before: none')
+
     def test_a_candidate_replaced_meanwhile_is_not_promoted_nor_a_pruned_release_restored(self):
         self.assertIsNone(mml.candidate(), 'nothing uploaded yet')
         first = self.candidate_of(T0)

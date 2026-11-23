@@ -249,12 +249,14 @@ to `https://ducksoft.fi/polku-mml/`. The format is in [tools/osm_data/README.md]
   release goes through `staging/` (a stopped upload goes on from where it stopped), is read back with its SHA-256,
   checked over HTTPS and named in `candidates/current.json`. Releases other than the candidate and the live one go,
   and a release whose box doesn't cover the candidate's is refused.
-- **Promotion** is Polku's `mml-promote.yml`, by hand, as the OSM data's: Polku's checks read the candidate
-  (`mml.py candidate`, public HTTP only), then `mml.py promote` checks the release's manifest hash and file sizes,
-  that it is still the candidate (an upload prunes a release that is neither the candidate nor live), reads it over
-  HTTPS and puts the manifest's own bytes in `polku-mml/current.json`, the release the app reads. The pointer it
-  replaced is kept for `mml.py restore`, which puts it back (or removes the pointer, so the app reads MML's own
-  service) if polku.si then fails its check, unless another release went live meanwhile or the old release is gone.
+- **Promotion** is Polku's `mml-promote.yml`, run by hand, like the OSM data's. `mml.py candidate` finds a
+  candidate built after the live release, over public HTTP only, and Polku's check reads it in the app. Then
+  `mml.py promote` checks the release's manifest hash and file sizes, and that it is still the candidate, since an
+  upload removes a release that is neither the candidate nor live. It reads the release over HTTPS and puts the
+  manifest's own bytes in `polku-mml/current.json`, the release the app reads. The pointer it replaced is kept. If
+  polku.si then fails its check, `mml.py restore` puts that pointer back, or removes `current.json` if there was
+  none, so the app reads MML's own service. It refuses if another release went live meanwhile or the old release is
+  gone.
 
 A smaller **box** tests the whole job. A pull request that changes the job fetches central Helsinki in two parts and
 uploads nothing. The tiles are CC BY 4.0: "© Maanmittauslaitos, Maastotietokanta" and the month fetched, in the
