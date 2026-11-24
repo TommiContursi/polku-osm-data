@@ -51,8 +51,9 @@ jobs:
   index:
     if: github.event_name == 'schedule' || inputs.operation == 'update' || inputs.operation == 'fresh'
     runs-on: ubuntu-24.04
-    # The dump is 250 MB and NLS's names about 80 requests; the build reads the previous release's files from the host
-    timeout-minutes: 60
+    # The dump is 250 MB and NLS's names about 80 requests (about 13 minutes), the build about 4; a week sends about 300
+    # files, the first release about 14,000 (1.5 s each, 4 at once: about 90 minutes)
+    timeout-minutes: 120
     environment: osm-data-production
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1

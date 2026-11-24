@@ -232,6 +232,11 @@ change files, one file at a time and at most 16 Mbit/s.
 - **check**, daily at 07:43 UTC: the candidate, and `current.json` once there is one.
 - **install-hosting**, once: puts [`routing.htaccess`](../tools/osm_data/routing.htaccess) into `polku-routing/`.
 
+A candidate goes live only when Polku promotes it: `routing.py candidate` names the candidate built after the live
+release, `promote` gives `polku-routing/current.json` the manifest's same bytes once every square and change file is on
+the host at its size, and `restore` puts the replaced pointer back. Its pointers hold the manifests' own bytes, so it
+keeps these three commands of its own beside `publish.py`'s.
+
 Each square that changed also gets the mirror's change file from the previous release's square: brouter.de's own, or
 one made with the same jar and checked by applying it. One that fails its check is left out, so a reader fetches that
 square whole, and the run's report names the square (`unmade`). Each square and change file goes in `polku-routing/files/`,
@@ -328,7 +333,8 @@ The format is in [tools/osm_data/README.md](../tools/osm_data/README.md#search-i
 - **update** (weekly, or by hand) downloads the newest dated dump from GraphHopper and checks its MD5, NLS's place
   names (about 80 requests of 10,000, one at a time, a second apart, with `MML_API_KEY`) and GeoNames' towns. It builds
   on the newest release on the host, the candidate or the live one, reading its files over HTTPS: a group keeps its
-  files and lists what changed, so a week sends about 300 small files. The upload goes through `publish.py` with
+  files and lists what changed, so a week sends about 300 small files, 4 at once over the one SSH connection's channels
+  (each costs about 1.5 s of round trips; any channel's error sends the rest one by one). The upload goes through `publish.py` with
   `OSM_SHARED_FILES=true`, as the OSM data's: read back, checked over HTTPS and named in `candidates/current.json`.
   `polku-search/` holds at most 2 GiB.
 - **fresh** makes every group's files again: about 52 MB.

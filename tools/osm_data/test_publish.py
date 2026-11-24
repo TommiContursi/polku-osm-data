@@ -76,7 +76,7 @@ class Host:
         self.fail_upload = self.corrupt_upload = self.fail_pointer = False
         self.bad_range = self.bad_after_pointer = self.changed_manifest_after_pointer = False
         self.denied_login = False
-        self.connections = self.pointer_writes = 0
+        self.connections = self.pointer_writes = self.channels = 0
         self.pointer_cache = 'no-cache'
         self.uploads = []
         self.unsafe = set()
@@ -200,6 +200,13 @@ class Host:
                             host.files[new + path[len(old):]] = host.files.pop(path)
                 else:
                     raise ftplib.error_perm('550 missing rename source')
+            def channel(self):  # another channel of the same connection, in the same folder (publish.at_once)
+                host.channels += 1
+                other = Connection()
+                other.path = self.path
+                return other
+            def close_channel(self):
+                pass
             def quit(self):
                 pass
             close = quit

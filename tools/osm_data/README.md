@@ -378,9 +378,11 @@ A key is a name's word, or a name of several words without its spaces, normalise
 
 ```json
 {"schema": 1, "files": [["kos", "T", 1840, "<sha256>"], ["koski", "W", 30211, "<sha256>"], ["koskia", "L", 9120, "<sha256>"], …],
- "changed": ["<record>", …], "removed": ["<id>", …]}
+ "texts": [["koskib", "L", "<record>\n<record>\n"], …], "changed": ["<record>", …], "removed": ["<id>", …]}
 ```
 
+- `files` name the group's files; a file under 1 KiB gzipped is a row of `texts` instead, its text in the row, up
+  to 8 KiB of them a group.
 - `L`: every record with a key that starts with the prefix. A prefix with no `L` file is split by its next letter.
 - `T`: a split prefix's 30 most important records.
 - `W`: the records whose key is the prefix exactly; when that is too large, `A` files split it by zoom-7 tile,
@@ -396,8 +398,9 @@ a country code; `G` and GeoNames' id), names separated by `|`, OSM's `key/value`
 lat, rank (Photon's importance, 0–1), municipality (a country code for `G`), and extent `west,south,east,north` or
 nothing. The manifest also carries `coverage`, Finland's polygon.
 
-On 2026-11-08 and 2026-11-15's dumps with NLS's names of 2026-11-20: 1,303,224 records in 13,938 files, 52.1 MB; the
-second week sent 286 files, 0.77 MB. The build takes about 100 s and 2 GB of memory.
+On 2026-11-08 and 2026-11-15's dumps with NLS's names of 2026-11-20: 1,303,224 records in 10,974 files, 51.8 MB (13,938
+before the smallest went into the group indexes); the second week sent 286 files, 1.3 MB. The build takes about 100 s
+and 2 GB of memory.
 
 ## Terrain
 
