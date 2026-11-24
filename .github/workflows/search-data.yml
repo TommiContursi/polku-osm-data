@@ -2,7 +2,7 @@ name: Polku search index
 run-name: Search index / ${{ github.event_name == 'workflow_dispatch' && inputs.operation || 'update' }}
 
 # Builds the search index from Photon's weekly dump for Finland, NLS's place names and GeoNames' towns, on the newest
-# release on the host, and uploads only what changed as a candidate that Polku promotes. Its tests run with the others
+# release on the host, and uploads only what changed as a candidate. Its tests run with the others
 # in osm-data.yml.
 on:
   schedule:

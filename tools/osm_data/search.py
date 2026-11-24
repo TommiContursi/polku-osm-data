@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """A place-name search index for Finland, as static files: Photon's weekly OSM dump for Finland, the National Land
 Survey's (NLS) place names that OSM lacks, and the names of the world's countries and larger towns beyond Finland.
-Uploaded as a candidate in polku-search beside polku-osm; Polku checks it in the app and promotes it.
+Uploaded as a candidate in polku-search beside polku-osm.
 
 Each key (a name's word, or the whole name without spaces, normalised) belongs to a group, its first two letters.
 The root index names each group's index; a group's index names the group's files, by key prefix, and carries the
 records changed since those files were made. A week's update so sends only the group indexes that changed, and a
-group's files again only when its changes outgrow CHANGES. NLS_API_KEY or MML_API_KEY is only ever put into
-requests: never printed or stored."""
+group's files again only when its changes outgrow CHANGES. MML_API_KEY is only ever put into requests: never printed
+or stored."""
 
 import argparse
 import bisect
@@ -45,6 +45,7 @@ COVERAGE = Path(__file__).resolve().parents[2] / 'data' / 'finland-coverage.geoj
 FOLDER, ROOT, SUFFIX = 'polku-search', 'search.gzt', '.gzt'
 BUDGET = 2 * 1024**3  # a release is about 50 MB; its updates share most of it
 MAX_AGE = 14  # days: an older dump is refused
+SHORT = 0.9  # of each source's count in the previous release, at least
 TARGET = 48 * 1024  # a file's gzipped bytes, at most, unless one word's records alone are more
 TOP = 30  # records in a split prefix's list, for queries that short
 CHANGES = 24 * 1024  # a group's changed records, in bytes, before its files are made again
@@ -76,7 +77,7 @@ SPLIT = re.compile(r'[^0-9a-z]+')
 
 def words(text):
     """A name's words as search keys: lower case, ä å ö ø æ đ ŋ ŧ ß ʒ ǯ ǥ folded, every other mark dropped, split at
-    anything but a–z and 0–9. The same rule as Polku's (tools/fixtures/search-normalise.json)."""
+    anything but a–z and 0–9. Its cases are tools/fixtures/search-normalise.json."""
     folded = unicodedata.normalize('NFKD', text.lower().translate(FOLD))
     return [w for w in SPLIT.split(''.join(c for c in folded if not unicodedata.combining(c))) if w]
 
@@ -226,7 +227,7 @@ def nls_page(url, key, sleep=time.sleep):
 def fetch_nls(output, key, page=nls_page, sleep=time.sleep):
     """Every current place name, one line each: [place, name, language, type, scale, municipality, lon, lat], gzipped.
     Returns the count and the newest change among them."""
-    require(re.fullmatch(r'[A-Za-z0-9-]{8,128}', key or ''), 'NLS_API_KEY is missing or malformed')
+    require(re.fullmatch(r'[A-Za-z0-9-]{8,128}', key or ''), 'MML_API_KEY is missing or malformed')
     url, count, newest = f"{NLS}?{urlencode({'f': 'json', 'limit': PAGE})}", 0, ''
     with gzip.open(output, 'wt', encoding='utf-8') as out:
         while url:
@@ -271,7 +272,7 @@ EXONYMS = 100000  # people: a town this large keeps its names in other languages
 
 def towns(path):
     """GeoNames' towns beyond Finland, {id: record}: their name and ASCII name, and a large town's names in Latin
-    letters in other languages, so "Tukholma" finds Stockholm. Only to tell that a query points beyond Finland."""
+    letters in other languages, so "Tukholma" finds Stockholm."""
     result = {}
     with zipfile.ZipFile(path) as z, z.open('cities15000.txt') as f:
         for raw in io.TextIOWrapper(f, encoding='utf-8'):
@@ -384,40 +385,6 @@ def read_index(data):
     body = json.loads(gzip.decompress(data))
     require(body.get('schema') == 1, 'Unknown search index')
     return body
-
-
-def matches(text, key):
-    """Whether a record line has a key that starts with key."""
-    return any(k.startswith(key) for k in keys(text.split('\t', 2)[1].split('|')))
-
-
-def lookup(body, read, key, area=None):
-    """What a query's key reaches in its group, as Polku reads it: {id: line} of the records with a key starting with
-    key, and whether that is all of them. body is the group's index; read(row) gives a file's text; area is the tile
-    (AREA) of the map's middle, for a common word split by area."""
-    rows = {(prefix, kind): row for row in body['files'] for prefix, kind, _, _ in [row]}
-    prefix, texts, complete = group(key), [], len(key) > 1  # a letter's group holds only that word: k's are in ka, kb…
-    while True:
-        if (prefix, 'L') in rows:
-            texts.append(read(rows[prefix, 'L']))
-            break
-        if (prefix, 'T') not in rows:
-            break  # no key starts with it
-        if key == prefix:  # a prefix this short reaches more than one file: its most important, and the word itself
-            texts.append(read(rows[prefix, 'T']))
-            if (prefix, 'W') in rows:
-                texts.append(read(rows[prefix, 'W']))
-            elif area and (f'{prefix}@{area}', 'A') in rows:
-                texts.append(read(rows[f'{prefix}@{area}', 'A']))
-            complete = False
-            break
-        prefix = key[:len(prefix) + 1]
-    replaced = set(body['removed']) | {l.split('\t', 1)[0] for l in body['changed']}
-    found = {}
-    for l in [l for t in texts for l in t.splitlines() if l.split('\t', 1)[0] not in replaced] + body['changed']:
-        if matches(l, key):
-            found[l.split('\t', 1)[0]] = l
-    return found, complete
 
 
 def layout(records, base=None):
@@ -542,7 +509,7 @@ def fetch(work):
             digest.update(chunk)
     require(digest.hexdigest() == md5, 'Photon dump differs from its MD5')
     get(GEONAMES, work / 'cities15000.zip')
-    count, newest = fetch_nls(work / 'nls.jsonl.gz', os.environ.get('NLS_API_KEY') or os.environ.get('MML_API_KEY'))
+    count, newest = fetch_nls(work / 'nls.jsonl.gz', os.environ.get('MML_API_KEY'))
     (work / 'sources.json').write_text(json.dumps({
         'photon': {'url': PHOTON + name, 'md5': md5},
         'nls': {'url': NLS, 'names': count, 'modified': newest, 'fetched': stamp(datetime.now(timezone.utc))},
@@ -556,21 +523,20 @@ def gather(work, now=None):
     osm, timestamp = photon(dump_lines(work / 'photon.jsonl.zst'))
     age = (now or datetime.now(timezone.utc)) - datetime.fromisoformat(timestamp)
     require(age.days <= MAX_AGE, f'The Photon dump is {age.days} days old')
-    sources['photon']['timestamp'] = timestamp
+    sources['photon'] |= {'timestamp': timestamp, 'records': len(osm)}
     records = merge(osm, nls(work / 'nls.jsonl.gz'))
-    records.update(towns(work / 'cities15000.zip'))
+    beyond = towns(work / 'cities15000.zip')
+    sources['geonames']['records'] = len(beyond)
+    records.update(beyond)
     return records, sources
 
 
-def public(url):
-    """A public file's bytes, checked as publish.get checks them; None for a 404."""
-    try:
-        return publish.get(url)
-    except HTTPError as error:
-        if error.code != 404:
-            raise
-        error.close()
-        return None
+def require_counts(sources, previous):
+    """Each source at least SHORT of what the previous release had: a source cut short never publishes as complete."""
+    for name, field in (('photon', 'records'), ('nls', 'names'), ('geonames', 'records')):
+        before = previous['source'].get(name, {}).get(field)
+        require(not before or sources[name][field] >= SHORT * before,
+                f'{name} gave {sources[name][field]} {field}, the previous release {before}')
 
 
 def host_reader(url):
@@ -599,7 +565,7 @@ def local_reader(*directories):
 
 def newest(url):
     """The newest release on the host, the candidate or the live one, to build on; None before the first."""
-    found = [json.loads(raw) for raw in (public(url + '/candidates/current.json'), public(url + '/current.json')) if raw]
+    found = [json.loads(raw) for raw in (publish.found(url + '/candidates/current.json'), publish.found(url + '/current.json')) if raw]
     return max(found, key=lambda m: m['built_at']) if found else None
 
 
@@ -652,11 +618,14 @@ def main():
             records, sources = gather(args.work)
             base = None
             if args.base:
-                base = read_base(local_reader(*args.base), json.loads((args.base[0] / 'manifest.json').read_text()))
+                previous = json.loads((args.base[0] / 'manifest.json').read_text())
+                require_counts(sources, previous)
+                base = read_base(local_reader(*args.base), previous)
             elif not args.fresh:
                 url = folder_url()
                 previous = newest(url)
                 if previous:
+                    require_counts(sources, previous)
                     base = read_base(host_reader(url), previous)
             manifest, counts = build(records, sources, args.output, base)
             print(json.dumps({'release': manifest['release'], **manifest['datasets']['search'], 'groups': counts}))
@@ -665,7 +634,7 @@ def main():
         elif args.command == 'install-hosting':
             install_hosting()
         elif args.command == 'candidate':
-            print(json.dumps(publish.candidate(folder_url()) or {}, sort_keys=True))
+            print(json.dumps(publish.candidate(folder_url(), first=True) or {}, sort_keys=True))
             return
         elif args.command == 'promote':
             publish.promote_candidate(args.release, args.sha256, args.directory, FOLDER)

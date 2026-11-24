@@ -50,8 +50,42 @@ def find(directory, key, area=None, dirs=()):
     if row is None:
         return {}, len(key) > 1  # no such group: nothing, completely, unless the key is one letter
     body = search.read_index(read({'path': row[2] + search.SUFFIX, 'bytes': row[1], 'sha256': row[2]}))
-    return search.lookup(body, lambda r: gzip.decompress(read({'path': r[3] + search.SUFFIX, 'sha256': r[3]})).decode(),
+    return lookup(body, lambda r: gzip.decompress(read({'path': r[3] + search.SUFFIX, 'sha256': r[3]})).decode(),
                          key, area)
+
+
+def matches(text, key):
+    """Whether a record line has a key that starts with key."""
+    return any(k.startswith(key) for k in search.keys(text.split('\t', 2)[1].split('|')))
+
+
+def lookup(body, read, key, area=None):
+    """What a query's key reaches in its group, as a reader reads it: {id: line} of the records with a key starting with
+    key, and whether that is all of them. body is the group's index; read(row) gives a file's text; area is the tile
+    (AREA) a common word split by area is read for."""
+    rows = {(prefix, kind): row for row in body['files'] for prefix, kind, _, _ in [row]}
+    prefix, texts, complete = search.group(key), [], len(key) > 1  # a letter's group holds only that word: k's are in ka, kb…
+    while True:
+        if (prefix, 'L') in rows:
+            texts.append(read(rows[prefix, 'L']))
+            break
+        if (prefix, 'T') not in rows:
+            break  # no key starts with it
+        if key == prefix:  # a prefix this short reaches more than one file: its most important, and the word itself
+            texts.append(read(rows[prefix, 'T']))
+            if (prefix, 'W') in rows:
+                texts.append(read(rows[prefix, 'W']))
+            elif area and (f'{prefix}@{area}', 'A') in rows:
+                texts.append(read(rows[f'{prefix}@{area}', 'A']))
+            complete = False
+            break
+        prefix = key[:len(prefix) + 1]
+    replaced = set(body['removed']) | {l.split('\t', 1)[0] for l in body['changed']}
+    found = {}
+    for l in [l for t in texts for l in t.splitlines() if l.split('\t', 1)[0] not in replaced] + body['changed']:
+        if matches(l, key):
+            found[l.split('\t', 1)[0]] = l
+    return found, complete
 
 
 class KeyTests(unittest.TestCase):
@@ -126,7 +160,7 @@ class SourceTests(unittest.TestCase):
                 self.assertEqual([json.loads(l)[0] for l in f], [1, 3])
         self.assertEqual(asked[1], 'second')
         self.assertEqual(sleeps, [search.PAUSE])
-        with self.assertRaisesRegex(ValueError, 'NLS_API_KEY is missing'):
+        with self.assertRaisesRegex(ValueError, 'MML_API_KEY is missing'):
             search.fetch_nls('x', None, page)
 
     def test_towns_beyond_finland_with_their_finnish_names(self):
@@ -142,6 +176,14 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(list(found), ['G2673730', 'G2711537'])
         self.assertEqual(found['G2673730']['names'], ['Stockholm', 'Estocolmo', 'Tukholma'])
         self.assertEqual(found['G2711537']['names'], ['Göteborg', 'Goteborg'], "a smaller town's own names only")
+
+    def test_a_source_cut_short_is_refused(self):
+        previous = {'source': {'photon': {'records': 1000}, 'nls': {'names': 800}, 'geonames': {'url': 'x'}}}
+        now = {'photon': {'records': 950}, 'nls': {'names': 800}, 'geonames': {'records': 10}}
+        search.require_counts(now, previous)
+        now['nls']['names'] = 700
+        with self.assertRaisesRegex(ValueError, 'nls gave 700 names, the previous release 800'):
+            search.require_counts(now, previous)
 
     def test_an_old_dump_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -254,7 +296,9 @@ class HostTests(unittest.TestCase):
             sent = {p for p, _, _ in host.uploads if '/files/' in p or p.endswith('.gzt')}
             self.assertEqual(len([n for n in (tmp / 'one').iterdir() if n.suffix == '.gzt']), len(sent))
             url = search.folder_url()
-            candidate = publish.candidate(url)
+            with self.assertRaises(publish.HTTPError):
+                publish.candidate(url)  # another product's missing live pointer stops its check
+            candidate = publish.candidate(url, first=True)
             self.assertEqual(candidate['sha256'], hashlib.sha256(raw).hexdigest(), 'nothing live yet: the first candidate')
             publish.promote_candidate(candidate['release'], candidate['sha256'], tmp / 'promote', search.FOLDER)
             self.assertEqual(json.loads(host.files[BASE + '/current.json']), publish.current(json.loads(raw)))

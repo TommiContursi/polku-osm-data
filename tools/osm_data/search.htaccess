@@ -1,5 +1,5 @@
 # polku-search's own copy of hosting.htaccess, put in place once by search.py install-hosting; a change
-# after that is made by hand. Its files are gzipped text, decompressed by the app: .gzt, a type of its own.
+# after that is made by hand. Its files are gzipped text, .gzt, served as octet-stream without Content-Encoding.
 Options -Indexes
 SetEnv no-gzip 1
 SetEnv no-brotli 1

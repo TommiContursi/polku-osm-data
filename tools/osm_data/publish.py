@@ -775,24 +775,27 @@ def upload(directory, resume=False, folder=None, budget=None):
         print(f'Candidate {release}: {url}/{final}/manifest.json', flush=True)
 
 
-def candidate(url):
-    """The uploaded candidate newer than the live release, for Polku's checks, or None. Reads only public HTTP."""
-    url = public_url(url)
+def found(url):
+    """A public JSON file's bytes, as get() checks them, or None where the host answers 404."""
     try:
-        raw = get(url + '/candidates/current.json')
-    except HTTPError as error:
-        if error.code == 404:
-            error.close()
-            return None  # nothing uploaded yet
-        raise
-    manifest = validate(json.loads(raw))
-    try:
-        live = validate(json.loads(get(url + '/current.json')), pointed=True)
+        return get(url)
     except HTTPError as error:
         if error.code != 404:
             raise
         error.close()
-        live = None  # nothing promoted yet: a new product's first candidate
+        return None
+
+
+def candidate(url, first=False):
+    """The uploaded candidate newer than the live release, for Polku's checks, or None. Reads only public HTTP. With
+    first, a product with nothing promoted yet has its first candidate; otherwise a missing live pointer stops."""
+    url = public_url(url)
+    raw = found(url + '/candidates/current.json')
+    if raw is None:
+        return None  # nothing uploaded yet
+    manifest = validate(json.loads(raw))
+    live = found(url + '/current.json') if first else get(url + '/current.json')
+    live = live and validate(json.loads(live), pointed=True)
     if live and manifest['built_at'] <= live['built_at']:
         return None
     location = f"{url}/releases/{manifest['release']}/manifest.json"

@@ -333,7 +333,7 @@ line strings in WGS84, rounded to six decimal places, without heights.
 `search.py` builds a place-name search index for Finland each week (docs/OPERATIONS.md): Photon's dump of OSM for
 Finland (ODbL), NLS's Geographic Names Register where OSM has no place of the same name within about 5 km (CC BY
 4.0, read with `MML_API_KEY`), and the names of the world's countries (from the dump) and of GeoNames' towns of
-15,000 people beyond Finland (CC BY 4.0). Those beyond Finland only tell that a query points elsewhere. A dump over
+15,000 people beyond Finland (CC BY 4.0), whose records are marked `C` and `G`. A dump over
 14 days old is refused. `fetch WORK` downloads the sources, `build WORK RELEASE` writes the release on the newest one
 on the host (`--fresh` makes every file again), `upload RELEASE` sends what the host lacks (with
 `OSM_SHARED_FILES=true`), and `candidate`, `promote` and `rollback` work as the OSM data's, in `polku-search/`.

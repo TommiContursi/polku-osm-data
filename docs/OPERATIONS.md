@@ -309,6 +309,6 @@ The format is in [tools/osm_data/README.md](../tools/osm_data/README.md#search-i
   `polku-search/` holds at most 2 GiB.
 - **fresh** makes every group's files again: about 52 MB.
 
-Polku checks the candidate in the app and promotes it with `search.py promote`, as the OSM data's. The sources' terms:
+`search.py promote` makes a checked candidate live, as the OSM data's `publish.py promote`. The sources' terms:
 ODbL for OSM's data, CC BY 4.0 for NLS's names and GeoNames' towns, all named in the manifest's `attribution` and in
 `LICENSE.txt`.
