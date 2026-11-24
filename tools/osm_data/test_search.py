@@ -225,8 +225,16 @@ class LayoutTests(unittest.TestCase):
         read = search.local_reader(self.tmp / 'one')
         bodies = [search.read_index(read({'path': g[2] + search.SUFFIX, 'sha256': g[2]}))
                   for g in search.read_index(read(search.root_of(manifest)))['groups']]
-        self.assertTrue(all(len(gzip.compress(t.encode(), 9, mtime=0)) < search.INLINE for b in bodies for _, _, t in b['texts']))
+        self.assertTrue(all(len(search.gz(t)) < search.INLINE for b in bodies for _, _, t in b['texts']))
         self.assertTrue(any(b['texts'] for b in bodies) and any(b['files'] for b in bodies), 'small ones in the index, the rest files')
+        with patch.object(search, 'INLINED', 600):  # a group's small files in its index up to the cap, the rest files
+            capped, _ = self.build('capped', self.places)
+        read = search.local_reader(self.tmp / 'capped')
+        bodies = [search.read_index(read({'path': g[2] + search.SUFFIX, 'sha256': g[2]}))
+                  for g in search.read_index(read(search.root_of(capped)))['groups']]
+        self.assertTrue(all(sum(len(search.gz(t)) for _, _, t in b['texts']) <= 600 for b in bodies))
+        self.assertTrue(any(size < search.INLINE for b in bodies for _, _, size, _ in b['files']), 'some small ones stay files')
+        self.everything_is_found(self.tmp / 'capped', self.places)
         found, complete = find(self.tmp / 'one', 'koskia')
         self.assertTrue(complete and set(found) == {f'N{i}' for i in range(0, 120, 8)}, 'a long key reads one whole file')
         found, complete = find(self.tmp / 'one', 'kos')

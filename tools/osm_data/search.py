@@ -49,7 +49,7 @@ SHORT = 0.9  # of each source's count in the previous release, at least
 TARGET = 48 * 1024  # a file's gzipped bytes, at most, unless one word's records alone are more
 TOP = 30  # records in a split prefix's list, for queries that short
 CHANGES = 24 * 1024  # a group's changed records, in bytes, before its files are made again
-INLINE = 1024  # a file smaller than this, gzipped, goes into its group's index as text: half the files are,
+INLINE = 1024  # a file smaller than this, gzipped, goes into its group's index as text (half the files are under it),
 INLINED = 8 * 1024  # up to this many of a group's gzipped bytes, so a large group's index stays small
 AREA = 7  # the zoom of the tiles a common word's records are split by
 PAGE, PAUSE = 10000, 1  # NLS: names a request, and seconds between requests
@@ -328,7 +328,7 @@ def tile(lon, lat, z=AREA):
 
 class Group:
     """One group's records by key, laid out in files: {name: bytes}, and the index rows [prefix, kind, bytes, sha256];
-    a file under INLINE is a text row [prefix, kind, text] in the index instead. Kinds: L, every record with a key
+    a file under INLINE is a text row [prefix, kind, text] in the index instead, while the group's INLINED lasts. Kinds: L, every record with a key
     starting with the prefix; T, a split prefix's most important; W, the records whose key is the prefix exactly; A, an
     area's part of W, its prefix written word@x-y."""
 
