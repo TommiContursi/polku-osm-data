@@ -428,8 +428,8 @@ class Stager(osmium.SimpleHandler):
                 continue
             bounds = bounds_of('r', ref, set())
             if bounds is None and tags is not None:
-                # The clip cut it at the extract's edge: the neighbouring country's build has it whole, and a
-                # partial copy would conflict with that one where the app reads both. Inspection still gets it.
+                # The clip cut it at the extract's edge: the neighbouring country's build has it whole, and a partial
+                # copy would conflict with that one in Polku's mergeTiles. Every stay is inspectable, so inspection keeps it.
                 self.incomplete_places += 1
                 tags = None
             incomplete = bounds is None
