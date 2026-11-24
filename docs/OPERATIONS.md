@@ -193,11 +193,11 @@ anything.
 ## The host
 
 The data is served from `https://ducksoft.fi/polku-osm/`, `https://ducksoft.fi/polku-routing/`, `https://ducksoft.fi/polku-mml/`,
-`https://ducksoft.fi/polku-digiroad/` and `https://ducksoft.fi/polku-terrain/`.
+`https://ducksoft.fi/polku-digiroad/`, `https://ducksoft.fi/polku-terrain/` and `https://ducksoft.fi/polku-basemap/`.
 Each folder has its own `.htaccess`: [`hosting.htaccess`](../tools/osm_data/hosting.htaccess),
 installed by hand, [`routing.htaccess`](../tools/osm_data/routing.htaccess) (Routing data,
 above), [`mml.htaccess`](../tools/osm_data/mml.htaccess) in `polku-mml/` (NLS background map, below) and a copy of
-`hosting.htaccess` in `polku-digiroad/` and `polku-terrain/` (below). They turn off listing and HTTP compression, set the MIME types, allow read-only CORS with
+`hosting.htaccess` in `polku-digiroad/`, `polku-terrain/` and `polku-basemap/` (below). They turn off listing and HTTP compression, set the MIME types, allow read-only CORS with
 the Range headers exposed, cache releases as immutable and make `current.json` revalidate, which
 also covers `candidates/current.json`.
 
@@ -313,3 +313,18 @@ open data, CC BY 4.0", in the manifest, the archive's metadata and `LICENSE.txt`
 A smaller **box** tests the whole job; a pull request that changes it extracts central Helsinki and uploads nothing.
 Mapterhorn adds no licence of its own: each source's licence and credit is in `attribution.json`, Mapterhorn's own
 list, copied into the release beside `LICENSE.txt`.
+
+## Base map
+
+`basemap-data.yml`, monthly on the 2nd at 04:43 UTC while `BASEMAP_UPLOAD_ENABLED` is `true`, or by hand, extracts
+OpenFreeMap's base map from the planet archive of the build its TileJSON (`https://tiles.openfreemap.org/planet`)
+names: zooms 0–14 over the terrain's box, about 2.97 million tiles and 6.23 GB, about 13,700 cells (measured
+2026-11-24). The format is in [tools/osm_data/README.md](../tools/osm_data/README.md#base-map).
+
+- **install-hosting**, once: makes `polku-basemap/` and puts a copy of `hosting.htaccess` in it.
+- **copy** extracts as the terrain's does (`extract.py`), and uploads in cells; `polku-basemap/` holds at most 20 GiB.
+  OpenFreeMap's weekly builds change most of their tiles' bytes, so the copy is monthly. A run that stops before the
+  end is dispatched again.
+- **Promotion** is Polku's `basemap-promote.yml`: `basemap.py candidate`, `promote` and `restore`, as the terrain's.
+
+The data is © OpenStreetMap contributors (ODbL), in OpenMapTiles' schema (CC BY 4.0), in `LICENSE.txt`.
