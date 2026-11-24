@@ -368,5 +368,5 @@ a country code; `G` and GeoNames' id), names separated by `|`, OSM's `key/value`
 lat, rank (Photon's importance, 0–1), municipality (a country code for `G`), and extent `west,south,east,north` or
 nothing. The manifest also carries `coverage`, Finland's polygon.
 
-On 2026-11-08 and 2026-11-15's dumps with NLS's names of 2026-11-20: 1,288,708 records in 13,893 files, 51.8 MB; the
+On 2026-11-08 and 2026-11-15's dumps with NLS's names of 2026-11-20: 1,303,224 records in 13,938 files, 52.1 MB; the
 second week sent 286 files, 0.77 MB. The build takes about 100 s and 2 GB of memory.
