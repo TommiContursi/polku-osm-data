@@ -27,7 +27,7 @@ from urllib.error import HTTPError
 
 if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from tools.osm_data import maintenance, promotion, publish
+from tools.osm_data import maintenance, publish
 from tools.osm_data.publish import require
 
 SOURCE = 'https://brouter.de/brouter/segments4/'
@@ -427,7 +427,61 @@ def public_folder():
     return url.removesuffix('/polku-osm') + '/polku-routing'
 
 
-PRODUCT = promotion.Product(routing_host, public_folder, validate, held, probe)
+def candidate():
+    """The uploaded candidate built after the live release, for Polku's checks, or None. Reads only public HTTP. The
+    pointers hold the manifests' own bytes, not the OSM data's form, so publish.candidate can't read them."""
+    url = public_folder()
+    raw = publish.found(url + '/candidates/current.json')
+    if raw is None:
+        return None  # nothing uploaded yet
+    manifest = validate(json.loads(raw))
+    live = publish.found(url + '/current.json')  # None: nothing promoted yet
+    if live and manifest['built_at'] <= json.loads(live)['built_at']:
+        return None
+    location = f"{url}/releases/{manifest['release']}/manifest.json"
+    require(publish.get(location, immutable=True) == raw, 'Candidate pointer differs from its release')
+    return {'release': manifest['release'], 'manifest': location, 'sha256': hashlib.sha256(raw).hexdigest()}
+
+
+def promote(release, sha256, directory):
+    """Make the candidate Polku checked live: current.json gets the manifest's same bytes. The pointer it replaces goes
+    to DIRECTORY/previous.json (null where there was none), for restore."""
+    require(os.environ.get('OSM_ALLOW_PUBLISH') == 'true', 'Publication requires approved OSM_ALLOW_PUBLISH=true')
+    require(publish.NAME.fullmatch(release) and re.fullmatch('[a-f0-9]{64}', sha256), 'Invalid candidate')
+    with routing_host() as (ftp, url):
+        raw = publish.retrieve(ftp, f'releases/{release}/manifest.json')
+        require(hashlib.sha256(raw).hexdigest() == sha256, 'Candidate manifest differs from the one checked')
+        # Still the candidate: a mirror run that has named another removes this release unless it is live
+        require(publish.retrieve(ftp, 'candidates/current.json') == raw, 'Another candidate was uploaded meanwhile; check it first')
+        manifest = held(ftp, raw)
+        require(manifest['release'] == release, 'Candidate release differs')
+        previous = publish.retrieve(ftp, 'current.json') if 'current.json' in maintenance.children(ftp) else None
+        directory = Path(directory)
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / 'previous.json').write_bytes(previous or b'null')
+        if previous == raw:
+            return  # promoted already: a restore puts back the same
+        require(not previous or manifest['built_at'] > json.loads(previous)['built_at'], 'Candidate is not newer than the live release')
+        probe(url, manifest, raw)
+        publish.replace_pointer(ftp, raw)
+        try:
+            print(f"Public pointer after {publish.settle(url + '/current.json', raw, publish.SETTLE):.0f} s", flush=True)
+        except Exception:
+            publish.put_back(ftp, url, previous)
+            raise
+
+
+def restore(directory, expected_current):
+    """Back to the pointer promote replaced, unless another release went live meanwhile."""
+    require(os.environ.get('OSM_ALLOW_PUBLISH') == 'true', 'Publication requires approved OSM_ALLOW_PUBLISH=true')
+    previous = Path(directory, 'previous.json').read_bytes()
+    with routing_host() as (ftp, url):
+        live = json.loads(publish.retrieve(ftp, 'current.json'))['release'] if 'current.json' in maintenance.children(ftp) else None
+        require(live == expected_current, 'Live release changed; do not roll back another publication')
+        previous = None if previous == b'null' else previous
+        if previous is not None:
+            held(ftp, previous)
+        publish.put_back(ftp, url, previous)
 
 
 def install_hosting():
@@ -460,12 +514,12 @@ def main():
         elif args.command == 'check':
             print(json.dumps(check(args.url)))
         elif args.command == 'candidate':
-            print(json.dumps(promotion.candidate(PRODUCT) or {}, sort_keys=True))
+            print(json.dumps(candidate() or {}, sort_keys=True))
             return
         elif args.command == 'promote':
-            promotion.promote(PRODUCT, args.release, args.sha256, args.directory)
+            promote(args.release, args.sha256, args.directory)
         elif args.command == 'restore':
-            promotion.restore(PRODUCT, args.directory, args.expected_current)
+            restore(args.directory, args.expected_current)
         else:
             install_hosting()
     except Exception as error:

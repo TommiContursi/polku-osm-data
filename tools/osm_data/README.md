@@ -280,23 +280,29 @@ has none when the new square is under 1 MiB, when the square is new, or when it 
 
 ## NLS background map
 
-`mml.py` copies the National Land Survey's background-map vector tiles (docs/OPERATIONS.md). Each release is
-`polku-mml/releases/<release>/`: `taustakartta.pmtiles` (MML's own tiles, gzipped; a 404 is an empty tile),
-`tiles.tsv.gz` (each tile's `z x y status last_modified`), `LICENSE.txt` and `manifest.json`:
+`mml.py` copies the National Land Survey's background-map vector tiles (docs/OPERATIONS.md). A release has one
+PMTiles archive a zoom, `taustakartta-<z>.pmtiles` (MML's own tiles, gzipped; a 404 is an empty tile), cut into cells
+as the OSM data's (Cells), with `tiles.tsv.gz` (each tile's `z x y status last_modified`) and `LICENSE.txt` among the
+shared files (Shared files). Its `manifest.json`, as uploaded:
 
 ```json
-{"schema": 1, "release": "20261123T040000Z", "built_at": "2026-11-23T04:00:00Z",
+{"schema": 1, "release": "20261224T040000Z", "built_at": "2026-12-24T04:00:00Z",
  "source": "https://avoin-karttakuva.maanmittauslaitos.fi/vectortiles/taustakartta/wmts/1.0.0/taustakartta/default/v21/WGS84_Pseudo-Mercator/{z}/{y}/{x}.pbf",
- "fetched_from": "2026-11-22T21:00:05Z", "fetched_to": "2026-11-23T03:20:41Z",
- "attribution": "© Maanmittauslaitos, Maastotietokanta 11/2026", "license": "CC BY 4.0",
+ "fetched_from": "2026-12-23T21:00:05Z", "fetched_to": "2026-12-24T03:20:41Z",
+ "attribution": "© Maanmittauslaitos, Maastotietokanta 12/2026", "license": "CC BY 4.0",
  "zooms": [11, 14], "bounds": [19.0, 59.3, 31.6, 70.1], "tiles": {"200": 892856},
- "datasets": {"taustakartta": {"url": "taustakartta.pmtiles", "bytes": 9000000000, "sha256": "…"}},
- "files": [{"path": "taustakartta.pmtiles", "bytes": 9000000000, "sha256": "…"}, {"path": "tiles.tsv.gz", …}, {"path": "LICENSE.txt", …}]}
+ "datasets": {"taustakartta-11": {"url": "../../files/<sha256>.json", "format": "pmtiles-json-cells", "zoom": 11, "bytes": …, "sha256": "…"},
+              "taustakartta-12": {…}, "taustakartta-13": {…}, "taustakartta-14": {…}},
+ "files": [{"path": "taustakartta-11.cells.json", "url": "../../files/<sha256>.json", …}, …, {"path": "tiles.tsv.gz", "url": "../../files/<sha256>.gz", …}, {"path": "LICENSE.txt", …}]}
 ```
 
-`tiles` counts MML's answers by status. A tile with another 4xx is left out of the archive. `candidates/current.json`
-holds the candidate's manifest, and `current.json`, once promoted, the live release's: the same bytes, not rewritten
-as the OSM data's.
+Each zoom is its own dataset, `taustakartta-<z>`, whose index has that zoom, so a tile's cell is found from its
+parent tiles as in the OSM data. The cells hold vector tiles (MVT in their headers), though the format keeps the OSM
+data's name. Their metadata credits `© Maanmittauslaitos` without a date, so a cell changes only with its tiles; the
+dated credit is the manifest's `attribution`. `tiles` counts MML's answers by status. A tile with another 4xx is left
+out of the archive. `candidates/current.json` holds the candidate's manifest, and `current.json` the live release's,
+its URLs relative to `polku-mml/`, as the OSM data's. The first copy (release `20261123T023208Z`) is one archive,
+`taustakartta`, in its release's folder: the first upload in cells puts its pointer in that form, once, and writes its publication receipt.
 
 ## Digiroad
 
@@ -349,3 +355,46 @@ has no `timestamp`. The manifest's `source.timestamp` is the newest of the datas
 `tools/fixtures/digiroad-<name>.jsonl.xz` are the WFS's answers around Tampere (23.70–23.80 E, 61.485–61.51 N; for
 private roads, which that box has none of, 61.46–61.485 N), `digiroad-<name>.pmtiles` their archives, and
 `digiroad-traffic-cells/` the traffic archive's cut at a 4 KiB target.
+
+## Search index
+
+`search.py` builds a place-name search index for Finland each week (docs/OPERATIONS.md): Photon's dump of OSM for
+Finland (ODbL), NLS's Geographic Names Register where OSM has no place of the same name within about 5 km (CC BY
+4.0, read with `MML_API_KEY`), and the names of the world's countries (from the dump) and of GeoNames' towns of
+15,000 people beyond Finland (CC BY 4.0), whose records are marked `C` and `G`. A dump over
+14 days old is refused. `fetch WORK` downloads the sources, `build WORK RELEASE` writes the release on the newest one
+on the host (`--fresh` makes every file again), `upload RELEASE` sends what the host lacks (with
+`OSM_SHARED_FILES=true`), and `candidate`, `promote` and `rollback` work as the OSM data's, in `polku-search/`.
+
+Every file is gzipped UTF-8 and named by its SHA-256 among the shared files, `files/<sha256>.gzt`. The dataset's
+`format` is `search-gzt` and its `url` is the root, `search.gzt`:
+
+```json
+{"schema": 1, "groups": [["ko", 2913, "<sha256>"], …]}
+```
+
+A key is a name's word, or a name of several words without its spaces, normalised as
+`tools/fixtures/search-normalise.json` says; its group is its first two letters. A group's index:
+
+```json
+{"schema": 1, "files": [["kos", "T", 1840, "<sha256>"], ["koski", "W", 30211, "<sha256>"], ["koskia", "L", 9120, "<sha256>"], …],
+ "changed": ["<record>", …], "removed": ["<id>", …]}
+```
+
+- `L`: every record with a key that starts with the prefix. A prefix with no `L` file is split by its next letter.
+- `T`: a split prefix's 30 most important records.
+- `W`: the records whose key is the prefix exactly; when that is too large, `A` files split it by zoom-7 tile,
+  `word@x-y`.
+- `changed`: each record as it is now, where it differs from the group's files, and `removed`: records the files hold
+  that the group no longer has. A reader drops the files' records whose id is in either, and adds `changed`. When the
+  two outgrow 24 KiB, the group's files are made again.
+
+So a key that reaches an `L` file reads everything it matches; one that ends at a split prefix reads its `T` and `W`
+(or its area's `A`) and is incomplete. A record is a tab-separated line: id (`N`, `W` or `R` and OSM's id; `S` and the
+first segment's id for a street merged by name and municipality; `P` and a postcode; `L` and NLS's place id; `C` and
+a country code; `G` and GeoNames' id), names separated by `|`, OSM's `key/value` (NLS's places by their type), lon,
+lat, rank (Photon's importance, 0–1), municipality (a country code for `G`), and extent `west,south,east,north` or
+nothing. The manifest also carries `coverage`, Finland's polygon.
+
+On 2026-11-08 and 2026-11-15's dumps with NLS's names of 2026-11-20: 1,303,224 records in 13,938 files, 52.1 MB; the
+second week sent 286 files, 0.77 MB. The build takes about 100 s and 2 GB of memory.

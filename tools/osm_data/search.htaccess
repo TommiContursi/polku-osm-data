@@ -1,0 +1,16 @@
+# polku-search's own copy of hosting.htaccess, put in place once by search.py install-hosting; a change
+# after that is made by hand. Its files are gzipped text, .gzt, served as octet-stream without Content-Encoding.
+Options -Indexes
+SetEnv no-gzip 1
+SetEnv no-brotli 1
+AddType application/json .json
+AddType application/octet-stream .gzt
+
+Header always set Access-Control-Allow-Origin "*"
+Header always set Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
+Header always set Access-Control-Allow-Headers "Range, If-Match"
+Header always set Access-Control-Expose-Headers "ETag, Content-Length, Content-Range, Accept-Ranges"
+Header always set Cache-Control "public, max-age=31536000, immutable"
+<Files "current.json">
+    Header always set Cache-Control "no-cache"
+</Files>
