@@ -10,8 +10,10 @@ can ask again with If-Modified-Since. The key (MML_API_KEY) is only ever put int
 
 import argparse
 from collections import Counter
+from contextlib import ExitStack
 from datetime import datetime, timezone
 import gzip
+import hashlib
 import http.client
 import json
 import math
@@ -52,7 +54,7 @@ EMPTY = gzip.compress(b'', 6, mtime=0)  # MML's 404: an empty tile
 TABLE, LICENSE = 'tiles.tsv.gz', 'LICENSE.txt'
 FOLDER = 'polku-mml'
 CREDIT = '© Maanmittauslaitos'  # in the archives: the dated credit, in the manifest, would change every cell
-BUDGET = 30 * 1024**3  # live, candidate and staging: three copies of about 9 GB
+BUDGET = 30 * 1024**3  # live, its predecessor and the candidate: three copies of about 9 GB at most
 
 
 class Refused(Exception):
@@ -347,21 +349,21 @@ def pack(path, out, now=None):
     fetched = meta.get('fetched_to', stamp(now))
     attribution = f'{CREDIT}, Maastotietokanta {fetched[5:7]}/{fetched[:4]}'
     statuses, lines, writers = Counter(), [b'z\tx\ty\tstatus\tlast_modified\n'], {}
-    for tile, status, modified, data in db.execute('SELECT id, status, modified, data FROM tiles ORDER BY id'):
-        statuses[str(status)] += 1
-        z, x, y = tileid_to_zxy(tile)
-        lines.append(f'{z}\t{x}\t{y}\t{status}\t{modified or ""}\n'.encode())
-        if status in (200, 404):
-            if z not in writers:  # the ids come zoom by zoom
-                writers[z] = Writer(open(out / archive_name(z), 'wb'))
-            writers[z].write_tile(tile, data if status == 200 else EMPTY)
-    for z, writer in writers.items():
-        writer.finalize({'tile_type': TileType.MVT, 'tile_compression': Compression.GZIP,
-                         'min_lon_e7': round(box[0] * 1e7), 'min_lat_e7': round(box[1] * 1e7),
-                         'max_lon_e7': round(box[2] * 1e7), 'max_lat_e7': round(box[3] * 1e7)},
-                        {'name': f'MML taustakartta v21, zoom {z}', 'attribution': CREDIT, 'source': SOURCE,
-                         'license': 'CC BY 4.0'})
-        writer.f.close()
+    with ExitStack() as streams:
+        for tile, status, modified, data in db.execute('SELECT id, status, modified, data FROM tiles ORDER BY id'):
+            statuses[str(status)] += 1
+            z, x, y = tileid_to_zxy(tile)
+            lines.append(f'{z}\t{x}\t{y}\t{status}\t{modified or ""}\n'.encode())
+            if status in (200, 404):
+                if z not in writers:  # the ids come zoom by zoom
+                    writers[z] = Writer(streams.enter_context(open(out / archive_name(z), 'wb')))
+                writers[z].write_tile(tile, data if status == 200 else EMPTY)
+        for z, writer in writers.items():
+            writer.finalize({'tile_type': TileType.MVT, 'tile_compression': Compression.GZIP,
+                             'min_lon_e7': round(box[0] * 1e7), 'min_lat_e7': round(box[1] * 1e7),
+                             'max_lon_e7': round(box[2] * 1e7), 'max_lat_e7': round(box[3] * 1e7)},
+                            {'name': f'MML taustakartta v21, zoom {z}', 'attribution': CREDIT, 'source': SOURCE,
+                             'license': 'CC BY 4.0'})
     (out / TABLE).write_bytes(gzip.compress(b''.join(lines), 6, mtime=0))
     (out / LICENSE).write_text(
         f'Background map vector tiles (taustakartta v21): {attribution}, National Land Survey of Finland.\n'
@@ -393,21 +395,32 @@ def pack(path, out, now=None):
     return manifest
 
 
-def point_live(ftp):
-    """polku-mml's live pointer in the OSM data's form (current.json's URLs relative to the folder), once: the copy's
-    first releases named the manifest's own bytes."""
-    if 'current.json' in maintenance.children(ftp):
-        raw = publish.retrieve(ftp, 'current.json')
-        try:
-            publish.validate(json.loads(raw), pointed=True)
-        except ValueError:
-            publish.replace_pointer(ftp, json.dumps(publish.current(publish.validate(json.loads(raw))), sort_keys=True,
-                                                    separators=(',', ':')).encode())
+def point_live(ftp, url):
+    """polku-mml's live pointer in the OSM data's form (current.json's URLs relative to the folder), with a receipt for
+    its release, so retention manages it as the OSM data's, once: the first copy's pointer was its manifest's bytes."""
+    if 'current.json' not in maintenance.children(ftp):
+        return
+    raw = publish.retrieve(ftp, 'current.json')
+    try:
+        publish.validate(json.loads(raw), pointed=True)
+        return
+    except ValueError:
+        manifest = publish.validate(json.loads(raw))
+    require(publish.retrieve(ftp, f"releases/{manifest['release']}/manifest.json") == raw, 'The live pointer differs from its release')
+    if 'maintenance' not in maintenance.children(ftp):
+        ftp.mkd('maintenance')
+    maintenance.write_record(ftp, f"maintenance/r-{manifest['release']}.json", {
+        'version': 1, 'release': manifest['release'], 'manifest_sha256': hashlib.sha256(raw).hexdigest(),
+        'published_at': manifest['built_at'], 'previous_release': None})
+    pointed = json.dumps(publish.current(manifest), sort_keys=True, separators=(',', ':')).encode()
+    publish.replace_pointer(ftp, pointed)
+    publish.settle(url + '/current.json', pointed, 150)
 
 
 def upload(directory):
     """The release into polku-mml in cells among the shared files, as the OSM data's: a cell the host holds isn't sent
     again. A test box never replaces a larger candidate: retention would then remove that copy."""
+    require(os.environ.get('OSM_ALLOW_PUBLISH') == 'true', 'Publication requires approved OSM_ALLOW_PUBLISH=true')
     require(os.environ.get('OSM_CELLS') == 'true', 'The copy goes up in cells: set OSM_CELLS=true')
     manifest = publish.validate(json.loads(Path(directory, 'manifest.json').read_bytes()))
     old = public_bytes(publish.product_url(publish.public_url(os.environ.get('OSM_PUBLIC_URL', '')), FOLDER) + '/candidates/current.json')
@@ -417,8 +430,7 @@ def upload(directory):
                 f'The candidate covers {old}, more than this release; upload a box that covers it')
     config = publish.settings()
     with publish.connection(config) as ftp:
-        publish.product_folder(ftp, config[4], FOLDER)
-        point_live(ftp)
+        point_live(ftp, publish.product_folder(ftp, config[-2], FOLDER))
     publish.upload(directory, folder=FOLDER, budget=BUDGET)
 
 

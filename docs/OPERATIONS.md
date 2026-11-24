@@ -263,7 +263,7 @@ cells as a candidate to `https://ducksoft.fi/polku-mml/`. The format is in [tool
   archive is cut into cells, and only the cells and files `files/` lacks go up, read back with their SHA-256. The
   release is checked over HTTPS and named in `candidates/current.json`, and retention keeps the live release, its
   predecessor and the candidate. A release whose box doesn't cover the candidate's is refused. The first upload in
-  cells puts the first copy's `current.json`, its manifest's own bytes, in the OSM data's form.
+  cells puts the first copy's `current.json`, its manifest's own bytes, in the OSM data's form, with a receipt, so retention removes it once it is neither live nor the predecessor.
 - **Promotion** is Polku's `mml-promote.yml`, run by hand, like the OSM data's. `mml.py candidate` finds a
   candidate built after the live release, over public HTTP only, and Polku's check reads it in the app. Then
   `mml.py promote` promotes it as `publish.py` does the OSM data's: every file and cell at its size, and the
