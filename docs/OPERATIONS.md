@@ -264,7 +264,8 @@ they aren't checked with Polku's key, and a missed sheet would leave a stale til
   run, and so does a hand check that doesn't find Helsinki in its tile at every zoom. It runs in up to three parts of
   5 h 20 min, each keeping its tiles in an `mml-store-<part>` artifact; a later run given the run's ID in **store**
   goes on from the newest. An update's store holds only what changed, and is tied to the live pointer's SHA-256: a
-  release promoted meanwhile stops the next part and the pack. A tile the table has no date for is asked plainly, and
+  release promoted meanwhile stops the next part and the pack, and so does the first upload in cells, which rewrites
+  the first copy's pointer once. A tile the table has no date for is asked plainly, and
   a 304 to a plain request counts as trouble.
 - **pack** needs an answer for every tile and reads the archive back tile for tile. `tiles.tsv.gz` keeps each tile's
   `Last-Modified`, so an update can ask again with `If-Modified-Since`.

@@ -30,7 +30,7 @@ concurrency:
 env:
   # A pull request updates central Helsinki, in two parts, to test going on from a stopped run
   BOX: ${{ inputs.box || '24.92,60.16,24.96,60.18' }}
-  UPDATE: ${{ github.event_name == 'pull_request' && '--update mml/live' || inputs.update && '--update mml/live' || '' }}
+  UPDATE: ${{ (github.event_name == 'pull_request' || inputs.update) && '--update mml/live' || '' }}
 
 jobs:
   fetch:
@@ -97,7 +97,8 @@ jobs:
   pack:
     needs: fetch
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # An update downloads the live release first: the first copy's archive is 8.5 GB
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:

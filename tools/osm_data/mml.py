@@ -34,7 +34,7 @@ import urllib.request
 
 if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from pmtiles.reader import MmapSource, Reader, all_tiles
+from pmtiles.reader import MmapSource, all_tiles
 from pmtiles.tile import Compression, TileType, tileid_to_zxy, zxy_to_tileid
 from pmtiles.writer import Writer
 from tools.osm_data import maintenance, publish
@@ -197,8 +197,9 @@ def answer(status, headers, body):
 
 
 def store(path, box=None, base=None):
-    """The fetched tiles. A tile MML answered 200 for without data here is the base's (a 304). The box, and the SHA-256
-    of the live pointer an update goes on from ('' for a whole copy), are set by the first fetch."""
+    """The fetched tiles. A 304 keeps the live table's status and date, without data: a 200 without data is the base's
+    tile. The box, and the SHA-256 of the live pointer an update goes on from ('' for a whole copy), are set by the
+    first fetch."""
     db = sqlite3.connect(path)
     db.execute('CREATE TABLE IF NOT EXISTS tiles (id INTEGER PRIMARY KEY, status INTEGER NOT NULL, modified TEXT, data BLOB)')
     db.execute('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
@@ -534,17 +535,23 @@ class Base:
                 index = json.loads(self.file(dataset).read_bytes())
                 self.indexes[z] = {(cz, cx, cy): {'url': publish.shared_path({'path': sha + '.pmtiles', 'sha256': sha}),
                                                   'bytes': size, 'sha256': sha} for cz, cx, cy, size, sha in index['cells']}
-            cells = self.indexes[z]
-            entry = next((cells[q, x >> (z - q), y >> (z - q)] for q in range(z, -1, -1) if (q, x >> (z - q), y >> (z - q)) in cells), None)
+            quadrants = ((q, x >> (z - q), y >> (z - q)) for q in range(z, -1, -1))  # the tile's, then its parents'
+            entry = next((self.indexes[z][q] for q in quadrants if q in self.indexes[z]), None)
             require(entry is not None, f'No live cell holds {z}/{x}/{y}')
-        if entry['sha256'] not in self.readers:
-            if len(self.readers) >= 64:  # a cell at a time, mostly: the tiles come in order
+        # Each file is read in order beside the store's tiles, which come in order too: Reader.get would decode the
+        # directories again for every tile, about 3 ms each, hours for Finland
+        state = self.readers.get(entry['sha256'])
+        if state is None or state[2] is not None and state[2][0] > tile:  # the pack's read-back starts again
+            if state is None and len(self.readers) >= 64:  # a cell at a time, mostly
                 self.readers.pop(next(iter(self.readers)))[0].close()
-            stream = open(self.file(entry), 'rb')
-            self.readers[entry['sha256']] = stream, Reader(MmapSource(stream))
-        data = self.readers[entry['sha256']][1].get(z, x, y)
-        require(data is not None, f'The live release lacks {z}/{x}/{y}')
-        return data
+            stream = state[0] if state else open(self.file(entry), 'rb')
+            tiles = ((zxy_to_tileid(*zxy), data) for zxy, data in all_tiles(MmapSource(stream)))
+            state = self.readers[entry['sha256']] = [stream, tiles, None]
+        while state[2] is None or state[2][0] < tile:
+            state[2] = next(state[1], None)
+            require(state[2] is not None, f'The live release lacks {z}/{x}/{y}')
+        require(state[2][0] == tile, f'The live release lacks {z}/{x}/{y}')
+        return state[2][1]
 
 
 def restore(directory, expected_current):
