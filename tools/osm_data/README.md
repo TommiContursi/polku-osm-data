@@ -298,32 +298,54 @@ has none when the new square is under 1 MiB, when the square is new, or when it 
 holds the candidate's manifest, and `current.json`, once promoted, the live release's: the same bytes, not rewritten
 as the OSM data's.
 
-## Digiroad traffic volumes
+## Digiroad
 
-`digiroad.py` copies Digiroad's busy roads (docs/OPERATIONS.md). Its release has the OSM data's layout and goes up
-the same way, in cells among the shared files, into `polku-digiroad/` (Shared files, Cells). Its manifest, as
-`build` writes it:
+`digiroad.py` copies four of Digiroad's layers (docs/OPERATIONS.md). `fetch` writes each layer's features into
+`<name>.jsonl.xz`, and `build` writes the release beside them, from those files alone. Its release has the OSM data's
+layout and goes up the same way, in cells among the shared files, into `polku-digiroad/` (Shared files, Cells). Its
+manifest, as `build` writes it:
 
 ```json
-{"schema": 1, "release": "20261123T181942Z-9a1d648460f7", "built_at": "2026-11-23T18:19:42Z",
- "source": {"url": "https://avoinapi.vaylapilvi.fi/vaylatiedot/digiroad/ows", "layer": "digiroad:dr_liikennemaara",
-            "filter": "arvo>=800", "timestamp": "2026-06-16T06:29:16Z"},
- "bounds": [21.174094, 59.843474, 31.005393, 69.907816],
- "attribution": "Traffic volumes: © Fintraffic / Digiroad, from Väylävirasto's open data, CC BY 4.0",
- "license": "CC BY 4.0",
+{"schema": 1, "release": "20261123T180000Z-<hash of the file entries>", "built_at": "2026-11-23T18:00:00Z",
+ "source": {"url": "https://avoinapi.vaylapilvi.fi/vaylatiedot/digiroad/ows", "timestamp": "2026-06-16T06:29:16Z"},
+ "bounds": [19.523299, 59.818448, 31.438506, 69.975766],
+ "attribution": "© Fintraffic / Digiroad, from Väylävirasto's open data, CC BY 4.0", "license": "CC BY 4.0",
  "datasets": {"traffic": {"format": "pmtiles-json", "schema": 1, "zoom": 11, "url": "traffic.pmtiles", "bytes": 9492972,
-                          "sha256": "…", "tiles": 1904, "features": 117061}},
- "files": [{"path": "traffic.pmtiles", …}, {"path": "LICENSE.txt", …}]}
+                          "sha256": "…", "tiles": 1904, "features": 117061, "raw": "traffic.jsonl.xz",
+                          "source": {"url": "…", "layer": "digiroad:dr_liikennemaara", "filter": "arvo>=800",
+                                     "timestamp": "2026-06-16T06:29:16Z"}},
+              "private": {…, "raw": "private.jsonl.xz", "source": {"url": "…", "layer": "digiroad:tiekunnalliset_yksityistiet"}},
+              "paved": {…}, "speed": {…}},
+ "files": [{"path": "private.pmtiles", …}, {"path": "private.jsonl.xz", …}, …, {"path": "LICENSE.txt", …}]}
 ```
 
-On the host the dataset's `format` is `pmtiles-json-cells`, and its `url`, `bytes` and `sha256` are those of its
-index, `traffic.cells.json`, among the shared files (Cells). `files` lists the index in place of the archive, and each
-entry's `url` is its place among the shared files. `tools/fixtures/digiroad-traffic.pmtiles` is the archive of a WFS
-answer around Tampere, and `tools/fixtures/digiroad-traffic-cells/` its cut at a 4 KiB target.
+| Dataset | WFS layer | Pages ordered by | An element keeps |
+| --- | --- | --- | --- |
+| `private` | `tiekunnalliset_yksityistiet` | `link_id` | `restrictions`: `yes` or `no` as the road association reported it, or `unreported` |
+| `traffic` | `dr_liikennemaara`, `arvo>=800` | `id` | `aadt`: vehicles a day, 800 or more |
+| `paved` | `dr_paallystetty_tie` | `id` | `surface`: `asphalt`, `stone`, `unbound` (an unbound wearing course), `other` or `unknown`; `state`: a state road, which the style shows from a smaller scale |
+| `speed` | `dr_nopeusrajoitus` | `id_pk` | `limit`: 20 to 120 km/h |
 
-`source.timestamp` is the time of the newest single edit among the roads (Digiroad's `muokkauspv`, in Finnish time),
-not the data's date: most roads were edited earlier, those in the Tampere fixture from 2020 to 2022. Each zoom-11
-tile is gzipped JSON,
-`{"schema": 1, "elements": [{"id": 104141443, "aadt": 10550, "lines": [[[23.62121, 60.813286], …]]}]}`: every road of
-800 or more vehicles a day (`aadt`) whose extent touches the tile, whole, ordered by Digiroad's ID. `lines` holds its
-line strings in WGS84, rounded to six decimal places, without heights.
+An element keeps only what its layer's WMS style draws (`dr_yksityistietieto`, `dr_paallystetty_tie` and the
+default style of `dr_nopeusrajoitus`), and `fetch` stops at a value the style doesn't draw, on the page it came in.
+Each zoom-11 tile is gzipped JSON, `{"schema": 1, "elements": [{"id": 104141443, "aadt": 10550, "lines":
+[[[23.62121, 60.813286], …]]}]}`: every feature whose extent touches the tile, whole, ordered by its `id`, the feature's
+ID in the WFS (a number, or for private roads the link's ID). `lines` holds its line strings in WGS84, rounded to six
+decimal places, without heights.
+
+`<name>.jsonl.xz` holds the dataset's features as the WFS served them, every property and coordinates in full with
+heights, one GeoJSON feature per line in the order served. The same features give the same bytes. To build the release
+again without the WFS, save each of these files from the host, where it lies at its entry's `url` in the manifest,
+under its `path` in a folder, and run `digiroad.py build` on that folder.
+
+On the host each dataset's `format` is `pmtiles-json-cells`, and its `url`, `bytes` and `sha256` are those of its
+index, `<name>.cells.json`, among the shared files (Cells). `files` lists the index in place of the archive, and each
+entry's `url` is its place among the shared files; the `.jsonl.xz` files are shared files too. `raw` stays the file's
+`path`.
+
+A dataset's `source.timestamp` is the time of the newest single edit among its features (Digiroad's `muokkauspv`, in
+Finnish time), not the data's date: most were edited earlier. The private roads have no edit times, so their `source`
+has no `timestamp`. The manifest's `source.timestamp` is the newest of the datasets'.
+`tools/fixtures/digiroad-<name>.jsonl.xz` are the WFS's answers around Tampere (23.70–23.80 E, 61.485–61.51 N; for
+private roads, which that box has none of, 61.46–61.485 N), `digiroad-<name>.pmtiles` their archives, and
+`digiroad-traffic-cells/` the traffic archive's cut at a 4 KiB target.
