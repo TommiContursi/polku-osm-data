@@ -75,10 +75,6 @@ def element(name, feature):
             'lines': [[[round(p[0], 6), round(p[1], 6)] for p in line] for line in lines]}
 
 
-def key(feature):
-    return feature['id']
-
-
 def extent(road):
     points = [p for line in road['lines'] for p in line]
     return [min(p[0] for p in points), min(p[1] for p in points), max(p[0] for p in points), max(p[1] for p in points)]

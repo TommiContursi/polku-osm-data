@@ -21,6 +21,7 @@ T0 = datetime(2026, 11, 24, 18, 0, tzinfo=timezone.utc)
 BASE = SITE + '/polku-lipas'
 FIXTURES = Path(__file__).resolve().parents[1] / 'fixtures'
 FIXED = ('4411', '301')  # the fixtures' types: Multamäki's MTB routes and the lean-tos around them
+TYPES = dict(lipas.DATASETS)  # Polku's types; the tests copy the fixtures' two, and 4412 with none
 
 
 def part(n, reitti=1, x=443341.2822, y=6923064.2259, edited='2026-01-13T08:59:27.835Z'):
@@ -43,7 +44,7 @@ def shelter(n):
 
 def layers():
     """Two routes of three parts in all, three lean-tos, and nothing in the other types' layers."""
-    found = {layer: [] for layer, *_ in lipas.DATASETS.values()}
+    found = {TYPES['4412'][0]: []}
     found['lipas:lipas_4411_maastopyorailyreitti'] = [part(0), part(1, 1), part(1, 2, x=444000.0)]
     found['lipas:lipas_301_laavu_kota_kammi'] = [shelter(n) for n in range(3)]
     return found
@@ -55,6 +56,7 @@ class LipasTests(unittest.TestCase):
         patches = ExitStack()
         self.addCleanup(patches.close)
         patches.enter_context(patch.object(lipas, 'PAGE', 2))
+        patches.enter_context(patch.object(lipas, 'DATASETS', {t: TYPES[t] for t in ('301', '4411')}))
         self.wfs = WFS(layers())
         patches.enter_context(patch.object(wfs.urllib.request, 'urlopen', self.wfs))
         tmp = tempfile.TemporaryDirectory()
@@ -81,10 +83,10 @@ class LipasTests(unittest.TestCase):
         self.assertEqual(served(self.tmp / '4411.jsonl.xz'), self.wfs.features['lipas:lipas_4411_maastopyorailyreitti'])
         wfs.fetch(lipas, '301', self.tmp, self.sleeps.append)
         self.assertEqual(self.wfs.requests[-1]['sortBy'], 'id', 'a place has no parts')
-        wfs.fetch(lipas, '205', self.tmp, self.sleeps.append)
-        self.assertEqual(served(self.tmp / '205.jsonl.xz'), [], 'a type LIPAS has none of')
-        self.assertEqual(list(lipas.DATASETS)[:3], ['202', '203', '204'])
-        self.assertEqual(len(lipas.DATASETS), 26, "Polku's types")
+        with patch.object(lipas, 'DATASETS', TYPES), self.assertRaisesRegex(ValueError, 'gave 0 of 0 4412 features'):
+            wfs.fetch(lipas, '4412', self.tmp, self.sleeps.append)  # a type with none stops the copy, as Digiroad's
+        self.assertEqual(list(TYPES)[:3], ['202', '203', '204'])
+        self.assertEqual(len(TYPES), 25, "Polku's types but landing places")
 
     def test_a_feature_of_another_kind_or_twice_stops_the_fetch_on_its_page(self):
         for n, change in [(1, {'tyyppikoodi': 4412}), (2, {'reitti_id': None}), (0, {'id': '600'})]:
@@ -112,7 +114,7 @@ class LipasTests(unittest.TestCase):
 
     def test_each_type_is_its_own_archive_with_what_polku_reads_and_the_geometry_as_served(self):
         manifest = wfs.build(lipas, self.fetch(self.tmp / 'release'), T0)
-        self.assertEqual(sorted(manifest['datasets']), ['301', '4411'], 'a type with no features is left out')
+        self.assertEqual(sorted(manifest['datasets']), ['301', '4411'])
         tiles = self.tiles(self.tmp / 'release' / '4411.pmtiles')
         self.assertEqual({z for z, _, _ in tiles}, {9})
         self.assertEqual(sorted(xyz for xyz, t in tiles.items() if any(e['properties']['id'] == 600 for e in t['elements'])),
@@ -140,8 +142,7 @@ class LipasTests(unittest.TestCase):
                          "LIPAS's API's longitude and latitude for the same point")
 
     def test_the_fixtures_are_what_the_wfs_answers_around_multamaki_give(self):
-        self.wfs.features = {layer: served(FIXTURES / f'lipas-{name}.jsonl.xz') if name in FIXED else []
-                             for name, (layer, *_) in lipas.DATASETS.items()}
+        self.wfs.features = {TYPES[name][0]: served(FIXTURES / f'lipas-{name}.jsonl.xz') for name in FIXED}
         with patch.object(lipas, 'PAGE', 5000):
             manifest = wfs.build(lipas, self.fetch(self.tmp / 'release'), T0)
         for name in FIXED:

@@ -363,14 +363,14 @@ private roads, which that box has none of, 61.46–61.485 N), `digiroad-<name>.p
 `lipas.py` copies LIPAS's routes and places of the types Polku shows (docs/OPERATIONS.md), through `wfs.py`, the fetch
 and build Digiroad's copy uses: the same commands, files and manifest, into `polku-lipas/`. Each type is a dataset named
 by its LIPAS type code (`"4411"`, `"301"`), from its own layer (`lipas:lipas_4411_maastopyorailyreitti`) in ETRS-TM35FIN
-(EPSG:3067), ordered by `id,reitti_id` for routes and `id` for places. A type with no features is left out of the
-release, so Polku asks LIPAS for it. A feature of another type, without an `id`, a route part without a `reitti_id`, or
-with another kind of geometry (Point for places, LineString or MultiLineString for routes) stops the fetch. A feature
+(EPSG:3067), ordered by `id,reitti_id` for routes and `id` for places. A feature of another type, without an `id`, a
+route part without a `reitti_id` or a place with one, or with another kind of geometry (Point for places, LineString or MultiLineString for routes) stops the fetch. A feature
 must come once by its row's ID in the WFS, which stays the same between answers: LIPAS serves a few places twice.
 
 Each zoom-9 tile is gzipped JSON, `{"schema": 1, "elements": [{"properties": {"id": 615379, "reitti_id": 1, "nimi_fi":
 "Multamäen MTB-lenkki", …}, "geometry": {"type": "LineString", "coordinates": [[443341.2822, 6923064.2259], …]}}]}`:
-every feature whose extent touches the tile, whole, ordered by `id` and `reitti_id`, with the geometry as served and
+every feature whose extent touches the tile, whole, ordered by `id` and `reitti_id` (then by the element, for LIPAS's
+rows twice over), with the geometry as served and
 only the properties Polku reads (`id`, `reitti_id`, `nimi_fi`, `nimi_se`, `lisatieto_fi`, `www`, `kunta_nimi_fi`,
 `reitin_pituus_km`, `pintamateriaali` and `yleiso_wc`) where they aren't null. A dataset's `source.timestamp` is its
 newest `muokattu_viimeksi`, which LIPAS's WFS writes in Finnish time with a `Z`.

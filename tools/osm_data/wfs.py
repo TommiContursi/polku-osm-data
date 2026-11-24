@@ -2,9 +2,8 @@
 <name>.jsonl.xz as served, then built into a PMTiles archive of JSON tiles at one zoom, each feature whole in every tile
 its extent touches, beside LICENSE.txt and a manifest as the OSM data's, so publish.py uploads them all.
 
-A product is a module with LABEL, SOURCE, SRS, ZOOM, PAGE, PAUSE, BACK_OFF, ATTRIBUTION, LICENSE, LICENSE_TEXT,
-DATASETS ({name: (layer, filter or None, sort order, …)}) and these functions:
-- key(feature): what makes the feature one, which must come once;
+A product is a module with LABEL, SOURCE, SRS, ZOOM, PAGE, PAUSE, BACK_OFF, FOLDER, BUDGET, ATTRIBUTION, LICENSE,
+LICENSE_TEXT, DATASETS ({name: (layer, filter or None, sort order, …)}) and these functions:
 - element(name, feature): what its tiles keep of it, which stops the copy for a feature it doesn't expect;
 - extent(element): its box in WGS84, west, south, east and north;
 - rank(element): its place in a tile;
@@ -51,7 +50,7 @@ def page(product, name, start, sleep=time.sleep):
 
 def fetch(product, name, directory, sleep=time.sleep):
     """Every feature of the dataset as the WFS serves it, one JSON line each, into <name>.jsonl.xz as its pages come.
-    Each feature is checked as it comes, must come once, and the count must be the WFS's own."""
+    Each feature is checked as it comes, must come once by its ID in the WFS, and the count must be the WFS's own."""
     seen, matched = set(), None
     with lzma.open(Path(directory) / f'{name}.jsonl.xz', 'wb') as raw:
         while matched is None or len(seen) < matched:
@@ -61,12 +60,11 @@ def fetch(product, name, directory, sleep=time.sleep):
             require(type(body.get('numberMatched')) is int and matched in (None, body['numberMatched']),
                     f'{product.LABEL} changed its count during the fetch')
             matched = body['numberMatched']
-            require(body.get('features') or not matched, f'{product.LABEL} gave {len(seen)} of {matched} {name} features')
+            require(body.get('features'), f'{product.LABEL} gave {len(seen)} of {matched} {name} features')
             for feature in body['features']:
                 product.element(name, feature)
-                key = product.key(feature)
-                require(key not in seen, f'{product.LABEL} repeated {key}')
-                seen.add(key)
+                require(feature['id'] not in seen, f'{product.LABEL} repeated {feature["id"]}')
+                seen.add(feature['id'])
                 raw.write(json.dumps(feature, ensure_ascii=False, separators=(',', ':')).encode() + b'\n')
             print(f'{product.LABEL} {name}: {len(seen)} of {matched}', flush=True)
     require(len(seen) == matched, f'{product.LABEL} gave {len(seen)} of {matched} {name} features')
@@ -79,8 +77,7 @@ def union(boxes):
 
 def build(product, directory, now):
     """The release from the fetched features in directory, <name>.jsonl.xz: an archive per dataset, LICENSE.txt and a
-    manifest as the OSM data's, naming the fetched features too, so publish.py uploads them all. A layer with no
-    features is left out, so a reader asks the WFS for it."""
+    manifest as the OSM data's, naming the fetched features too, so publish.py uploads them all."""
     directory, zoom = Path(directory), product.ZOOM
     datasets, files, boxes = {}, {}, []
 
@@ -101,9 +98,7 @@ def build(product, directory, now):
                     for y in range(mml.row(extent[3], zoom), mml.row(extent[1], zoom) + 1):
                         tiles.setdefault(zxy_to_tileid(zoom, x, y), []).append(element)
                 extents.append(extent)
-        if not extents:
-            print(f'{product.LABEL} {name}: no features, left out', flush=True)
-            continue
+        require(extents, f'No {name} features')
         bounds = union(extents)
         source = ({'url': product.SOURCE, 'layer': layer} | ({'filter': where} if where else {})
                   | ({'timestamp': stamp(edited)} if edited else {}))

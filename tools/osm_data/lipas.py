@@ -8,6 +8,7 @@ route's parts (reitti_id, which Polku's share links name) are the same from eith
 The fetch asks for one page at a time, with a pause between pages and one retry after a longer one."""
 
 from datetime import datetime
+import json
 import math
 from pathlib import Path
 import sys
@@ -25,11 +26,12 @@ ZOOM = 9  # Polku's tiles of LIPAS (js/lipas.js)
 PAGE, PAUSE, BACK_OFF = 5000, 5, 300  # features a request, and seconds between pages and before the one retry
 FOLDER = 'polku-lipas'
 BUDGET = 1024**3  # live, its predecessor, candidate and staging: four copies of about 100 MB (est)
-# Polku's types (js/config.js, LIPAS_TYPES) and their layers, lines and points. A route's parts are ordered by its id and part.
+# Polku's types (js/config.js, LIPAS_TYPES) and their layers, lines and points. A route's parts are ordered by its id and
+# part. Landing places (205, rantautumispaikka) had none on 2026-11-24, so they aren't copied and Polku asks LIPAS.
 LINES = {4401: 'kuntorata', 4402: 'latu', 4403: 'kavelyreitti', 4404: 'luontopolku', 4405: 'retkeilyreitti',
           4406: 'monikayttoreitti', 4411: 'maastopyorailyreitti', 4412: 'pyorailyreitti', 4421: 'moottorikelkkareitti',
           4451: 'melontareitti', 4452: 'vesiretkeilyreitti'}
-POINTS = {202: 'telttailu_ja_leiriytyminen', 203: 'veneilyn_palvelupaikka', 204: 'luontotorni', 205: 'rantautumispaikka',
+POINTS = {202: 'telttailu_ja_leiriytyminen', 203: 'veneilyn_palvelupaikka', 204: 'luontotorni',
           206: 'ruoanlaittopaikka', 207: 'opastuspiste', 301: 'laavu_kota_kammi', 302: 'tupa',
           304: 'ulkoilumaja_hiihtomaja', 1550: 'luistelureitti', 3220: 'uimaranta', 3230: 'uimapaikka',
           4810: 'ampumarata', 4820: 'ampumaurheilukeskus', 4840: 'jousiammuntamaastorata'}
@@ -71,13 +73,9 @@ def element(name, feature):
             'geometry': {'type': geometry['type'], 'coordinates': geometry['coordinates']}}
 
 
-def key(feature):
-    """The WFS's ID of the row, which stays the same from one answer to the next: LIPAS has a few places twice."""
-    return feature['id']
-
-
 def rank(e):
-    return e['properties']['id'], e['properties'].get('reitti_id', 0)
+    """By place and part, then by the whole element: LIPAS's rows twice over come in no set order."""
+    return e['properties']['id'], e['properties'].get('reitti_id', 0), json.dumps(e, sort_keys=True)
 
 
 # ETRS-TM35FIN to longitude and latitude: Krüger's series on GRS80, as Polku's tm35ToLonLat() (js/geo.js)

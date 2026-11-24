@@ -2,7 +2,7 @@ name: Polku LIPAS
 run-name: LIPAS / ${{ inputs.operation }}
 
 # Copies LIPAS's routes and places of the types Polku shows into PMTiles beside the features as served, and uploads a
-# candidate in cells. By hand until one run has worked; then weekly. Its tests run with the others in osm-data.yml.
+# candidate in cells, by hand. Its tests run with the others in osm-data.yml.
 on:
   workflow_dispatch:
     inputs:
