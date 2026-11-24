@@ -45,15 +45,14 @@ SEARCH = 'search-gzt'  # a dataset whose url is a search index's root, which nam
 # SFTP channels at once on the one connection, gently on the host, for a release's many small files: each costs round
 # trips, not bandwidth
 CHANNELS = 4
-BATCH = 64  # cells cut again from an archive, sent at once: at most 64 MiB in memory
-RECONNECTS = 5  # a dropped connection: connect again and go on, after 30 s, 60 s, 120 s… up to 5 minutes
+BATCH = 64  # cells cut again from an archive, sent 4 at once in batches of 64: at most 64 MiB in memory
+RECONNECTS = 5  # times a dropped connection reconnects, after a pause that doubles from 30 s, up to 5 minutes
 try:
-    from paramiko import SSHException
+    from paramiko import AuthenticationException, SSHException
 except ImportError:  # (the checks of this module that need no SFTP)
-    SSHException = OSError
+    SSHException = AuthenticationException = OSError
 CHANNEL_ERRORS = (OSError, EOFError, SSHException)
-# the connection's errors, not a file's: a reset, a closed session or a timeout (paramiko closes a dropped connection's
-# channels before it marks it inactive, so is_active() may not know yet)
+# the connection's errors, not a file's: a reset, a closed session, a refused connection or a timeout
 DROPS = (EOFError, SSHException, ConnectionError, TimeoutError)
 
 
@@ -361,6 +360,10 @@ class SFTPFiles:
     def close_channel(self):
         self.sftp.close()
 
+    def closed(self):
+        """The SFTP channel is closed: a dropped connection closes it, and its next request is a plain OSError."""
+        return self.sftp.sock.closed
+
     def close(self):
         try:
             self.sftp.close()
@@ -398,7 +401,8 @@ def connection(config):
         yield remote
     except Exception as error:
         message = str(error).replace(password, '[redacted]').replace(user, '[redacted]')
-        if remote is not None and isinstance(error, DROPS):
+        gone = isinstance(error, DROPS) or remote is not None and isinstance(error, CHANNEL_ERRORS) and remote.closed()
+        if gone and not isinstance(error, AuthenticationException):  # (a refused login is never tried again)
             raise Dropped(message) from None
         raise RuntimeError(message) from None
     finally:
@@ -775,23 +779,23 @@ def upload(directory, resume=False, folder=None, budget=None):
     already hold isn't sent again. With folder, into that product's folder beside polku-osm, once its hosting is in;
     budget is the folder's size limit, the OSM data's by default. A dropped connection connects again and goes on from
     its stage: a file verified and moved among the shared files isn't sent again."""
+    require(os.environ.get('OSM_ALLOW_PUBLISH') == 'true', 'Publication requires approved OSM_ALLOW_PUBLISH=true')
+    directory = Path(directory)
+    raw, manifest = hosted(directory)  # (cut once, not again on each reconnect)
     for attempt in range(RECONNECTS + 1):
         try:
-            return upload_once(directory, resume, folder, budget, again=attempt > 0)
+            return upload_once(directory, raw, manifest, resume, folder, budget, again=attempt > 0)
         except Dropped as error:
             if attempt == RECONNECTS:
                 raise
             pause = min(30 * 2 ** attempt, 300)
-            print(f'The connection dropped ({error}); connecting again in {pause} s', flush=True)
+            print(f'The connection dropped ({error}); reconnecting in {pause} s', flush=True)
             time.sleep(pause)
 
 
-def upload_once(directory, resume, folder, budget, again):
+def upload_once(directory, raw, manifest, resume, folder, budget, again):
     """upload() over one connection; again, after a dropped one, goes on from this release's stage if there is one."""
-    require(os.environ.get('OSM_ALLOW_PUBLISH') == 'true', 'Publication requires approved OSM_ALLOW_PUBLISH=true')
     budget, product = budget or maintenance.BUDGET, folder or 'OSM'
-    directory = Path(directory)
-    raw, manifest = hosted(directory)
     config = settings()
     with connection(config) as ftp:
         url = into_folder(ftp, config[-2], folder)
@@ -825,9 +829,9 @@ def upload_once(directory, resume, folder, budget, again):
         naming = set(places.values()) | {place(release, entry) for entry in indexed}
         expected = send | {'manifest.json': len(raw)}
         incoming = sum(expected.values()) + sum(entry['bytes'] for entry in send_cells.values())
-        resume = resume or again and bool(recovery_candidates(ftp, release))
+        candidates = recovery_candidates(ftp, release) if resume or again else []
+        resume = resume or bool(candidates)  # after a dropped connection, its stage if it made one
         if resume:
-            candidates = recovery_candidates(ftp, release)
             require(final in candidates or len(candidates) == 1, 'Resume needs exactly one existing stage; inspect before proceeding')
             stage = final if final in candidates else candidates[0]
             require(ftp.kind(stage) == 'directory', 'Resume needs a real directory')

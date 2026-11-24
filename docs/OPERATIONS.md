@@ -106,14 +106,14 @@ reads this layout: older code refuses such a candidate and changes nothing.
 cells of at most 1 MiB and writes their index, `<name>.cells.json`, beside the archive. The index goes
 up in the archive's place, and a cell goes to `files/` only when `files/` doesn't hold it yet: about a
 quarter of the bytes in a week (measured 2–8 Nov 2026). The cells go 4 at once over the connection's
-channels, 64 at a time. The cut takes some 15 minutes, and the first upload of cells sends every cell
+channels, in batches of 64. The cut takes some 15 minutes, and the first upload of cells sends every cell
 once; if it runs out of time, **resume-existing** goes on. Turn it on
 only once Polku's reader reads cells and its promotion is pinned to a commit that does: older readers
 don't accept the format.
 
-A connection that drops part way is opened again after 30 s, then 60 s, 120 s, 240 s and 300 s, and
-the upload goes on from its staging folder: a file already moved to `files/` isn't sent again. A sixth
-drop stops the run.
+A connection that drops part way reconnects after 30 s, then 60 s, 120 s, 240 s and 300 s, and the
+upload goes on from its staging folder: a file already moved to `files/` isn't sent again. A host that
+refuses a connection is tried again the same way; a refused login isn't. A sixth drop stops the run.
 
 An interrupted upload is never started again from nothing. **inspect-existing**, with the
 build's run ID in **release**, reports the staged files' sizes without changing the host.
@@ -197,7 +197,7 @@ Learned from the first runs, 2026-11-22 to 24:
 - **The host's cost is per file, not per byte:** about 1.5 s a file over one channel, so many small
   files, and every upload's cells, go over several channels (#38).
 - **A connection can drop mid-run:** one reset after 4 hours and 6,752 cells ended a terrain upload.
-  The upload now connects again and goes on.
+  The upload now reconnects and goes on.
 - **One job writes to the host at a time** where it can. Downloads from it slow down and time out
   while uploads run (#40).
 

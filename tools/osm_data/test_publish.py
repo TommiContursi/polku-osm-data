@@ -117,8 +117,8 @@ class Host:
             def prot_p(self):
                 self.protected = True
             def abs(self, path):
-                if host.dropped:
-                    raise EOFError('Server connection dropped')
+                if host.dropped:  # as paramiko's closed channel answers each request after the drop
+                    raise OSError('Socket is closed')
                 if not self.protected:
                     raise AssertionError('unencrypted data operation')
                 return posixpath.normpath(posixpath.join(self.path, path))
@@ -216,6 +216,8 @@ class Host:
                 return other
             def close_channel(self):
                 pass
+            def closed(self):
+                return host.dropped
             def quit(self):
                 pass
             close = quit
@@ -1560,7 +1562,7 @@ class CellsTests(unittest.TestCase):
         publish.upload(directory)
         _, hosted = publish.hosted(directory)
         self.assertGreater(len(self.cells(hosted)), publish.CHANNELS)
-        self.assertEqual(self.host.channels, publish.CHANNELS, "the cells' channels, opened once for each batch of cells")
+        self.assertEqual(self.host.channels, publish.CHANNELS, "one batch of cells: its channels, opened once")
 
     def test_a_dropped_connection_connects_again_and_sends_only_the_cells_not_yet_moved(self):
         directory = self.build('new-release', self.tiles)
@@ -1578,10 +1580,30 @@ class CellsTests(unittest.TestCase):
     def test_a_connection_that_keeps_dropping_stops_after_a_few_tries(self):
         directory = self.build('new-release', self.tiles)
         self.host.drop_at = set(range(1, 1000))
-        with patch.object(publish.time, 'sleep') as sleep, self.assertRaisesRegex(publish.Dropped, 'connection dropped'):
+        with patch.object(publish.time, 'sleep') as sleep, self.assertRaises(publish.Dropped):
             publish.upload(directory)
         self.assertEqual([c.args[0] for c in sleep.call_args_list], [30, 60, 120, 240, 300])
         self.assertEqual(self.host.pointer_writes, 0)
+
+    def test_a_reconnect_the_host_refuses_is_tried_again_but_a_refused_login_is_not(self):
+        directory = self.build('new-release', self.tiles)
+        _, hosted = publish.hosted(directory)
+        self.host.drop_at = {3}
+        real, refusals = self.host.ftp, [ConnectionRefusedError(111, 'Connection refused')]
+        def ftp(*args):
+            if self.host.connections == 1 and refusals:  # the first reconnect
+                raise refusals.pop()
+            return real(*args)
+        with patch.object(publish, 'open_sftp', ftp), patch.object(publish.time, 'sleep') as sleep:
+            publish.upload(directory)
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [30, 60])
+        self.assertEqual(json.loads(self.host.files[ROOT + '/candidates/current.json'])['release'], hosted['release'])
+        refused = publish.AuthenticationException('Authentication failed.')
+        with patch.object(publish, 'open_sftp', side_effect=refused), patch.object(publish.time, 'sleep') as sleep, \
+                self.assertRaisesRegex(RuntimeError, 'Authentication failed') as raised:
+            publish.upload(directory)
+        self.assertNotIsInstance(raised.exception, publish.Dropped)
+        sleep.assert_not_called()
 
     def cells_named(self, hosted, directory):
         index, = publish.indexes(hosted)
