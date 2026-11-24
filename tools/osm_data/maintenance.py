@@ -130,7 +130,7 @@ def shared_named(ftp, release, manifest, have=None):
     """The shared files a manifest names, the cells of its indexes among them. Given have, an index the shared files
     don't hold yet names nothing: its cells go up after it."""
     return ({p.place(release,f) for f in manifest['files'] if 'url' in f}
-            | {p.place(release,c) for c in p.hosted_cells(ftp,manifest,have)})
+            | {p.place(release,c) for c in p.hosted_named(ftp,manifest,have)})
 
 
 def named_by(ftp, base, release, have=None):
