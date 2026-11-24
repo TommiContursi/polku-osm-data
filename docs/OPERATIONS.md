@@ -192,7 +192,7 @@ anything.
 
 ## The host
 
-The data is served from `https://ducksoft.fi/polku-osm/`, `https://ducksoft.fi/polku-routing/`, `https://ducksoft.fi/polku-mml/`
+The data is served from `https://ducksoft.fi/polku-osm/`, `https://ducksoft.fi/polku-routing/`, `https://ducksoft.fi/polku-mml/`,
 `https://ducksoft.fi/polku-digiroad/` and `https://ducksoft.fi/polku-terrain/`.
 Each folder has its own `.htaccess`: [`hosting.htaccess`](../tools/osm_data/hosting.htaccess),
 installed by hand, [`routing.htaccess`](../tools/osm_data/routing.htaccess) (Routing data,

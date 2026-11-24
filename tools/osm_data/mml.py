@@ -422,12 +422,7 @@ def upload(directory):
     again. A test box never replaces a larger candidate: retention would then remove that copy."""
     require(os.environ.get('OSM_ALLOW_PUBLISH') == 'true', 'Publication requires approved OSM_ALLOW_PUBLISH=true')
     require(os.environ.get('OSM_CELLS') == 'true', 'The copy goes up in cells: set OSM_CELLS=true')
-    manifest = publish.validate(json.loads(Path(directory, 'manifest.json').read_bytes()))
-    old = public_bytes(publish.product_url(publish.public_url(os.environ.get('OSM_PUBLIC_URL', '')), FOLDER) + '/candidates/current.json')
-    if old is not None:
-        old, new = json.loads(old)['bounds'], manifest['bounds']
-        require(new[0] <= old[0] and new[1] <= old[1] and new[2] >= old[2] and new[3] >= old[3],
-                f'The candidate covers {old}, more than this release; upload a box that covers it')
+    publish.require_covers(FOLDER, publish.validate(json.loads(Path(directory, 'manifest.json').read_bytes())))
     config = publish.settings()
     with publish.connection(config) as ftp:
         point_live(ftp, publish.product_folder(ftp, config[-2], FOLDER))

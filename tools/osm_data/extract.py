@@ -42,12 +42,15 @@ class Remote:
                     whole = re.fullmatch(rf'bytes {offset}-{end}/(\d+)', response.headers.get('Content-Range', ''))
                     require(response.status == 206 and whole, f'{self.url}: not the Range asked for')
                     version = (response.headers.get('Last-Modified'), response.headers.get('ETag'), whole[1])
+                    require(version[0], f'{self.url} has no Last-Modified')
                     require(self.version in (None, version), f'{self.url} changed during the extract')
                     self.version = version
                     body = response.read()
                     require(len(body) == length, f'{self.url}: {len(body)} of {length} bytes')
                     return body
             except (OSError, http.client.HTTPException) as error:  # HTTP errors and bodies cut short too
+                if isinstance(error, HTTPError):
+                    error.close()
                 if isinstance(error, HTTPError) and error.code < 500 and error.code != 429 or attempt == ATTEMPTS:
                     raise RuntimeError(f'{self.url} at {offset}: {error}') from None
                 print(f'{self.url} at {offset}: {error}; again in {BACK_OFF} s', flush=True)

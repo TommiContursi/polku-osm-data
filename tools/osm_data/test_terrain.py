@@ -152,6 +152,9 @@ class TerrainTests(unittest.TestCase):
             publish.promote_candidate(found['release'], found['sha256'], self.tmp / 'promote', folder=terrain.FOLDER)
             self.assertEqual(json.loads(host.files[BASE + '/current.json']), publish.current(manifest))
             self.assertIsNone(publish.candidate(publish.product_url(ENV['OSM_PUBLIC_URL'], terrain.FOLDER)), 'the candidate is live')
+            small = manifest | {'bounds': [20.0, 60.0, 21.0, 61.0]}  # a test box
+            with self.assertRaisesRegex(ValueError, r'current.json covers \[0.0, 40.0, 40.0, 75.0\], more than this release'):
+                publish.require_covers(terrain.FOLDER, small)
 
 
 if __name__ == '__main__':

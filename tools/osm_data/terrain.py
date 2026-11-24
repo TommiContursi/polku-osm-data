@@ -27,7 +27,7 @@ SOURCES = 'https://download.mapterhorn.com/attribution.json'  # each source's li
 BOX = (4.0, 53.8, 31.7, 71.3)  # west, south, east, north: Finland, Sweden, Norway, Denmark and the Baltic countries
 ZOOMS = range(0, 13)
 FOLDER = 'polku-terrain'
-BUDGET = 16 * 1024**3  # about 7.2 GB, and the cells a new release changes
+BUDGET = 16 * 1024**3  # 7.25 GB, and the cells a new release changes
 CREDIT = '© Mapterhorn'
 LICENSE = '''Terrain from Mapterhorn (https://mapterhorn.com), its tiles unchanged: WebP terrarium elevation tiles from
 {source}, last modified {modified}, zooms {zooms}, over {box} (west, south, east, north).
@@ -41,7 +41,7 @@ def archive_name(z):
     return f'terrain-{z}.pmtiles'
 
 
-def build(output, box=BOX, zooms=ZOOMS, remote=None, sources=None, now=None):
+def build(output, box=BOX, zooms=ZOOMS, remote=None, now=None):
     """The release: an archive a zoom, Mapterhorn's attribution.json, the licence and the manifest."""
     now, output = now or datetime.now(timezone.utc), Path(output)
     require(not output.exists(), 'The release folder exists')
@@ -49,10 +49,9 @@ def build(output, box=BOX, zooms=ZOOMS, remote=None, sources=None, now=None):
     h = remote.header
     require(h['tile_type'] == TileType.WEBP and h['tile_compression'] == Compression.NONE and h['max_zoom'] >= zooms[-1],
             f'{SOURCE} is no longer WebP terrain to zoom {zooms[-1]}')
-    if sources is None:
-        request = urllib.request.Request(SOURCES, headers={'User-Agent': mml.AGENT})
-        with urllib.request.urlopen(request, timeout=60) as response:
-            sources = response.read()
+    request = urllib.request.Request(SOURCES, headers={'User-Agent': mml.AGENT})
+    with urllib.request.urlopen(request, timeout=60) as response:
+        sources = response.read()
     require(json.loads(sources), 'Mapterhorn listed no sources')
     output.mkdir(parents=True)
     counts = {}
@@ -105,6 +104,7 @@ def main():
             publish.install_hosting(FOLDER)
         elif args.command == 'upload':
             require(os.environ.get('OSM_CELLS') == 'true', 'The copy goes up in cells: set OSM_CELLS=true')
+            publish.require_covers(FOLDER, publish.validate(json.loads((args.directory / 'manifest.json').read_bytes())))
             publish.upload(args.directory, folder=FOLDER, budget=BUDGET)
         elif args.command == 'candidate':
             found = publish.candidate(publish.product_url(publish.public_url(os.environ.get('OSM_PUBLIC_URL', '')), FOLDER))
