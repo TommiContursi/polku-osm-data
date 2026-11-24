@@ -78,6 +78,7 @@ class Host:
         self.denied_login = False
         self.connections = self.pointer_writes = self.channels = self.cells_sent = 0
         self.drop_at, self.dropped = set(), False  # the connection drops as the cell uploads counted here begin
+        self.drop_once = set()  # and as a file of one of these names is first stored
         self.pointer_cache = 'no-cache'
         self.uploads = []
         self.unsafe = set()
@@ -164,6 +165,10 @@ class Host:
                 name = self.abs(cmd.removeprefix('STOR '))
                 if host.fail_upload and name.endswith('ways.pmtiles'):
                     raise OSError('upload failed')
+                if posixpath.basename(name) in host.drop_once:
+                    host.drop_once.discard(posixpath.basename(name))
+                    host.dropped = True
+                    raise EOFError('Server connection dropped')
                 if name.endswith('.pmtiles') and publish.SHARED_NAME.fullmatch(posixpath.basename(name)):
                     host.cells_sent += 1
                     if host.cells_sent in host.drop_at:
@@ -1576,6 +1581,14 @@ class CellsTests(unittest.TestCase):
         for entry in self.cells(hosted):
             self.assertEqual(hashlib.sha256(self.host.files[ROOT + '/' + publish.shared_path(entry)]).hexdigest(), entry['sha256'])
         self.assertFalse([d for d in self.host.dirs if '.upload-' in d], 'the stage became the release')
+
+    def test_a_stage_made_just_before_the_connection_dropped_gets_its_record(self):
+        directory = self.build('new-release', self.tiles)
+        self.host.drop_once = {publish.maintenance.UPLOAD}
+        with patch.object(publish.time, 'sleep') as sleep:
+            publish.upload(directory)
+        sleep.assert_called_once_with(30)
+        self.assertIn(ROOT + '/releases/new-release/' + publish.maintenance.UPLOAD, self.host.files)
 
     def test_a_connection_that_keeps_dropping_stops_after_a_few_tries(self):
         directory = self.build('new-release', self.tiles)

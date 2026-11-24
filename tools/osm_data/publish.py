@@ -777,7 +777,7 @@ def restore(directory, expected_current, folder):
 def upload(directory, resume=False, folder=None, budget=None):
     """Upload, verify and name the candidate; the live pointer is left to Polku's promotion. A file the shared files
     already hold isn't sent again. With folder, into that product's folder beside polku-osm, once its hosting is in;
-    budget is the folder's size limit, the OSM data's by default. A dropped connection connects again and goes on from
+    budget is the folder's size limit, the OSM data's by default. A dropped connection reconnects and goes on from
     its stage: a file verified and moved among the shared files isn't sent again."""
     require(os.environ.get('OSM_ALLOW_PUBLISH') == 'true', 'Publication requires approved OSM_ALLOW_PUBLISH=true')
     directory = Path(directory)
@@ -850,6 +850,9 @@ def upload_once(directory, raw, manifest, resume, folder, budget, again):
             if stage == final:
                 require(all(ftp.kind(final + '/' + name) == 'file' for name in expected), 'Release needs regular files')
             else:
+                # made just before the connection dropped, without its record: retention manages a stage only with one
+                if again and maintenance.UPLOAD not in maintenance.children(ftp, stage):
+                    maintenance.mark_upload(ftp, stage, manifest, raw)
                 resume_upload(ftp, stage, directory, manifest, raw, send)
         else:
             if 'releases' not in {posixpath.basename(p) for p in ftp.nlst()}:
