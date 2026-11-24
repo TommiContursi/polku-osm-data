@@ -50,7 +50,7 @@ def find(directory, key, area=None, dirs=()):
     if row is None:
         return {}, len(key) > 1  # no such group: nothing, completely, unless the key is one letter
     body = search.read_index(read({'path': row[2] + search.SUFFIX, 'bytes': row[1], 'sha256': row[2]}))
-    return lookup(body, lambda r: gzip.decompress(read({'path': r[3] + search.SUFFIX, 'sha256': r[3]})).decode(),
+    return lookup(body, lambda r: r[2] if len(r) == 3 else gzip.decompress(read({'path': r[3] + search.SUFFIX, 'sha256': r[3]})).decode(),
                          key, area)
 
 
@@ -61,9 +61,9 @@ def matches(text, key):
 
 def lookup(body, read, key, area=None):
     """What a query's key reaches in its group, as a reader reads it: {id: line} of the records with a key starting with
-    key, and whether that is all of them. body is the group's index; read(row) gives a file's text; area is the tile
-    (AREA) a common word split by area is read for."""
-    rows = {(prefix, kind): row for row in body['files'] for prefix, kind, _, _ in [row]}
+    key, and whether that is all of them. body is the group's index; read(row) gives a file's text (a text row's own);
+    area is the tile (AREA) a common word split by area is read for."""
+    rows = {(row[0], row[1]): row for row in body['files'] + body['texts']}
     prefix, texts, complete = search.group(key), [], len(key) > 1  # a letter's group holds only that word: k's are in ka, kb…
     while True:
         if (prefix, 'L') in rows:
@@ -199,9 +199,10 @@ class LayoutTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(tmp.name)
-        patcher = patch.object(search, 'TARGET', 600)  # a few records a file
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for name, value in (('TARGET', 600), ('INLINE', 250)):  # a few records a file; the smallest in their index
+            patcher = patch.object(search, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.places = records([rec(f'N{i}', f'Koski{"abcdefgh"[i % 8]}{i} Lake', 25 + i / 100, 61, round(i / 1000, 2))
                                for i in range(120)]
                               + [rec(f'W{i}', 'Koski', 20 + i / 10 * (i % 2) + i % 2 * 9, 60 + i % 2 * 5, 0.1)
@@ -221,6 +222,19 @@ class LayoutTests(unittest.TestCase):
         manifest, counts = self.build('one', self.places)
         self.assertEqual(counts, {'kept': 0, 'made': 0, 'new': manifest['datasets']['search']['groups']})
         self.everything_is_found(self.tmp / 'one', self.places)
+        read = search.local_reader(self.tmp / 'one')
+        bodies = [search.read_index(read({'path': g[2] + search.SUFFIX, 'sha256': g[2]}))
+                  for g in search.read_index(read(search.root_of(manifest)))['groups']]
+        self.assertTrue(all(len(search.gz(t)) < search.INLINE for b in bodies for _, _, t in b['texts']))
+        self.assertTrue(any(b['texts'] for b in bodies) and any(b['files'] for b in bodies), 'small ones in the index, the rest files')
+        with patch.object(search, 'INLINED', 600):  # a group's small files in its index up to the cap, the rest files
+            capped, _ = self.build('capped', self.places)
+        read = search.local_reader(self.tmp / 'capped')
+        bodies = [search.read_index(read({'path': g[2] + search.SUFFIX, 'sha256': g[2]}))
+                  for g in search.read_index(read(search.root_of(capped)))['groups']]
+        self.assertTrue(all(sum(len(search.gz(t)) for _, _, t in b['texts']) <= 600 for b in bodies))
+        self.assertTrue(any(size < search.INLINE for b in bodies for _, _, size, _ in b['files']), 'some small ones stay files')
+        self.everything_is_found(self.tmp / 'capped', self.places)
         found, complete = find(self.tmp / 'one', 'koskia')
         self.assertTrue(complete and set(found) == {f'N{i}' for i in range(0, 120, 8)}, 'a long key reads one whole file')
         found, complete = find(self.tmp / 'one', 'kos')
@@ -248,7 +262,7 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual((counts['made'], counts['new']), (0, 1), 'only Vuokatti\'s group is new')
         new = {p.name for p in (self.tmp / 'two').iterdir()} - {p.name for p in (self.tmp / 'one').iterdir()}
         self.assertEqual(len(self.changed_indexes(first, second)), 3, 'ko, la (Lake) and the new vu')
-        self.assertEqual(len(new - self.changed_indexes(first, second) - {'manifest.json'}), 1, "and vu's one file")
+        self.assertEqual(new - self.changed_indexes(first, second) - {'manifest.json'}, set(), "vu's one record is in its index")
         self.everything_is_found(self.tmp / 'two', now, [self.tmp / 'one'])
         for key in ('koskid3', 'koski'):
             self.assertNotIn('N3', find(self.tmp / 'two', key, search.tile(25.03, 61), [self.tmp / 'one'])[0], 'not by its old name')
@@ -326,7 +340,8 @@ class HostTests(unittest.TestCase):
         places = {f'N{i}': rec(f'N{i}', f'Paikka{i}', 25, 61) for i in range(40)}
         with tempfile.TemporaryDirectory() as tmp, patch.dict('os.environ', ENV | {'OSM_SHARED_FILES': 'true'}, clear=True), \
                 patch.object(publish, 'open_sftp', host.ftp), patch.object(publish.urllib.request, 'urlopen', host.http), \
-                patch.object(search.urllib.request, 'urlopen', host.http), patch.object(search, 'TARGET', 300):
+                patch.object(search.urllib.request, 'urlopen', host.http), patch.object(search, 'TARGET', 300), \
+                patch.object(search, 'INLINE', 0):
             tmp = Path(tmp)
             first, _ = search.build(places, {}, tmp / 'one', None, T0)
             publish.upload(tmp / 'one', folder=search.FOLDER, budget=search.BUDGET)
