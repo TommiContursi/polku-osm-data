@@ -28,7 +28,7 @@ import sqlite3
 import sys
 import threading
 import time
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 import urllib.request
 
@@ -54,6 +54,7 @@ TIMEOUT, SLOW = 10, 2  # seconds; an answer slower than SLOW counts as trouble
 CALM, RAISE = 30, 1  # after CALM seconds without trouble the rate rises by RAISE, up to RATE
 GIVE_UP = 300  # seconds without one good answer, or of 429s at the floor rate, before the run stops
 ATTEMPTS = 3  # per tile in one run; a tile still unanswered waits for the next run
+PATIENCE = 6  # tries in a row without a byte more before a download of the live release fails: about 12 min
 EMPTY = gzip.compress(b'', 6, mtime=0)  # MML's 404: an empty tile
 KEPT = ('tile', 'empty', 'recorded', 'unchanged')  # answer()'s kinds that a tile keeps
 TABLE, LICENSE = 'tiles.tsv.gz', 'LICENSE.txt'
@@ -496,7 +497,8 @@ class Base:
         if not path.exists():
             part = path.with_suffix('.part')
             part.write_bytes(b'')
-            for attempt in range(1, ATTEMPTS + 1):  # a stalled download goes on from where it stopped
+            idle = 0  # tries in a row that got no further: a busy host slows a download of 8.5 GB, but it moves
+            while True:  # a stalled download goes on from where it stopped
                 have = part.stat().st_size
                 headers = {'User-Agent': AGENT} | ({'Range': f'bytes={have}-'} if have else {})
                 try:
@@ -508,11 +510,15 @@ class Base:
                     if part.stat().st_size < entry['bytes']:
                         raise ConnectionError('cut short')
                     break
-                except (TimeoutError, ConnectionError, http.client.HTTPException) as error:
-                    if attempt == ATTEMPTS:
+                except (TimeoutError, ConnectionError, http.client.HTTPException, URLError) as error:
+                    if isinstance(error, HTTPError) and error.code < 500:
                         raise
-                    print(f"{entry['url']}: {type(error).__name__} at {part.stat().st_size} bytes; going on", flush=True)
-                    time.sleep(10)
+                    idle = 0 if part.stat().st_size > have else idle + 1
+                    if idle >= PATIENCE:
+                        raise
+                    wait = min(300, 15 * 2 ** idle)
+                    print(f"{entry['url']}: {type(error).__name__} at {part.stat().st_size} bytes; going on in {wait} s", flush=True)
+                    time.sleep(wait)
             require(part.stat().st_size == entry['bytes'] and publish.digest_file(part) == entry['sha256'],
                     f"{entry['url']} differs from the live manifest ({part.stat().st_size} of {entry['bytes']} bytes)")
             part.rename(path)

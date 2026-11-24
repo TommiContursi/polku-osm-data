@@ -444,6 +444,43 @@ class PackAndUploadTests(unittest.TestCase):
         self.assertEqual(asked, [None, 'bytes=100-'], 'a body cut short goes on too')
         self.assertEqual(path.read_bytes(), data)
 
+    def test_a_download_goes_on_while_it_moves_and_gives_up_only_when_it_doesnt(self):
+        self.first_copy()
+        base = mml.Base.live(self.tmp / 'live')
+        archive = base.manifest['datasets']['taustakartta']
+        data, real, asked, step = self.host.files[FOLDER + '/' + archive['url']], publish.urllib.request.urlopen, [], [50]
+
+        class Slow(io.BytesIO):  # the host answers `step` bytes, then times out
+            status = 206
+            def read(self, size=-1):
+                if self.tell() >= step[0]:
+                    raise TimeoutError('The read operation timed out')
+                return super().read(min(size if size >= 0 else step[0], step[0] - self.tell()))
+
+        def urlopen(request, **kwargs):
+            if not request.full_url.endswith(archive['url']):
+                return real(request, **kwargs)
+            start = int((request.get_header('Range') or 'bytes=0-')[6:-1])
+            asked.append(start)
+            answer = Slow(data[start:])
+            answer.status = 206 if start else 200
+            return answer
+
+        sleeps = []
+        with patch.object(mml.urllib.request, 'urlopen', urlopen), patch.object(mml.time, 'sleep', sleeps.append):
+            path = base.file(archive)
+        self.assertEqual(path.read_bytes(), data)
+        self.assertGreater(len(asked), mml.PATIENCE + 1, 'every try that got further counts afresh')
+        path.unlink()
+        asked.clear()
+        step[0] = 0  # the host answers nothing at all
+        sleeps.clear()
+        with patch.object(mml.urllib.request, 'urlopen', urlopen), patch.object(mml.time, 'sleep', sleeps.append), \
+                self.assertRaises(TimeoutError):
+            base.file(archive)
+        self.assertEqual(len(asked), mml.PATIENCE)
+        self.assertEqual(sleeps, [30, 60, 120, 240, 300])
+
     def test_an_update_needs_its_live_release(self):
         with self.assertRaisesRegex(ValueError, 'promote a whole copy first'):
             mml.Base.live(self.tmp / 'live')
