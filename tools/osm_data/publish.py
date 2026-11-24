@@ -21,6 +21,7 @@ import queue
 import re
 import stat
 import sys
+import threading
 import time
 import urllib.request
 from urllib.error import HTTPError
@@ -40,7 +41,9 @@ CELLS = 'pmtiles-json-cells'  # a dataset whose url is the index of its cells, n
 INDEX = '.cells.json'  # an archive's index takes its name, with this suffix for .pmtiles
 SETTLE = 150  # seconds a public pointer may keep its last answer (settle)
 SEARCH = 'search-gzt'  # a dataset whose url is a search index's root, which names its groups' indexes and their files
-CHANNELS = 8  # SFTP channels at once for a release's many small files: each costs round trips, not bandwidth
+# SFTP channels at once on the one connection, gently on a shared host, for a release's many small files: each costs
+# round trips, not bandwidth
+CHANNELS = 4
 
 
 def require(ok, message):
@@ -198,34 +201,42 @@ def hosted_named(ftp, manifest, present=None):
 
 
 def at_once(ftp, items, work):
-    """[work(channel, item)] for each item, in order, over CHANNELS channels of ftp's SSH connection at once; one by
-    one where the connection has no channels."""
-    items = list(items)
-    if len(items) < 2 or not hasattr(ftp, 'channel'):
-        return [work(ftp, item) for item in items]
-    opened, free = [], queue.SimpleQueue()
-    try:
-        for _ in range(min(CHANNELS, len(items))):
-            try:
-                opened.append(ftp.channel())
-            except Exception as error:  # a host may allow fewer sessions a connection (OpenSSH's MaxSessions)
-                print(f'{len(opened) + 1} SFTP channels at once refused ({error}); {len(opened) or 1} go on', flush=True)
-                break
-            free.put(opened[-1])
-        if not opened:
-            return [work(ftp, item) for item in items]
+    """[work(channel, item)] for each item, in order, over CHANNELS channels of ftp's one SSH connection at once. Any
+    channel's error, opening it too, sends what's left one by one over ftp itself, where a real error stops the run."""
+    items, done = list(items), {}
+    if len(items) > 1 and hasattr(ftp, 'channel'):
+        opened, free, failed = [], queue.SimpleQueue(), threading.Event()
 
-        def one(item):
+        def give_up(error):
+            if not failed.is_set():
+                print(f'An SFTP channel failed ({error}); the rest go one at a time', flush=True)
+            failed.set()
+        try:
+            for _ in range(min(CHANNELS, len(items))):
+                opened.append(ftp.channel())
+                free.put(opened[-1])
+        except Exception as error:
+            give_up(error)
+
+        def one(i):
+            if failed.is_set():
+                return
             channel = free.get()
             try:
-                return work(channel, item)
+                done[i] = work(channel, items[i])
+            except Exception as error:
+                give_up(error)
             finally:
                 free.put(channel)
-        with ThreadPoolExecutor(len(opened)) as pool:
-            return list(pool.map(one, items))
-    finally:
+        if not failed.is_set():
+            with ThreadPoolExecutor(len(opened)) as pool:
+                list(pool.map(one, range(len(items))))
         for channel in opened:
-            channel.close_channel()
+            try:
+                channel.close_channel()
+            except Exception:
+                pass  # the connection goes on without it
+    return [done[i] if i in done else work(ftp, item) for i, item in enumerate(items)]
 
 
 def shared_manifest(manifest):

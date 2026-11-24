@@ -328,8 +328,8 @@ The format is in [tools/osm_data/README.md](../tools/osm_data/README.md#search-i
 - **update** (weekly, or by hand) downloads the newest dated dump from GraphHopper and checks its MD5, NLS's place
   names (about 80 requests of 10,000, one at a time, a second apart, with `MML_API_KEY`) and GeoNames' towns. It builds
   on the newest release on the host, the candidate or the live one, reading its files over HTTPS: a group keeps its
-  files and lists what changed, so a week sends about 300 small files, 8 at once over the SSH connection's channels
-  (each costs about 1.5 s of round trips). The upload goes through `publish.py` with
+  files and lists what changed, so a week sends about 300 small files, 4 at once over the one SSH connection's channels
+  (each costs about 1.5 s of round trips; any channel's error sends the rest one by one). The upload goes through `publish.py` with
   `OSM_SHARED_FILES=true`, as the OSM data's: read back, checked over HTTPS and named in `candidates/current.json`.
   `polku-search/` holds at most 2 GiB.
 - **fresh** makes every group's files again: about 52 MB.

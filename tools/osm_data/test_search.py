@@ -282,22 +282,33 @@ class LayoutTests(unittest.TestCase):
 
 
 class AtOnceTests(unittest.TestCase):
-    def test_a_host_that_refuses_more_channels_gets_fewer(self):
-        class Channel:
-            def __init__(self, host):
-                self.host = host
-            def channel(self):
-                if self.host['open'] == 2:
-                    raise OSError('Administratively prohibited')
-                self.host['open'] += 1
-                return Channel(self.host)
-            def close_channel(self):
-                self.host['closed'] += 1
-        host = {'open': 0, 'closed': 0}
-        self.assertEqual(publish.at_once(Channel(host), range(20), lambda c, i: i * 2), [i * 2 for i in range(20)])
-        self.assertEqual(host, {'open': 2, 'closed': 2})
-        host['open'] = 2
-        self.assertEqual(publish.at_once(Channel(host), range(3), lambda c, i: i), [0, 1, 2], 'none at all: one by one')
+    class Connection:
+        def __init__(self, host):
+            self.host = host
+        def channel(self):
+            if self.host['open'] == self.host['limit']:
+                raise OSError('Administratively prohibited')
+            self.host['open'] += 1
+            return type(self)(self.host)
+        def close_channel(self):
+            self.host['closed'] += 1
+
+    def test_channels_at_once_and_any_error_goes_on_one_by_one(self):
+        host = {'open': 0, 'closed': 0, 'limit': 99}
+        self.assertEqual(publish.at_once(self.Connection(host), range(20), lambda c, i: i * 2), [i * 2 for i in range(20)])
+        self.assertEqual((host['open'], host['closed']), (publish.CHANNELS, publish.CHANNELS))
+        host.update(open=0, closed=0, limit=2)  # a third refused: none used, all one by one
+        main = self.Connection(host)
+        self.assertEqual(publish.at_once(main, range(5), lambda c, i: (c is main, i)), [(True, i) for i in range(5)])
+        self.assertEqual(host['closed'], 2)
+        host.update(open=0, closed=0, limit=99)
+        def flaky(c, i):  # a channel's error: what's left goes over the connection itself
+            if c is not main and i == 3:
+                raise OSError('channel closed')
+            return i
+        self.assertEqual(publish.at_once(main, range(10), flaky), list(range(10)))
+        with self.assertRaises(OSError):
+            publish.at_once(main, range(3), lambda c, i: (_ for _ in ()).throw(OSError('host down')))
 
 
 class HostTests(unittest.TestCase):
