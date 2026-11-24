@@ -103,7 +103,7 @@ LICENSE = {
     'name': 'Open Database License 1.0',
     'url': 'https://opendatacommons.org/licenses/odbl/1-0/',
 }
-PRODUCT_ZOOMS = {'trails': 13, 'winter': 12, 'hazards': 11, 'places': 12, 'inspection': 14, 'wetlands': 12}
+PRODUCT_ZOOMS = {'trails': 13, 'winter': 12, 'hazards': 11, 'places': 12, 'inspection': 14, 'wetlands': 12, 'points': 12}
 BARRIERS = set(('gate lift_gate swing_gate sliding_gate wicket_gate hampshire_gate bump_gate chain rope bar block '
                 'stile kissing_gate turnstile horse_stile full-height_turnstile cycle_barrier motorcycle_barrier '
                 'log fallen_tree windfall debris').split())
@@ -118,6 +118,13 @@ def is_reedbed(tags):
     return tags.get('natural') == 'wetland' and tags.get('wetland') == 'reedbed'
 
 
+def is_point(tags):
+    """Polku's points with icons of their own (Polku #1179): fire places, springs, cave entrances, bunkers and tar kilns,
+    and anything with a fire place (a shelter's card says it has one)."""
+    return (tags.get('leisure') == 'firepit' or tags.get('amenity') == 'bbq' or tags.get('natural') in {'spring', 'cave_entrance'} or
+            tags.get('military') == 'bunker' or tags.get('historic') == 'tar_kiln' or tags.get('fireplace') == 'yes')
+
+
 class ReedbedWays:
     """Stops every other way before the area assembler: only reedbeds and their multipolygons' members are built."""
     def __init__(self, members):
@@ -130,6 +137,11 @@ class ReedbedWays:
         return not (reed or way.id in self.members)
 
 
+# Every way of these kinds is in the trails product. The trails dataset record says cycleways:true from this set,
+# so Polku draws cycle paths from it only when the archive keeps every one.
+TRAIL_HIGHWAYS = {'path', 'bridleway', 'steps', 'track', 'cycleway'}
+
+
 def products(kind, tags):
     result = []
     h = tags.get('highway')
@@ -139,9 +151,9 @@ def products(kind, tags):
         hazard = (tags.get('seamark:type') in {'rock', 'obstruction', 'wreck'} or tags.get('natural') in {'rock', 'reef', 'shoal'} or
                   tags.get('waterway') == 'rapids')
     else:
-        trail = (h in {'path', 'bridleway', 'steps', 'track'} or
-                 h in {'footway', 'cycleway'} and
-                 (h == 'footway' and 'mtb:scale' in tags or
+        trail = (h in TRAIL_HIGHWAYS or
+                 h == 'footway' and
+                 ('mtb:scale' in tags or
                   any(tags.get(k) for k in ['obstacle', 'ford', 'mtb:scale:uphill']) or
                   tags.get('surface') == 'mud') or
                  tags.get('barrier') in {'fence', 'wall', 'hedge', 'city_wall'})
@@ -156,6 +168,8 @@ def products(kind, tags):
         result.append('hazards')
     if is_stay(tags):
         result.append('places')
+    if is_point(tags):
+        result.append('points')
     if h or inspectable(tags) or result:
         result.append('inspection')
     return result
@@ -212,6 +226,9 @@ do not promise coverage outside the declared extract clipping polygons.
 
 Wetland records are natural=wetland + wetland=reedbed areas, assembled
 from closed ways and multipolygons by osmium, with only their wetland tag.
+
+Point records are fire places, springs, cave entrances, bunkers, tar kilns
+and anything with fireplace=yes: nodes, and ways with their centre.
 
 Road/path relation records contain only the eligible way members present in each tile. Overnight place records retain their original member references and roles.
 member_count is the original relation member count; each member's index is
@@ -752,6 +769,8 @@ def build_dataset(source, output, source_info, *, full_country=False, started=No
                               'tiles': product['tiles'], 'features': product['features']}
             if name == 'inspection':
                 datasets[name]['nearby_complete'] = product['incomplete_relations'] == 0
+            if name == 'trails' and 'cycleway' in TRAIL_HIGHWAYS:
+                datasets[name]['cycleways'] = True
         stats['build_seconds'] = round(time.monotonic() - started, 3)
         peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         stats['peak_rss_bytes'] = peak if sys.platform == 'darwin' else peak * 1024

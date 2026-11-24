@@ -42,8 +42,9 @@ def verify(output,release_dir=None):
             body=p.get(base+'/'+dataset['url'],immutable=True)
             reads[name]={base+'/'+p.shared_path(c) for c in p.cells_of(body,p.index_entry(dataset))}
     extended = 'geometry' in live['datasets']
-    # four countries' products, seven in a release from before reedbeds (#1144), which a rollback can restore
-    expected_count = 4 * (8 if 'wetlands' in live['datasets'] else 7) + extended
+    # four countries' products: seven in a release from before reedbeds (Polku #1144), eight from before the points (Polku
+    # #1179), which a rollback can restore
+    expected_count = 4 * (7 + ('wetlands' in live['datasets']) + ('points' in live['datasets'])) + extended
     p.require(len(reads)==expected_count and all(urls & r for r in reads.values()) and urls<=set().union(*reads.values()),
               'Browser consumers did not verify all current release archives')
     if extended:

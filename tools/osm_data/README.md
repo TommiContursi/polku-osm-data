@@ -88,9 +88,11 @@ reported total is the bytes and number of files needed without PMTiles.
 
 ## Additional named products
 
-The same stage emits trail/barrier nodes and ways at z13, winter ways at z12 (including ski tracks without highways), water hazards at z11, and overnight places at z12. Predicates mirror the existing browser queries, before their slim display adapters. Features retain original type/ID, all tags, way nodes/geometry and place centres. Place relation members/roles are retained, and unavailable member geometry rejects the build. Gzip tiles above 8 MiB or decoded JSON above 32 MiB reject the candidate. `measurements.json.products` reports counts and compressed/raw tile distributions.
+The same stage emits trail/barrier nodes and ways at z13, winter ways at z12 (including ski tracks without highways), water hazards at z11, overnight places at z12, and points (fire places, springs, cave entrances, bunkers, tar kilns and anything with `fireplace=yes`) at z12. Predicates mirror the existing browser queries, before their slim display adapters. Features retain original type/ID, all tags, way nodes/geometry and place centres. Place relation members/roles are retained, and unavailable member geometry rejects the build. Gzip tiles above 8 MiB or decoded JSON above 32 MiB reject the candidate. `measurements.json.products` reports counts and compressed/raw tile distributions.
 
 These optional datasets are additive to schema 1; old clients continue reading ways/lighting, and new clients fall back when a product has not been published.
+
+The trails product keeps every `highway=cycleway` (`TRAIL_HIGHWAYS` in the builder), and its dataset record says so with `"cycleways": true`, set from that same set. A client may draw cycle paths from the trails product in place of other sources only when its record has the flag; a record without it makes no such claim. The flag is additive: older clients ignore it.
 
 The z14 inspection product adds all highways and the existing amenity/tourism/leisure/natural/barrier/ford/man_made/historic object classes. It preserves type/ID and complete way nodes/geometry; relation members stay descriptive original references. Missing generic relation members are recorded with `incomplete:true`, and dataset `nearby_complete:false` prevents falsely complete proximity queries. Missing overnight relation members still fail the build.
 
