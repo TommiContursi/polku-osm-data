@@ -279,7 +279,7 @@ class DigiroadTests(unittest.TestCase):
         def candidate(directory, now):
             digiroad.build(directory, now)
             publish.upload(directory, folder=digiroad.FOLDER, budget=digiroad.BUDGET)
-            found = publish.candidate(url)
+            found = publish.candidate(url, first=True)
             self.assertEqual(found['manifest'], f"{url}/releases/{found['release']}/manifest.json")
             return found
 
@@ -325,7 +325,7 @@ class DigiroadTests(unittest.TestCase):
             self.assertEqual(host.connections, connections, 'refused before the host is asked')
             self.assertIsNone(run('rollback', '--manifest', saved, '--expected-current', first['release']))
             self.assertNotIn(BASE + '/current.json', host.files, 'the way back from the first promotion: no pointer')
-            self.assertEqual(publish.candidate(url)['release'], second['release'], 'the candidate is checked again')
+            self.assertEqual(publish.candidate(url, first=True)['release'], second['release'], 'the candidate is checked again')
 
             host.pointer_cache = 'public, max-age=31536000, immutable'  # a pointer no reader would read again
             self.assertIn('previous pointer restored', promote(second, 'three'))

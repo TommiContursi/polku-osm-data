@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import hmac
 import hashlib
+import gzip
 import io
 import json
 import os
@@ -36,6 +37,7 @@ SHARED_NAME = re.compile(r'[a-f0-9]{64}(\.[A-Za-z0-9]{1,16})?\Z')
 CELLS = 'pmtiles-json-cells'  # a dataset whose url is the index of its cells, not one archive
 INDEX = '.cells.json'  # an archive's index takes its name, with this suffix for .pmtiles
 SETTLE = 150  # seconds a public pointer may keep its last answer (settle)
+SEARCH = 'search-gzt'  # a dataset whose url is a search index's root, which names its groups' indexes and their files
 
 
 def require(ok, message):
@@ -93,7 +95,8 @@ def validate(manifest, pointed=False):
     for dataset in manifest['datasets'].values():
         url = dataset.get('url')
         entry = isinstance(url, str) and urls.get(url)
-        require(entry and url.endswith('.json' if dataset.get('format') == CELLS else '.pmtiles'), 'Unsafe dataset URL')
+        suffix = {CELLS: '.json', SEARCH: '.gzt'}.get(dataset.get('format'), '.pmtiles')
+        require(entry and url.endswith(suffix), 'Unsafe dataset URL')
         require(entry['bytes'] == dataset.get('bytes') and entry['sha256'] == dataset.get('sha256') and entry['bytes'] > 0,
                 'Dataset and file integrity disagree')
     return manifest
@@ -140,10 +143,41 @@ def cells_of(index_body, entry):
     return result
 
 
+def search_index(body, entry):
+    """A search index's root or group index, gunzipped; it must be the one its entry names."""
+    require(len(body) == entry['bytes'] and hashlib.sha256(body).hexdigest() == entry['sha256'],
+            'Search index differs from its entry: ' + entry['path'])
+    index = json.loads(gzip.decompress(body))
+    rows = index.get('groups', index.get('files')) if isinstance(index, dict) and index.get('schema') == 1 else None
+    width = 3 if 'groups' in index else 4
+    require(isinstance(rows, list) and all(isinstance(row, list) and len(row) == width and type(row[-2]) is int
+                                           and row[-2] > 0 and isinstance(row[-1], str)
+                                           and re.fullmatch('[a-f0-9]{64}', row[-1]) for row in rows),
+            'Invalid search index: ' + entry['path'])
+    return [share({'path': row[-1] + '.gzt', 'bytes': row[-2], 'sha256': row[-1]}) for row in rows]
+
+
 def indexes(manifest):
-    """The manifest's cell indexes, as its file entries."""
-    urls = {dataset['url'] for dataset in manifest['datasets'].values() if dataset.get('format') == CELLS}
+    """The manifest's cell indexes and search roots, as its file entries."""
+    urls = {dataset['url'] for dataset in manifest['datasets'].values() if dataset.get('format') in (CELLS, SEARCH)}
     return [f for f in manifest['files'] if f.get('url', f['path']) in urls]
+
+
+def named(manifest, read):
+    """Every shared file the manifest's indexes name: a cells index's cells, a search root's group indexes and the
+    files they name. read(entry) gives an index's bytes, or None where it isn't there: it then names nothing."""
+    for f in indexes(manifest):
+        body = read(f)
+        if body is None:
+            continue
+        if f['path'].endswith(INDEX):
+            yield from cells_of(body, f)
+            continue
+        for group in search_index(body, f):
+            yield group
+            body = read(group)
+            if body is not None:
+                yield from search_index(body, group)
 
 
 def index_entry(dataset):
@@ -151,12 +185,12 @@ def index_entry(dataset):
     return {'path': dataset['url'], 'bytes': dataset['bytes'], 'sha256': dataset['sha256']}
 
 
-def hosted_cells(ftp, manifest, present=None):
-    """Every cell the manifest's indexes on the host name. Given present, an index not among them names none."""
-    for f in indexes(manifest):
-        path = place(manifest['release'], f)
-        if present is None or path in present:
-            yield from cells_of(retrieve(ftp, path), f)
+def hosted_named(ftp, manifest, present=None):
+    """Every file the manifest's indexes on the host name. Given present, an index not among them names none."""
+    def read(entry):
+        path = place(manifest['release'], entry)
+        return retrieve(ftp, path) if present is None or path in present else None
+    return named(manifest, read)
 
 
 def shared_manifest(manifest):
@@ -364,7 +398,7 @@ def verify_remote(ftp, base, manifest, raw):
     for f in manifest['files']:
         path = place(manifest['release'], f)
         samples[path] = verify_file(ftp, path if 'url' in f else f"{base}/{f['path']}", f)
-    for entry in hosted_cells(ftp, manifest):
+    for entry in hosted_named(ftp, manifest):
         verify_file(ftp, place(manifest['release'], entry), entry)
     verify_manifest(ftp, base, raw)
     return samples
@@ -421,24 +455,13 @@ def probe(url, manifest, raw, samples=None):
                         require(body == samples[path][start], 'Public archive bytes differ')
 
 
-def public_bytes(url):
-    """A public file's bytes, or None where the host answers 404."""
-    try:
-        return get(url)
-    except HTTPError as error:
-        if error.code != 404:
-            raise
-        error.close()
-        return None
-
-
 def settle(url, expected, limit, pause=2):
     """Seconds until the public URL answers `expected` (None: a 404), read again every `pause` s for up to `limit` s.
     The host can keep answering a name as it last did: polku-mml/current.json, asked for while missing, stayed 404
     after it was written (Polku run 45242600287)."""
     start = time.monotonic()
     while True:
-        body = public_bytes(url)
+        body = found(url)
         if body == expected:
             return time.monotonic() - start
         require(time.monotonic() - start < limit, f'{url} did not answer as written within {limit} s')
@@ -464,6 +487,7 @@ def replace_pointer(ftp, raw, path='current.json'):
 
 def promote(ftp, url, manifest, previous, directory, samples, release_raw):
     """current.json names the release. The pointer it replaces is saved for rollback: null where there was none."""
+    directory.mkdir(parents=True, exist_ok=True)  # a first promotion saves null too, where nothing was saved before
     (directory / f'rollback-{uuid.uuid4().hex}.json').write_bytes(previous or b'null')
     raw = json.dumps(current(manifest), sort_keys=True, separators=(',', ':')).encode()
     maintenance.prepare_publication(ftp, manifest, release_raw, previous)
@@ -619,8 +643,8 @@ def resume_upload(ftp, base, directory, manifest, raw, send):
             ftp.storbinary('STOR ' + base + '/' + name, body, rest=actual)
 
 
-def product_folder(ftp, url, folder):
-    """With folder, into that product's folder beside polku-osm, once its hosting is in. The folder's public URL."""
+def into_folder(ftp, url, folder):
+    """Into a product's folder beside polku-osm, once its hosting is in; its public URL. Without folder, polku-osm."""
     if not folder:
         return url
     require(url.endswith('/polku-osm'), 'OSM_PUBLIC_URL must end in /polku-osm')
@@ -641,7 +665,7 @@ def upload(directory, resume=False, folder=None, budget=None):
     raw, manifest = hosted(directory)
     config = settings()
     with connection(config) as ftp:
-        url = product_folder(ftp, config[-2], folder)
+        url = into_folder(ftp, config[-2], folder)
         previous = previous_pointer(ftp)
         if previous and 'geometry' in json.loads(previous)['datasets']:
             require('geometry' in manifest['datasets'], 'Publication would remove live geometry')
@@ -657,17 +681,19 @@ def upload(directory, resume=False, folder=None, budget=None):
                 send[f['path']] = f['bytes']
                 sending.add(places[f['path']])
         print(f'Send {len(send)} of {len(places)} files; the shared files hold the rest', flush=True)
-        send_cells = {}  # each cell the shared files lack, by its place, once
-        for f in indexes(manifest):
-            for entry in cells_of((directory / f['path']).read_bytes(), f):
-                if place(release, entry) not in sending:
-                    send_cells[place(release, entry)] = entry
-                    sending.add(place(release, entry))
+        def local(entry):  # the release folder holds every index it names; a cell is cut again below
+            path = directory / entry['path']
+            return path.read_bytes() if path.exists() else None
+        indexed = list(named(manifest, local))
+        send_cells = {}  # each file the indexes name and the shared files lack, by its place, once
+        for entry in indexed:
+            if place(release, entry) not in sending:
+                send_cells[place(release, entry)] = entry
+                sending.add(place(release, entry))
         if indexes(manifest):
-            print(f'Send {len(send_cells)} cells; the shared files hold the rest', flush=True)
+            print(f'Send {len(send_cells)} indexed files; the shared files hold the rest', flush=True)
         # Retention keeps all this release names, though its new indexes aren't on the host yet
-        naming = set(places.values()) | {place(release, entry) for f in indexes(manifest)
-                                         for entry in cells_of((directory / f['path']).read_bytes(), f)}
+        naming = set(places.values()) | {place(release, entry) for entry in indexed}
         expected = send | {'manifest.json': len(raw)}
         incoming = sum(expected.values()) + sum(entry['bytes'] for entry in send_cells.values())
         if resume:
@@ -710,8 +736,17 @@ def upload(directory, resume=False, folder=None, budget=None):
             samples[target] = verify_file(ftp, staged, f)
             if target != f"{final}/{f['path']}":
                 move_shared(ftp, staged, target)
+        for where, entry in list(send_cells.items()):  # a search index's files, as the release folder holds them
+            if (directory / entry['path']).exists():
+                staged = f"{stage}/{entry['path']}"
+                with (directory / entry['path']).open('rb') as body:
+                    ftp.storbinary('STOR ' + staged, body)
+                verify_file(ftp, staged, entry)
+                move_shared(ftp, staged, where)
+                del send_cells[where]
         for f in indexes(manifest):  # each archive cut again, the same way; only its missing cells go up
-            if not any(place(release, entry) in send_cells for entry in cells_of((directory / f['path']).read_bytes(), f)):
+            if not f['path'].endswith(INDEX) or not any(
+                    place(release, entry) in send_cells for entry in cells_of((directory / f['path']).read_bytes(), f)):
                 continue
             from tools.osm_data import cells
             for _, data in cells.cells(directory / (f['path'].removesuffix(INDEX) + '.pmtiles')):
@@ -723,7 +758,7 @@ def upload(directory, resume=False, folder=None, budget=None):
                 ftp.storbinary('STOR ' + staged, io.BytesIO(data))
                 verify_file(ftp, staged, entry)
                 move_shared(ftp, staged, place(release, entry))
-        require(not send_cells, 'Cells missing from the cut: ' + ', '.join(sorted(send_cells)[:3]))
+        require(not send_cells, 'Indexed files missing: ' + ', '.join(sorted(send_cells)[:3]))
         verify_manifest(ftp, stage, raw)
         if stage != final:
             if 'releases' not in {posixpath.basename(p) for p in ftp.nlst()}:
@@ -743,15 +778,27 @@ def upload(directory, resume=False, folder=None, budget=None):
         print(f'Candidate {release}: {url}/{final}/manifest.json', flush=True)
 
 
-def candidate(url):
-    """The uploaded candidate newer than the live release, or the first one, for Polku's checks, or None. Reads only
-    public HTTP."""
+def found(url):
+    """A public JSON file's bytes, as get() checks them, or None where the host answers 404."""
+    try:
+        return get(url)
+    except HTTPError as error:
+        if error.code != 404:
+            raise
+        error.close()
+        return None
+
+
+def candidate(url, first=False):
+    """The uploaded candidate newer than the live release, for Polku's checks, or None. Reads only public HTTP. With
+    first, a product with nothing promoted yet has its first candidate; otherwise a missing live pointer stops."""
     url = public_url(url)
-    raw, live = (public_bytes(url + path) for path in ('/candidates/current.json', '/current.json'))
+    raw = found(url + '/candidates/current.json')
     if raw is None:
         return None  # nothing uploaded yet
     manifest = validate(json.loads(raw))
-    live = live and validate(json.loads(live), pointed=True)  # None: nothing promoted yet
+    live = found(url + '/current.json') if first else get(url + '/current.json')
+    live = live and validate(json.loads(live), pointed=True)
     if live and manifest['built_at'] <= live['built_at']:
         return None
     location = f"{url}/releases/{manifest['release']}/manifest.json"
@@ -761,13 +808,13 @@ def candidate(url):
 
 def promote_candidate(release, sha256, directory, folder=None):
     """Make the candidate Polku checked live: the same manifest bytes, every file there at its size. With folder, that
-    product's candidate."""
+    product's beside polku-osm."""
     require(os.environ.get('OSM_ALLOW_PUBLISH') == 'true', 'Publication requires approved OSM_ALLOW_PUBLISH=true')
     require(NAME.fullmatch(release) and re.fullmatch('[a-f0-9]{64}', sha256), 'Invalid candidate')
     directory = Path(directory)
     config = settings()
     with connection(config) as ftp:
-        url = product_folder(ftp, config[-2], folder)
+        url = into_folder(ftp, config[-2], folder)
         previous = previous_pointer(ftp)
         final = f'releases/{release}'
         require(ftp.kind(final) == 'directory' and ftp.kind(final + '/manifest.json') == 'file', 'Candidate needs regular files')
@@ -786,8 +833,8 @@ def promote_candidate(release, sha256, directory, folder=None):
         for f in manifest['files']:
             if 'url' in f:
                 require(have.get(place(release, f)) == f['bytes'], 'Shared file is missing or differs: ' + f['path'])
-        for entry in hosted_cells(ftp, manifest):
-            require(have.get(place(release, entry)) == entry['bytes'], 'Cell is missing or differs: ' + entry['path'])
+        for entry in hosted_named(ftp, manifest):
+            require(have.get(place(release, entry)) == entry['bytes'], 'Indexed file is missing or differs: ' + entry['path'])
         live = json.loads(previous) if previous else None
         if not live or live['release'] != release:
             require(not live or manifest['built_at'] > live['built_at'], 'Candidate is not newer than the live release')
@@ -813,7 +860,7 @@ def rollback(manifest_path, expected_current=None, folder=None):
         validate(target, pointed=True)
     config = settings()
     with connection(config) as ftp:
-        url = product_folder(ftp, config[-2], folder)
+        url = into_folder(ftp, config[-2], folder)
         previous = previous_pointer(ftp)
         if expected_current is not None:
             require(previous and json.loads(previous)['release'] == expected_current,
@@ -933,7 +980,9 @@ def main():
     publication = commands.add_parser('upload')
     publication.add_argument('directory', type=Path)
     publication.add_argument('--resume', action='store_true', help='Reuse the existing stage or immutable release; never start a new upload')
-    commands.add_parser('candidate').add_argument('url')
+    candidacy = commands.add_parser('candidate')
+    candidacy.add_argument('url')
+    candidacy.add_argument('--first', action='store_true', help='a product with nothing promoted yet has its first candidate')
     promotion = commands.add_parser('promote')
     promotion.add_argument('release')
     promotion.add_argument('--sha256', required=True, help="the checked manifest's SHA-256, from `candidate`")
@@ -953,7 +1002,7 @@ def main():
         if args.command == 'upload':
             upload(args.directory, resume=args.resume)
         elif args.command == 'candidate':
-            print(json.dumps(candidate(args.url) or {}, sort_keys=True))
+            print(json.dumps(candidate(args.url, args.first) or {}, sort_keys=True))
             return
         elif args.command == 'promote':
             promote_candidate(args.release, args.sha256, args.directory, args.folder)

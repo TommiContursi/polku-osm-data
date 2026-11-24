@@ -302,9 +302,28 @@ again only when a source with newer data exists. The format is in
   predecessor, the candidate and one being uploaded.
 - **Promotion** works like the OSM data's ([Promotion, in Polku](#promotion-in-polku)), though Polku has no workflow
   for it yet: `publish.py candidate` with the folder's URL, and `promote` and `rollback` with `--folder polku-digiroad`.
-  With nothing live yet, `candidate` names the first candidate and `promote` writes the first `current.json`. The
+  With nothing live yet, `candidate --first` names the first candidate and `promote` writes the first `current.json`. The
   predecessor it saves is then `null`, and a rollback to it, which needs `--expected-current`, removes `current.json`
   again. Uploads then skip retention until the next promotion.
 
 The data is CC BY 4.0: "© Fintraffic / Digiroad, from Väylävirasto's open data, CC BY
 4.0", in the manifest, the archives' metadata and `LICENSE.txt`, which also says what was changed.
+
+## Search index
+
+`search-data.yml` builds the search index on Tuesdays at 04:17 UTC, after Photon's Finnish dump of the Sunday before.
+The format is in [tools/osm_data/README.md](../tools/osm_data/README.md#search-index).
+
+- **install-hosting**, once: makes `polku-search/` and puts [`search.htaccess`](../tools/osm_data/search.htaccess) in
+  it: `hosting.htaccess` with `.gzt` served as `application/octet-stream`, so no Content-Encoding is added.
+- **update** (weekly, or by hand) downloads the newest dated dump from GraphHopper and checks its MD5, NLS's place
+  names (about 80 requests of 10,000, one at a time, a second apart, with `MML_API_KEY`) and GeoNames' towns. It builds
+  on the newest release on the host, the candidate or the live one, reading its files over HTTPS: a group keeps its
+  files and lists what changed, so a week sends about 300 small files. The upload goes through `publish.py` with
+  `OSM_SHARED_FILES=true`, as the OSM data's: read back, checked over HTTPS and named in `candidates/current.json`.
+  `polku-search/` holds at most 2 GiB.
+- **fresh** makes every group's files again: about 52 MB.
+
+`search.py promote` makes a checked candidate live, as the OSM data's `publish.py promote`. The sources' terms:
+ODbL for OSM's data, CC BY 4.0 for NLS's names and GeoNames' towns, all named in the manifest's `attribution` and in
+`LICENSE.txt`.
