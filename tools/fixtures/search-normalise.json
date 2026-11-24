@@ -1,0 +1,26 @@
+{
+  "rule": "lower case; ä å → a, ö ø → o, æ → ae, đ → d, ŋ → n, ŧ → t, ß → ss, ʒ ǯ → z, ǥ → g, ʹ dropped; NFKD, every other mark dropped; words split at anything but a–z and 0–9",
+  "cases": [
+    ["Iso Haukijärvi", ["iso", "haukijarvi"]],
+    ["Ekenäs", ["ekenas"]],
+    ["Åland", ["aland"]],
+    ["Pöyrisjärvi", ["poyrisjarvi"]],
+    ["Bjørnøya", ["bjornoya"]],
+    ["Ærø", ["aero"]],
+    ["Đuoggá", ["duogga"]],
+    ["Ŋuoŋŋasuolu", ["nuonnasuolu"]],
+    ["Ŧeahccu", ["teahccu"]],
+    ["Straße", ["strasse"]],
+    ["Čiekčaskáidi", ["ciekcaskaidi"]],
+    ["Šuoššjávri", ["suossjavri"]],
+    ["Žakšu", ["zaksu"]],
+    ["Anár", ["anar"]],
+    ["Âʹvvel", ["avvel"]],
+    ["Ǯiõǥǥjäuʹrr", ["zioggjaurr"]],
+    ["Suõʹjjel", ["suojjel"]],
+    ["Ʒieʹǩǩ", ["ziekk"]],
+    ["K-Market Koski", ["k", "market", "koski"]],
+    ["Hämeenkatu 12 A", ["hameenkatu", "12", "a"]],
+    ["  Saint-Petersburg / Pietari ", ["saint", "petersburg", "pietari"]]
+  ]
+}

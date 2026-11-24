@@ -197,7 +197,7 @@ and `https://ducksoft.fi/polku-digiroad/`.
 Each folder has its own `.htaccess`: [`hosting.htaccess`](../tools/osm_data/hosting.htaccess),
 installed by hand, [`routing.htaccess`](../tools/osm_data/routing.htaccess) (Routing data,
 above), [`mml.htaccess`](../tools/osm_data/mml.htaccess) in `polku-mml/` (NLS background map, below) and a copy of
-`hosting.htaccess` in `polku-digiroad/` (Digiroad traffic volumes, below). They turn off listing and HTTP compression, set the MIME types, allow read-only CORS with
+`hosting.htaccess` in `polku-digiroad/` (Digiroad, below). They turn off listing and HTTP compression, set the MIME types, allow read-only CORS with
 the Range headers exposed, cache releases as immutable and make `current.json` revalidate, which
 also covers `candidates/current.json`.
 
@@ -274,20 +274,47 @@ A smaller **box** tests the whole job. A pull request that changes the job fetch
 uploads nothing. The tiles are CC BY 4.0: "© Maanmittauslaitos, Maastotietokanta" and the month fetched, in the
 manifest, the archive's metadata and `LICENSE.txt`.
 
-## Digiroad traffic volumes
+## Digiroad
 
-`digiroad-data.yml`, by hand, copies Digiroad's busy roads: the roads of 800 or more vehicles a day in Väylävirasto's
-WFS layer `dr_liikennemaara`, 117,061 of them on 2026-11-23. Väylävirasto's updates to it ended on 2026-09-18, when
-Fintraffic took Digiroad over, so the copy runs again only when a source with newer data exists. The format is in
-[tools/osm_data/README.md](../tools/osm_data/README.md#digiroad-traffic-volumes).
+`digiroad-data.yml`, by hand, copies four of Digiroad's layers from Väylävirasto's WFS, counted on 2026-11-23: the
+roads of 800 or more vehicles a day in `dr_liikennemaara` (117,061), paved roads in `dr_paallystetty_tie`
+(990,799), private roads in `tiekunnalliset_yksityistiet` (510,766) and speed limits in `dr_nopeusrajoitus`
+(1,019,014). Väylävirasto's updates to them ended on 2026-09-18, when Fintraffic took Digiroad over, so the copy runs
+again only when a source with newer data exists. The format is in
+[tools/osm_data/README.md](../tools/osm_data/README.md#digiroad).
 
 - **install-hosting**, once: makes `polku-digiroad/` and puts a copy of
   [`hosting.htaccess`](../tools/osm_data/hosting.htaccess) in it.
-- **copy** asks the WFS for 5,000 roads at a time, ordered by ID, with 5 s between pages, and retries a failed page once
-  after 5 minutes. The count must equal the WFS's own. The release is about 9.5 MB in 1,904 zoom-11 tiles, and goes up
-  as about 20 cells through `publish.py`, as the OSM data does: read back with its SHA-256, checked over HTTPS and
-  named in `candidates/current.json`. A cell the host already holds isn't sent again, and `polku-digiroad/` holds
-  at most 1 GiB.
+- **copy** asks the WFS for 5,000 features at a time, ordered by a unique field, with 5 s between pages, and retries a
+  failed page once after 5 minutes. It fetches the private roads first, since they take longest. Each feature is
+  checked as its page arrives and must come once, and each layer's count must equal the WFS's own. Each layer's
+  features are written to an xz file as they arrive, as the WFS served them. The job keeps these files as an artifact
+  for 7 days before it builds the tiles from them: with `fetched` set to that run's ID, a later run builds and uploads
+  from them without fetching again. From sample pages on 2026-11-23: about 530 pages in about 2.5 hours (a page of
+  private roads takes up to 32 s to answer), about 0.4 GB of zoom-11 tiles and 0.56 GB of xz files, and at most about
+  4 GB of memory for the build. The release goes up as cells through `publish.py`, as the OSM data does, with the xz
+  files whole: read back with its SHA-256, checked over HTTPS and named in `candidates/current.json`. A file or cell
+  the host already holds isn't sent again, and `polku-digiroad/` holds at most 4 GiB: the live release, the candidate
+  and one being uploaded.
 
-There is no promotion yet. The data is CC BY 4.0: "Traffic volumes: © Fintraffic / Digiroad, from Väylävirasto's
-open data, CC BY 4.0", in the manifest, the archive's metadata and `LICENSE.txt`, which also says what was changed.
+There is no promotion yet. The data is CC BY 4.0: "© Fintraffic / Digiroad, from Väylävirasto's open data, CC BY
+4.0", in the manifest, the archives' metadata and `LICENSE.txt`, which also says what was changed.
+
+## Search index
+
+`search-data.yml` builds the search index on Tuesdays at 04:17 UTC, after Photon's Finnish dump of the Sunday before.
+The format is in [tools/osm_data/README.md](../tools/osm_data/README.md#search-index).
+
+- **install-hosting**, once: makes `polku-search/` and puts [`search.htaccess`](../tools/osm_data/search.htaccess) in
+  it: `hosting.htaccess` with `.gzt` served as `application/octet-stream`, so no Content-Encoding is added.
+- **update** (weekly, or by hand) downloads the newest dated dump from GraphHopper and checks its MD5, NLS's place
+  names (about 80 requests of 10,000, one at a time, a second apart, with `MML_API_KEY`) and GeoNames' towns. It builds
+  on the newest release on the host, the candidate or the live one, reading its files over HTTPS: a group keeps its
+  files and lists what changed, so a week sends about 300 small files. The upload goes through `publish.py` with
+  `OSM_SHARED_FILES=true`, as the OSM data's: read back, checked over HTTPS and named in `candidates/current.json`.
+  `polku-search/` holds at most 2 GiB.
+- **fresh** makes every group's files again: about 52 MB.
+
+`search.py promote` makes a checked candidate live, as the OSM data's `publish.py promote`. The sources' terms:
+ODbL for OSM's data, CC BY 4.0 for NLS's names and GeoNames' towns, all named in the manifest's `attribution` and in
+`LICENSE.txt`.
