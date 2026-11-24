@@ -353,4 +353,5 @@ line strings in WGS84, rounded to six decimal places, without heights.
 Each zoom is its own dataset, `terrain-<z>`, as the NLS background map's: on the host its `format` is
 `pmtiles-json-cells` and its `url` its index's, and its cells hold WebP tiles (WebP in their headers, no tile
 compression). `source.timestamp` is the planet archive's `Last-Modified`. A tile the planet lacks is missing here
-too.
+too. `tools/fixtures/terrain-12.pmtiles` is the extract of one zoom-12 tile at Seitseminen (12/2315/1144), and
+`tools/fixtures/terrain-12-cells/` its cut at a 4 KiB target.
