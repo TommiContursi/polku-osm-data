@@ -430,6 +430,20 @@ class PackAndUploadTests(unittest.TestCase):
         self.assertEqual(asked, [None, 'bytes=100-'])
         self.assertEqual(path.read_bytes(), data)
 
+        asked.clear()
+        path.unlink()
+
+        class CutShort(io.BytesIO):  # the host closes early: http.client's reads in chunks just end
+            status = 200
+            def read(self, size=-1):
+                return super().read(min(size if size >= 0 else 100, max(0, 100 - self.tell())))
+
+        Stalled = CutShort
+        with patch.object(mml.urllib.request, 'urlopen', urlopen), patch.object(mml.time, 'sleep'):
+            path = base.file(archive)
+        self.assertEqual(asked, [None, 'bytes=100-'], 'a body cut short goes on too')
+        self.assertEqual(path.read_bytes(), data)
+
     def test_an_update_needs_its_live_release(self):
         with self.assertRaisesRegex(ValueError, 'promote a whole copy first'):
             mml.Base.live(self.tmp / 'live')

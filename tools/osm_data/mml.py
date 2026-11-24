@@ -515,6 +515,9 @@ class Base:
                                                 timeout=60) as response, open(part, 'ab') as out:
                         require(response.status == (206 if have else 200), f"{entry['url']}: HTTP {response.status}")
                         shutil.copyfileobj(response, out, 1 << 20)
+                    # A read in chunks ends quietly where the host closes early (http.client raises nothing)
+                    if part.stat().st_size < entry['bytes']:
+                        raise ConnectionError('cut short')
                     break
                 except (TimeoutError, ConnectionError, http.client.HTTPException) as error:
                     if attempt == ATTEMPTS:
@@ -522,7 +525,7 @@ class Base:
                     print(f"{entry['url']}: {type(error).__name__} at {part.stat().st_size} bytes; going on", flush=True)
                     time.sleep(10)
             require(part.stat().st_size == entry['bytes'] and publish.digest_file(part) == entry['sha256'],
-                    f"{entry['url']} differs from the live manifest")
+                    f"{entry['url']} differs from the live manifest ({part.stat().st_size} of {entry['bytes']} bytes)")
             part.rename(path)
         return path
 
