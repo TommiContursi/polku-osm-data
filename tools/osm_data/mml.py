@@ -54,7 +54,7 @@ TIMEOUT, SLOW = 10, 2  # seconds; an answer slower than SLOW counts as trouble
 CALM, RAISE = 30, 1  # after CALM seconds without trouble the rate rises by RAISE, up to RATE
 GIVE_UP = 300  # seconds without one good answer, or of 429s at the floor rate, before the run stops
 ATTEMPTS = 3  # per tile in one run; a tile still unanswered waits for the next run
-PATIENCE = 6  # tries in a row without a byte more before a download of the live release fails: about 12 min
+PATIENCE = 6  # tries in a row without a byte more before a download of the live release fails: up to 18 min
 EMPTY = gzip.compress(b'', 6, mtime=0)  # MML's 404: an empty tile
 KEPT = ('tile', 'empty', 'recorded', 'unchanged')  # answer()'s kinds that a tile keeps
 TABLE, LICENSE = 'tiles.tsv.gz', 'LICENSE.txt'
@@ -511,8 +511,12 @@ class Base:
                         raise ConnectionError('cut short')
                     break
                 except (TimeoutError, ConnectionError, http.client.HTTPException, URLError) as error:
-                    if isinstance(error, HTTPError) and error.code < 500:
-                        raise
+                    if isinstance(error, HTTPError):
+                        error.close()
+                        if error.code < 500 and error.code not in (408, 429):
+                            raise
+                    if part.stat().st_size >= entry['bytes']:
+                        break  # every byte came before the error: the check below says if they're right
                     idle = 0 if part.stat().st_size > have else idle + 1
                     if idle >= PATIENCE:
                         raise

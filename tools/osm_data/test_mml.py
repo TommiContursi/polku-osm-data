@@ -450,10 +450,10 @@ class PackAndUploadTests(unittest.TestCase):
         archive = base.manifest['datasets']['taustakartta']
         data, real, asked, step = self.host.files[FOLDER + '/' + archive['url']], publish.urllib.request.urlopen, [], [50]
 
-        class Slow(io.BytesIO):  # the host answers `step` bytes, then times out
+        class Slow(io.BytesIO):  # the host answers `step` bytes, then times out; every other try, nothing at all
             status = 206
             def read(self, size=-1):
-                if self.tell() >= step[0]:
+                if self.tell() >= (step[0] if len(asked) % 2 else 0):
                     raise TimeoutError('The read operation timed out')
                 return super().read(min(size if size >= 0 else step[0], step[0] - self.tell()))
 
@@ -470,7 +470,7 @@ class PackAndUploadTests(unittest.TestCase):
         with patch.object(mml.urllib.request, 'urlopen', urlopen), patch.object(mml.time, 'sleep', sleeps.append):
             path = base.file(archive)
         self.assertEqual(path.read_bytes(), data)
-        self.assertGreater(len(asked), mml.PATIENCE + 1, 'every try that got further counts afresh')
+        self.assertGreater(len(asked) // 2, mml.PATIENCE, 'a try that got further starts the count afresh')
         path.unlink()
         asked.clear()
         step[0] = 0  # the host answers nothing at all
