@@ -460,7 +460,7 @@ def upload(directory):
                 f'The candidate covers {old}, more than this release; upload a box that covers it')
     config = publish.settings()
     with publish.connection(config) as ftp:
-        point_live(ftp, publish.product_folder(ftp, config[-2], FOLDER))
+        point_live(ftp, publish.into_folder(ftp, config[-2], FOLDER))
     publish.upload(directory, folder=FOLDER, budget=BUDGET)
 
 

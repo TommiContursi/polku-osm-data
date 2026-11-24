@@ -472,7 +472,7 @@ class PackAndUploadTests(unittest.TestCase):
             publish.promote_candidate(found['release'], '0' * 64, self.tmp / 'p', folder=mml.FOLDER)
         manifest = json.loads(self.host.files[FOLDER + '/candidates/current.json'])
         self.host.files[self.cells(manifest)[14][0]] += b'x'
-        with self.assertRaisesRegex(Exception, 'Cell is missing or differs'):
+        with self.assertRaisesRegex(Exception, 'Indexed file is missing or differs'):
             publish.promote_candidate(found['release'], found['sha256'], self.tmp / 'p', folder=mml.FOLDER)
         self.assertEqual(json.loads(self.host.files[FOLDER + '/current.json'])['release'], '20261123T023208Z')
 
