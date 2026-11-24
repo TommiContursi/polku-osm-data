@@ -308,7 +308,7 @@ its URLs relative to `polku-mml/`, as the OSM data's. The first copy (release `2
 
 ## Digiroad
 
-`digiroad.py` copies four of Digiroad's layers (docs/OPERATIONS.md). `fetch` writes each layer's features into
+`digiroad.py` copies four of Digiroad's layers (docs/OPERATIONS.md), through `wfs.py`. `fetch` writes each layer's features into
 `<name>.jsonl.xz`, and `build` writes the release beside them, from those files alone. Its release has the OSM data's
 layout and goes up the same way, in cells among the shared files, into `polku-digiroad/` (Shared files, Cells). Its
 manifest, as `build` writes it:
@@ -357,6 +357,26 @@ has no `timestamp`. The manifest's `source.timestamp` is the newest of the datas
 `tools/fixtures/digiroad-<name>.jsonl.xz` are the WFS's answers around Tampere (23.70–23.80 E, 61.485–61.51 N; for
 private roads, which that box has none of, 61.46–61.485 N), `digiroad-<name>.pmtiles` their archives, and
 `digiroad-traffic-cells/` the traffic archive's cut at a 4 KiB target.
+
+## LIPAS
+
+`lipas.py` copies LIPAS's routes and places of the types Polku shows (docs/OPERATIONS.md), through `wfs.py`, the fetch
+and build Digiroad's copy uses: the same commands, files and manifest, into `polku-lipas/`. Each type is a dataset named
+by its LIPAS type code (`"4411"`, `"301"`), from its own layer (`lipas:lipas_4411_maastopyorailyreitti`) in ETRS-TM35FIN
+(EPSG:3067), ordered by `id,reitti_id` for routes and `id` for places. A feature of another type, without an `id`, a
+route part without a `reitti_id` or a place with one, or with another kind of geometry (Point for places, LineString or MultiLineString for routes) stops the fetch. A feature
+must come once by its row's ID in the WFS, which stays the same between answers: LIPAS serves a few places twice.
+
+Each zoom-9 tile is gzipped JSON, `{"schema": 1, "elements": [{"properties": {"id": 615379, "reitti_id": 1, "nimi_fi":
+"Multamäen MTB-lenkki", …}, "geometry": {"type": "LineString", "coordinates": [[443341.2822, 6923064.2259], …]}}]}`:
+every feature whose extent touches the tile, whole, ordered by `id` and `reitti_id` (then by the element, for LIPAS's
+rows twice over), with the geometry as served and
+only the properties Polku reads (`id`, `reitti_id`, `nimi_fi`, `nimi_se`, `lisatieto_fi`, `www`, `kunta_nimi_fi`,
+`reitin_pituus_km`, `pintamateriaali` and `yleiso_wc`) where they aren't null. A dataset's `source.timestamp` is its
+newest `muokattu_viimeksi`, which LIPAS's WFS writes in Finnish time with a `Z`.
+`tools/fixtures/lipas-4411.jsonl.xz` and `lipas-301.jsonl.xz` are the WFS's MTB routes and lean-tos around Multamäki
+(25.85–25.97 E, 62.41–62.46 N) on 2026-11-24, `lipas-<type>.pmtiles` their archives, and `lipas-<type>-cells/` their cuts
+at a 4 KiB target, which Polku's checks serve.
 
 ## Search index
 

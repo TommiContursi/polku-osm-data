@@ -221,11 +221,12 @@ anything.
 ## The host
 
 The data is served from `https://ducksoft.fi/polku-osm/`, `https://ducksoft.fi/polku-routing/`, `https://ducksoft.fi/polku-mml/`,
-`https://ducksoft.fi/polku-digiroad/`, `https://ducksoft.fi/polku-terrain/` and `https://ducksoft.fi/polku-basemap/`.
+`https://ducksoft.fi/polku-digiroad/`, `https://ducksoft.fi/polku-terrain/`, `https://ducksoft.fi/polku-basemap/` and
+`https://ducksoft.fi/polku-lipas/`.
 Each folder has its own `.htaccess`: [`hosting.htaccess`](../tools/osm_data/hosting.htaccess),
 installed by hand, [`routing.htaccess`](../tools/osm_data/routing.htaccess) (Routing data,
 above), [`mml.htaccess`](../tools/osm_data/mml.htaccess) in `polku-mml/` (NLS background map, below) and a copy of
-`hosting.htaccess` in `polku-digiroad/` (Digiroad, below), `polku-terrain/` (Terrain, below) and `polku-basemap/` (Base map, below). They turn off listing and HTTP compression, set the MIME types, allow read-only CORS with
+`hosting.htaccess` in `polku-digiroad/` (Digiroad, below), `polku-terrain/` (Terrain, below), `polku-basemap/` (Base map, below) and `polku-lipas/` (LIPAS, below). They turn off listing and HTTP compression, set the MIME types, allow read-only CORS with
 the Range headers exposed, cache releases as immutable and make `current.json` revalidate, which
 also covers `candidates/current.json`.
 
@@ -349,6 +350,26 @@ again only when a source with newer data exists. The format is in
 
 The data is CC BY 4.0: "© Fintraffic / Digiroad, from Väylävirasto's open data, CC BY
 4.0", in the manifest, the archives' metadata and `LICENSE.txt`, which also says what was changed.
+
+## LIPAS
+
+`lipas-data.yml`, by hand, copies LIPAS's routes and places of the 25
+types Polku shows (its `LIPAS_TYPES`) from LIPAS's WFS, the same layers Polku reads when the copy can't answer. Counted
+on 2026-11-24: 66,057 features, 56,057 of them parts of routes. Landing places (205) had none, so they aren't copied
+and Polku asks LIPAS for them; a type with none stops the copy, as Digiroad's. The format is in
+[tools/osm_data/README.md](../tools/osm_data/README.md#lipas).
+
+- **install-hosting**, once: makes `polku-lipas/` and puts a copy of
+  [`hosting.htaccess`](../tools/osm_data/hosting.htaccess) in it.
+- **copy** asks the WFS for 5,000 features at a time with 5 s between pages, as Digiroad's copy does (`wfs.py`), and
+  retries a failed page once after 5 minutes. On 2026-11-24 the fetch took 82 s for about 40 pages, the build 20 s and
+  180 MB of memory: 51 MB of zoom-9 tiles and 15 MB of xz files. It goes up in cells through `publish.py`, so another
+  copy sends only the cells whose tiles changed and the xz files of the types that changed, and `polku-lipas/` holds at
+  most 1 GiB.
+- **Promotion** is Polku's `lipas-promote.yml` (added with Polku's reader of the copy), with `publish.py candidate` on the folder's URL and `promote` and
+  `rollback` with `--folder polku-lipas`, as Digiroad's.
+
+The data is CC BY 4.0: "© LIPAS, University of Jyväskylä, CC BY 4.0", in the manifest, the archives' metadata and `LICENSE.txt`.
 
 ## Search index
 
