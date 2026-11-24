@@ -305,7 +305,8 @@ open data, CC BY 4.0", in the manifest, the archive's metadata and `LICENSE.txt`
   time, and retries a failed request twice after a minute (`extract.py`). The archive must keep its `Last-Modified`
   and `ETag` throughout. Each zoom is read back against what was read. The release goes up in cells through
   `publish.py`, about 16,300 of them; a cell the host holds isn't sent again, and `polku-terrain/` holds at most
-  16 GiB.
+  16 GiB. A run that stops before the end is dispatched again: it extracts again and sends only the cells still
+  missing.
 - **Promotion** is Polku's `terrain-promote.yml`, by hand: `terrain.py candidate`, then `terrain.py promote` and,
   if polku.si then fails its check, `terrain.py restore`, as the NLS background map's.
 

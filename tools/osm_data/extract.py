@@ -22,6 +22,7 @@ from tools.osm_data.routing import stamp
 RUN = 32 * 1024**2  # bytes a request at most
 GAP = 256 * 1024  # bytes between two tiles read through rather than asked for in a request of their own
 ATTEMPTS, BACK_OFF = 3, 60  # tries a request, and seconds before the next
+DEPTH = 4  # directories a tile's entry lies under at most (PMTiles writers nest leaves one level deep)
 
 
 class Remote:
@@ -74,7 +75,10 @@ def places(remote, wanted):
     root = deserialize_directory(remote.read(h['root_offset'], h['root_length']))
     for tile in wanted:
         directory = root
-        while (entry := find_tile(directory, tile)) is not None:
+        for _ in range(DEPTH):
+            entry = find_tile(directory, tile)
+            if entry is None:
+                break
             if entry.run_length:
                 found[tile] = (h['tile_data_offset'] + entry.offset, entry.length)
                 break
@@ -82,6 +86,8 @@ def places(remote, wanted):
             if key not in leaves:
                 leaves[key] = deserialize_directory(remote.read(key, entry.length))
             directory = leaves[key]
+        else:
+            raise ValueError(f'{remote.url}: leaves nested deeper than {DEPTH}')
     return found
 
 
