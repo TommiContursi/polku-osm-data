@@ -70,9 +70,17 @@ class ProductTests(unittest.TestCase):
             self.assertIn(name, manifest['datasets'])
             self.assertEqual(manifest['datasets'][name]['features'], 0)
 
-    def test_missing_place_member_fails_instead_of_becoming_an_empty_search(self):
-        with self.assertRaisesRegex(ValueError, 'Incomplete.*place'):
-            self.build(OSM.replace('</osm>', REL.replace('ref="23"', 'ref="999"') + '</osm>'))
+    def test_a_place_cut_at_the_extract_edge_is_left_out_and_counted(self):
+        # Norway's clip cut camp site relation 19954900 this way: some outer ways inside, one outside.
+        rel = ('<relation id="210"><member type="way" ref="10" role="outer"/><member type="way" ref="999" role="outer"/>'
+               '<tag k="tourism" v="camp_site"/></relation>')
+        out, manifest = self.build(OSM.replace('</osm>', rel + '</osm>'))
+        self.assertEqual(manifest['datasets']['places']['features'], 0)
+        measured = json.loads((out / 'measurements.json').read_bytes())['products']
+        self.assertEqual(measured['places']['incomplete_left_out'], 1)
+        e = next(e for e in self.tile(out, 'inspection', 14) if e['id'] == 210)
+        self.assertTrue(e['incomplete'])
+        self.assertFalse(manifest['datasets']['inspection']['nearby_complete'])
 
     def test_inspection_keeps_all_highways_and_full_place_tags(self):
         node = '<node id="9" lon="0.005" lat="-0.005"><tag k="amenity" v="toilets"/><tag k="custom:tag" v="original"/></node>'
