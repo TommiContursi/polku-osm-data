@@ -49,7 +49,8 @@ SHORT = 0.9  # of each source's count in the previous release, at least
 TARGET = 48 * 1024  # a file's gzipped bytes, at most, unless one word's records alone are more
 TOP = 30  # records in a split prefix's list, for queries that short
 CHANGES = 24 * 1024  # a group's changed records, in bytes, before its files are made again
-INLINE = 1024  # a file smaller than this, gzipped, goes into its group's index as text: half the files are
+INLINE = 1024  # a file smaller than this, gzipped, goes into its group's index as text: half the files are,
+INLINED = 8 * 1024  # up to this many of a group's gzipped bytes, so a large group's index stays small
 AREA = 7  # the zoom of the tiles a common word's records are split by
 PAGE, PAUSE = 10000, 1  # NLS: names a request, and seconds between requests
 ATTRIBUTION = ('Places: © OpenStreetMap contributors (ODbL), via Photon; place names © National Land Survey of '
@@ -335,7 +336,7 @@ class Group:
         self.lines, self.by_key = lines, by_key  # {id: line}, {key: set of ids}
         self.keys = sorted(by_key)
         self.rank = {i: float(l.split('\t')[5]) for i, l in lines.items()}
-        self.files, self.rows, self.texts = {}, [], []
+        self.files, self.rows, self.texts, self.inlined = {}, [], [], 0
 
     def ids(self, prefix):
         lo = bisect.bisect_left(self.keys, prefix)
@@ -348,8 +349,9 @@ class Group:
     def add(self, prefix, kind, ids):
         text = self.body(ids)
         data = gz(text)
-        if len(data) < INLINE:
+        if len(data) < INLINE and self.inlined + len(data) <= INLINED:
             self.texts.append([prefix, kind, text])
+            self.inlined += len(data)
             return
         sha = hashlib.sha256(data).hexdigest()
         self.files[sha + SUFFIX] = data
