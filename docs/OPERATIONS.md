@@ -175,6 +175,25 @@ GitHub turns off a public repository's scheduled workflows after 60 days without
 it. Polku's weekly check fails once the live data is over 14 days old, so a stopped build
 can't go unnoticed for long; re-enable the workflows here when it happens.
 
+## Running the jobs
+
+Learned from the first runs, 2026-11-22 to 24:
+
+- **Schedules start late.** GitHub started this repository's scheduled runs 8 to 12 hours after
+  their time. A late build stops when another build has its export (#22). A step that must be
+  done by a time is dispatched by hand.
+- **Re-runs are spaced:** 30 minutes, 1 hour, then 2 hours (#17). A source that refuses is asked
+  again later, never at once.
+- **A fallback is chosen per transfer.** A request that gets no answer, and one that answers and
+  then stalls, both switch to the mirror (#18 to #21). The mirror's clip isn't Geofabrik's extract
+  (#36).
+- **A time limit is measured for its own job.** A limit copied from another job ran out where the
+  job reads every file (Polku's routing promotion, 1,142 reads).
+- **The host's cost is per file, not per byte:** about 1.5 s a file over one channel, so many small
+  files go over several channels (#38).
+- **One job writes to the host at a time** where it can. Downloads from it slow down and time out
+  while uploads run (#40).
+
 ## Retention
 
 Before an upload, `maintenance.py` removes only files it owns. It keeps the live release, its
