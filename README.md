@@ -19,6 +19,24 @@ and `https://ducksoft.fi/polku-lipas/` a copy of LIPAS's routes and places ([doc
 The repository is public so that its long builds run on GitHub's free runners. Its code
 is not open source: see [LICENSE](LICENSE). The data keeps OpenStreetMap's licence.
 
+## Status
+
+Badges show the latest run on `main`. A run by hand or on a schedule only changes its badge when it runs: grey (no status) means it has not run yet.
+
+| Data | Build | When | Polku promotion | When |
+|---|---|---|---|---|
+| OSM | [![OSM build](https://github.com/TommiContursi/polku-osm-data/actions/workflows/osm-data.yml/badge.svg?branch=main)](https://github.com/TommiContursi/polku-osm-data/actions/workflows/osm-data.yml) | Mon build, daily check | [![OSM promotion](https://github.com/TommiContursi/Polku/actions/workflows/osm-promote.yml/badge.svg?branch=main)](https://github.com/TommiContursi/Polku/actions/workflows/osm-promote.yml) | Thu |
+| Routing | [![Routing build](https://github.com/TommiContursi/polku-osm-data/actions/workflows/routing-data.yml/badge.svg?branch=main)](https://github.com/TommiContursi/polku-osm-data/actions/workflows/routing-data.yml) | Wed update, daily check | [![Routing promotion](https://github.com/TommiContursi/Polku/actions/workflows/routing-promote.yml/badge.svg?branch=main)](https://github.com/TommiContursi/Polku/actions/workflows/routing-promote.yml) | Thu |
+| NLS map | [![NLS map build](https://github.com/TommiContursi/polku-osm-data/actions/workflows/mml-data.yml/badge.svg?branch=main)](https://github.com/TommiContursi/polku-osm-data/actions/workflows/mml-data.yml) | by hand | [![NLS map promotion](https://github.com/TommiContursi/Polku/actions/workflows/mml-promote.yml/badge.svg?branch=main)](https://github.com/TommiContursi/Polku/actions/workflows/mml-promote.yml) | by hand |
+| Terrain | [![Terrain build](https://github.com/TommiContursi/polku-osm-data/actions/workflows/terrain-data.yml/badge.svg?branch=main)](https://github.com/TommiContursi/polku-osm-data/actions/workflows/terrain-data.yml) | by hand | [![Terrain promotion](https://github.com/TommiContursi/Polku/actions/workflows/terrain-promote.yml/badge.svg?branch=main)](https://github.com/TommiContursi/Polku/actions/workflows/terrain-promote.yml) | by hand |
+| Base map | [![Base map build](https://github.com/TommiContursi/polku-osm-data/actions/workflows/basemap-data.yml/badge.svg?branch=main)](https://github.com/TommiContursi/polku-osm-data/actions/workflows/basemap-data.yml) | 2nd of month | [![Base map promotion](https://github.com/TommiContursi/Polku/actions/workflows/basemap-promote.yml/badge.svg?branch=main)](https://github.com/TommiContursi/Polku/actions/workflows/basemap-promote.yml) | 4th of month |
+| Search | [![Search build](https://github.com/TommiContursi/polku-osm-data/actions/workflows/search-data.yml/badge.svg?branch=main)](https://github.com/TommiContursi/polku-osm-data/actions/workflows/search-data.yml) | Tue | [![Search promotion](https://github.com/TommiContursi/Polku/actions/workflows/search-promote.yml/badge.svg?branch=main)](https://github.com/TommiContursi/Polku/actions/workflows/search-promote.yml) | Tue |
+| Digiroad | [![Digiroad build](https://github.com/TommiContursi/polku-osm-data/actions/workflows/digiroad-data.yml/badge.svg?branch=main)](https://github.com/TommiContursi/polku-osm-data/actions/workflows/digiroad-data.yml) | by hand | — |  |
+| LIPAS | [![LIPAS build](https://github.com/TommiContursi/polku-osm-data/actions/workflows/lipas-data.yml/badge.svg?branch=main)](https://github.com/TommiContursi/polku-osm-data/actions/workflows/lipas-data.yml) | by hand | [![LIPAS promotion](https://github.com/TommiContursi/Polku/actions/workflows/lipas-promote.yml/badge.svg?branch=main)](https://github.com/TommiContursi/Polku/actions/workflows/lipas-promote.yml) | by hand |
+| Alerts | [![Alerts build](https://github.com/TommiContursi/polku-osm-data/actions/workflows/osm-data-alerts.yml/badge.svg?branch=main)](https://github.com/TommiContursi/polku-osm-data/actions/workflows/osm-data-alerts.yml) | after a failed OSM or routing run | — |  |
+
+Schedules are in each workflow. Polku's badges show only while Polku is public.
+
 ## How a release reaches Polku
 
 1. **Monday 03:17 UTC**, `osm-data.yml` picks one dated Geofabrik export shared by all four
