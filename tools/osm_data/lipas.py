@@ -25,7 +25,7 @@ SRS = 'EPSG:3067'
 ZOOM = 9  # Polku's tiles of LIPAS (js/lipas.js)
 PAGE, PAUSE, BACK_OFF = 5000, 5, 300  # features a request, and seconds between pages and before the one retry
 FOLDER = 'polku-lipas'
-BUDGET = 1024**3  # live, its predecessor, candidate and staging: four copies of about 100 MB (est)
+BUDGET = 1024**3  # live, its predecessor, candidate and staging: four copies of 66 MB (2026-11-24)
 # Polku's types (js/config.js, LIPAS_TYPES) and their layers, lines and points. A route's parts are ordered by its id and
 # part. Landing places (205, rantautumispaikka) had none on 2026-11-24, so they aren't copied and Polku asks LIPAS.
 LINES = {4401: 'kuntorata', 4402: 'latu', 4403: 'kavelyreitti', 4404: 'luontopolku', 4405: 'retkeilyreitti',
