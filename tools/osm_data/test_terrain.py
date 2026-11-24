@@ -145,13 +145,13 @@ class TerrainTests(unittest.TestCase):
                     header = Reader(MemorySource(host.files[f"{BASE}/files/{cell['sha256']}.pmtiles"])).header()
                     self.assertEqual((header['tile_type'], header['tile_compression'], header['min_zoom']),
                                      (TileType.WEBP, Compression.NONE, z))
-            found = publish.candidate(publish.product_url(ENV['OSM_PUBLIC_URL'], terrain.FOLDER))
+            found = publish.candidate(publish.product_url(ENV['OSM_PUBLIC_URL'], terrain.FOLDER), first=True)
             self.assertEqual(found, {'release': manifest['release'], 'sha256': hashlib.sha256(raw).hexdigest(),
                                      'manifest': f"{publish.product_url(ENV['OSM_PUBLIC_URL'], terrain.FOLDER)}/releases/{manifest['release']}/manifest.json"},
                              'a candidate with nothing live yet')
             publish.promote_candidate(found['release'], found['sha256'], self.tmp / 'promote', folder=terrain.FOLDER)
             self.assertEqual(json.loads(host.files[BASE + '/current.json']), publish.current(manifest))
-            self.assertIsNone(publish.candidate(publish.product_url(ENV['OSM_PUBLIC_URL'], terrain.FOLDER)), 'the candidate is live')
+            self.assertIsNone(publish.candidate(publish.product_url(ENV['OSM_PUBLIC_URL'], terrain.FOLDER), first=True), 'the candidate is live')
             small = manifest | {'bounds': [20.0, 60.0, 21.0, 61.0]}  # a test box
             with self.assertRaisesRegex(ValueError, r'current.json covers \[0.0, 40.0, 40.0, 75.0\], more than this release'):
                 publish.require_covers(terrain.FOLDER, small)

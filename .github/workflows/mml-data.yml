@@ -1,5 +1,5 @@
 name: Polku NLS background map
-run-name: NLS background map / ${{ github.event_name == 'workflow_dispatch' && format('copy {0}', inputs.box) || 'test' }}
+run-name: NLS background map / ${{ github.event_name == 'workflow_dispatch' && format('{0} {1}', inputs.update && 'update' || 'copy', inputs.box) || 'test' }}
 
 # Copies NLS's (MML's) background-map vector tiles, packs them into PMTiles a zoom and uploads a candidate in cells.
 on:
@@ -7,6 +7,10 @@ on:
     paths: [tools/osm_data/mml.py, tools/osm_data/mml.htaccess, .github/workflows/mml-data.yml]
   workflow_dispatch:
     inputs:
+      update:
+        description: Go on from the live release, asking MML with If-Modified-Since
+        type: boolean
+        default: true
       box:
         description: West,south,east,north in degrees; a small box tests the whole job
         type: string
@@ -24,8 +28,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # A pull request fetches central Helsinki, in two parts, to test going on from a stopped run
+  # A pull request updates central Helsinki, in two parts, to test going on from a stopped run
   BOX: ${{ inputs.box || '24.92,60.16,24.96,60.18' }}
+  UPDATE: ${{ (github.event_name == 'pull_request' || inputs.update) && '--update mml/live' || '' }}
 
 jobs:
   fetch:
@@ -75,7 +80,8 @@ jobs:
         env:
           MML_API_KEY: ${{ secrets.MML_API_KEY }}
           LIMIT: ${{ github.event_name == 'pull_request' && matrix.part == 1 && '--limit 10' || '' }}
-        run: python tools/osm_data/mml.py fetch mml/store.sqlite --box "$BOX" --until "$UNTIL" $LIMIT
+          OSM_PUBLIC_URL: ${{ vars.OSM_PUBLIC_URL }}
+        run: python tools/osm_data/mml.py fetch mml/store.sqlite --box "$BOX" --until "$UNTIL" $LIMIT $UPDATE
       - name: Keep what was fetched, for the next part or a later run
         # One artifact a part: a failed upload never loses what an earlier part kept
         if: always() && steps.fetch.outputs.changed == 'true'
@@ -91,7 +97,8 @@ jobs:
   pack:
     needs: fetch
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # An update downloads the live release first: the first copy's archive is 8.5 GB
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -120,7 +127,10 @@ jobs:
           github-token: ${{ github.token }}
           run-id: ${{ steps.store.outputs.run }}
       - name: One archive a zoom, read back tile for tile, with the manifest
-        run: python tools/osm_data/mml.py pack mml/store.sqlite mml-release
+        env:
+          OSM_PUBLIC_URL: ${{ vars.OSM_PUBLIC_URL }}
+        # An update reads the tiles MML answered 304 for from the live release's cells (or the first copy's archive)
+        run: python tools/osm_data/mml.py pack mml/store.sqlite mml-release $UPDATE
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: mml-release
