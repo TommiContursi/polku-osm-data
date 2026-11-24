@@ -3,6 +3,7 @@
 from contextlib import ExitStack, redirect_stdout
 from datetime import datetime, timezone
 import gzip
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -11,9 +12,11 @@ import tempfile
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from pmtiles.reader import MmapSource, Reader
+from pmtiles.reader import MmapSource, Reader, all_tiles
+from pmtiles.writer import Writer
 from pmtiles.tile import Compression, TileType, tileid_to_zxy, zxy_to_tileid
 
 from tools.osm_data import mml, publish
@@ -42,18 +45,20 @@ def body(z, x, y):
 
 
 class FakeMML:
-    """MML's answers by tile: a status, or an exception, in turn; 200 once they run out."""
-    def __init__(self, answers=None):
-        self.answers, self.asked, self.lock = answers or {}, [], threading.Lock()
+    """MML's answers by tile: a status, or an exception, in turn; once they run out, 304 to If-Modified-Since LM for a
+    tile not in `changed`, else 200 with the tile's body, a `changed` tile's with other layers."""
+    def __init__(self, answers=None, changed=()):
+        self.answers, self.changed, self.asked, self.since, self.lock = answers or {}, changed, [], {}, threading.Lock()
 
-    def __call__(self, z, x, y):
+    def __call__(self, z, x, y, since=None):
         with self.lock:
             self.asked.append((z, x, y))
+            self.since[(z, x, y)] = since
             turn = self.answers.get((z, x, y))
-            answer = turn.pop(0) if turn else 200
+            answer = turn.pop(0) if turn else 304 if since == LM and (z, x, y) not in self.changed else 200
         if isinstance(answer, Exception):
             raise answer
-        data = body(z, x, y) if answer == 200 else b''
+        data = (vector('liikenne', f'{z}/{x}/{y}') if (z, x, y) in self.changed else body(z, x, y)) if answer == 200 else b''
         return answer, {'Last-Modified': LM, 'Content-Length': str(len(data))}, data, 0.01
 
 
@@ -167,6 +172,25 @@ class FetchTests(unittest.TestCase):
         self.assertEqual(report['tile'] + report['left'], len(TILES))
         self.assertGreater(report['left'], 0)
 
+    def test_an_update_asks_with_the_tiles_dates_and_keeps_a_304_as_the_bases_tile(self):
+        undated = TILES[0]
+        base = SimpleNamespace(sha256='a' * 64, dated=lambda: {mml.zxy_to_tileid(*t): (200, LM) for t in TILES if t != undated})
+        fake = FakeMML({TILES[1]: [200]}, changed={TILES[2]})
+        self.fetch(fake, base=base)
+        rows = self.rows()
+        self.assertIsNone(fake.since[undated], 'a tile the table has no date for is asked plainly')
+        self.assertEqual(fake.since[TILES[3]], LM)
+        self.assertEqual(rows[TILES[3]], (200, LM, None), "a 304 keeps the base's status and date, not its data")
+        self.assertEqual(gzip.decompress(rows[TILES[2]][2]), vector('liikenne', '{}/{}/{}'.format(*TILES[2])))
+        with self.assertRaisesRegex(ValueError, 'The store is for the base'):
+            self.fetch(FakeMML())
+
+    def test_a_304_mml_was_not_asked_for_is_trouble(self):
+        fake = FakeMML({TILES[0]: [304]})
+        self.fetch(fake)
+        self.assertEqual(fake.asked.count(TILES[0]), 2)
+        self.assertIsNotNone(self.rows()[TILES[0]][2])
+
     def test_mml_answering_400_to_everything_stops_the_run(self):
         with patch.object(mml, 'GIVE_UP', 0), self.assertRaisesRegex(mml.Refused, 'No good answer'):
             self.fetch(FakeMML({tile: [400] for tile in TILES}))
@@ -189,7 +213,7 @@ class FetchTests(unittest.TestCase):
         self.assertLessEqual(len(fake.asked), 5, 'one refusal stops it, with at most one request a connection in flight')
 
     def test_mml_answering_only_errors_stops_the_run_and_the_key_is_never_printed(self):
-        def failing(z, x, y):
+        def failing(z, x, y, since=None):
             raise OSError(f'https://{mml.HOST}/x?api-key={KEY}')
         with patch.object(mml, 'GIVE_UP', 0), self.assertRaisesRegex(mml.Refused, 'No good answer'):
             self.fetch(failing)
@@ -296,16 +320,25 @@ class PackAndUploadTests(unittest.TestCase):
         self.assertFalse([p for p in self.host.files if '/releases/' in p or '/files/' in p], 'nothing was uploaded')
 
     def first_copy(self):
-        """The first copy as it was promoted: one archive in its release's folder, current.json its manifest's bytes."""
+        """The first copy as it was promoted: one archive of every zoom in its release's folder, current.json its
+        manifest's own bytes."""
         out, manifest = self.pack(T0.replace(hour=2))
+        stream = io.BytesIO()
+        writer = Writer(stream)
+        for z in range(11, 15):
+            with open(out / mml.archive_name(z), 'rb') as archive:
+                for (tz, x, y), data in all_tiles(MmapSource(archive)):
+                    writer.write_tile(zxy_to_tileid(tz, x, y), data)
+        writer.finalize({'tile_type': TileType.MVT, 'tile_compression': Compression.GZIP}, {})
+        data = stream.getvalue()
         release = '20261123T023208Z'
-        archive = {'path': 'taustakartta.pmtiles', 'bytes': manifest['files'][-3]['bytes'], 'sha256': manifest['files'][-3]['sha256']}
+        archive = {'path': 'taustakartta.pmtiles', 'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
         old = dict(manifest, release=release, built_at='2026-11-23T02:32:08Z', files=[archive, *manifest['files'][-2:]],
                    datasets={'taustakartta': {'url': archive['path'], 'bytes': archive['bytes'], 'sha256': archive['sha256']}})
         raw = json.dumps(old, sort_keys=True, separators=(',', ':')).encode()
         base = f'{FOLDER}/releases/{release}'
         self.host.dirs.update({FOLDER + '/releases', base})
-        self.host.files[f'{base}/taustakartta.pmtiles'] = (out / manifest['files'][-3]['path']).read_bytes()
+        self.host.files[f'{base}/taustakartta.pmtiles'] = data
         for f in manifest['files'][-2:]:
             self.host.files[f"{base}/{f['path']}"] = (out / f['path']).read_bytes()
         self.host.files[base + '/manifest.json'] = self.host.files[FOLDER + '/current.json'] = raw
@@ -335,6 +368,94 @@ class PackAndUploadTests(unittest.TestCase):
         with patch.dict('os.environ', {'OSM_ALLOW_PUBLISH': ''}), self.assertRaisesRegex(ValueError, 'OSM_ALLOW_PUBLISH'):
             mml.upload(self.pack()[0])
         self.assertEqual(self.host.files, before)
+
+    def update(self, now, changed=()):
+        """An update from the live release: the store, its Base and the fake MML."""
+        base = mml.Base.live(self.tmp / now.strftime('live%H%M'))
+        store, fake = self.tmp / now.strftime('update%H%M.sqlite'), FakeMML(changed=changed)
+        mml.fetch(store, BOX, request=fake, rate=1000, connections=3, base=base)
+        out = self.tmp / now.strftime('update%H%M')
+        return out, mml.pack(store, out, now, base=mml.Base(base.directory)), fake
+
+    def test_an_update_from_the_first_copy_and_then_from_cells_sends_only_the_cells_whose_tiles_changed(self):
+        old = self.first_copy()
+        out, first, fake = self.update(T0)
+        self.assertIsNone(fake.since[TILES[2]], 'a 400 is asked again plainly')
+        self.assertEqual(first['tiles'], {'200': len(TILES) - 1, '404': 1})
+        with open(self.tmp / '0200' / mml.archive_name(14), 'rb') as a, open(out / mml.archive_name(14), 'rb') as b:
+            self.assertEqual(Reader(MmapSource(b)).get(14, 9327, 4742), Reader(MmapSource(a)).get(14, 9327, 4742),
+                             "a 304's tile is the first copy's")
+        lines = gzip.decompress((out / mml.TABLE).read_bytes()).decode().splitlines()
+        self.assertIn('\t'.join(map(str, TILES[3])) + f'\t200\t{LM}', lines, 'with its date')
+        mml.upload(out)
+        found = publish.candidate(PUBLIC.removesuffix('/polku-osm') + '/polku-mml')
+        (self.tmp / 'p').mkdir()
+        publish.promote_candidate(found['release'], found['sha256'], self.tmp / 'p', folder=mml.FOLDER)
+        before = self.cells(json.loads(self.host.files[FOLDER + '/candidates/current.json']))
+        self.host.uploads.clear()
+        out, second, _ = self.update(T0.replace(hour=4), changed={TILES[0]})
+        mml.upload(out)
+        sent = sorted(path.rsplit('/', 1)[1] for path, _, _ in self.host.uploads if path.endswith('.pmtiles'))
+        after = self.cells(json.loads(self.host.files[FOLDER + '/candidates/current.json']))
+        self.assertEqual(sent, sorted(path.rsplit('/', 1)[1] for path in set(after[TILES[0][0]]) - set(before[TILES[0][0]])))
+        self.assertEqual(len(sent), 1, 'the one cell holding the changed tile')
+        self.assertEqual({z: after[z] for z in after if z != TILES[0][0]}, {z: before[z] for z in before if z != TILES[0][0]})
+        self.assertIn(f"{FOLDER}/releases/{old['release']}/taustakartta.pmtiles", self.host.files, 'the predecessor: kept')
+
+    def test_a_stalled_download_of_the_live_release_goes_on_from_where_it_stopped(self):
+        self.first_copy()
+        base = mml.Base.live(self.tmp / 'live')
+        archive = base.manifest['datasets']['taustakartta']
+        data, real, asked = self.host.files[FOLDER + '/' + archive['url']], publish.urllib.request.urlopen, []
+
+        class Stalled(io.BytesIO):
+            status = 200
+            def read(self, size=-1):
+                if self.tell() >= 100:
+                    raise TimeoutError('The read operation timed out')
+                return super().read(min(size if size >= 0 else 100, 100 - self.tell()))
+
+        def urlopen(request, **kwargs):
+            if not request.full_url.endswith(archive['url']):
+                return real(request, **kwargs)
+            asked.append(request.get_header('Range'))
+            if len(asked) == 1:
+                return Stalled(data)
+            rest = io.BytesIO(data[100:])
+            rest.status = 206
+            return rest
+
+        with patch.object(mml.urllib.request, 'urlopen', urlopen), patch.object(mml.time, 'sleep'):
+            path = base.file(archive)
+        self.assertEqual(asked, [None, 'bytes=100-'])
+        self.assertEqual(path.read_bytes(), data)
+
+        asked.clear()
+        path.unlink()
+
+        class CutShort(io.BytesIO):  # the host closes early: http.client's reads in chunks just end
+            status = 200
+            def read(self, size=-1):
+                return super().read(min(size if size >= 0 else 100, max(0, 100 - self.tell())))
+
+        Stalled = CutShort
+        with patch.object(mml.urllib.request, 'urlopen', urlopen), patch.object(mml.time, 'sleep'):
+            path = base.file(archive)
+        self.assertEqual(asked, [None, 'bytes=100-'], 'a body cut short goes on too')
+        self.assertEqual(path.read_bytes(), data)
+
+    def test_an_update_needs_its_live_release(self):
+        with self.assertRaisesRegex(ValueError, 'promote a whole copy first'):
+            mml.Base.live(self.tmp / 'live')
+        self.first_copy()
+        base = mml.Base.live(self.tmp / 'live')
+        store = self.tmp / 'update.sqlite'
+        mml.fetch(store, BOX, request=FakeMML(), rate=1000, connections=3, base=base)
+        with self.assertRaisesRegex(ValueError, 'An update needs its live release'):
+            mml.pack(store, self.tmp / 'x', T0)
+        (base.directory / 'current.json').write_bytes(self.host.files[FOLDER + '/current.json'] + b' ')
+        with self.assertRaisesRegex(ValueError, 'not the one the update went on from'):
+            mml.pack(store, self.tmp / 'x', T0, base=mml.Base(base.directory))
 
     def candidate_of(self, now):
         out, manifest = self.pack(now)
