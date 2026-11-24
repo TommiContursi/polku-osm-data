@@ -52,6 +52,9 @@ try:
 except ImportError:  # (the checks of this module that need no SFTP)
     SSHException = OSError
 CHANNEL_ERRORS = (OSError, EOFError, SSHException)
+# the connection's errors, not a file's: a reset, a closed session or a timeout (paramiko closes a dropped connection's
+# channels before it marks it inactive, so is_active() may not know yet)
+DROPS = (EOFError, SSHException, ConnectionError, TimeoutError)
 
 
 class Dropped(RuntimeError):
@@ -358,9 +361,6 @@ class SFTPFiles:
     def close_channel(self):
         self.sftp.close()
 
-    def active(self):
-        return self.transport.is_active()
-
     def close(self):
         try:
             self.sftp.close()
@@ -398,7 +398,7 @@ def connection(config):
         yield remote
     except Exception as error:
         message = str(error).replace(password, '[redacted]').replace(user, '[redacted]')
-        if remote is not None and isinstance(error, CHANNEL_ERRORS) and not remote.active():
+        if remote is not None and isinstance(error, DROPS):
             raise Dropped(message) from None
         raise RuntimeError(message) from None
     finally:

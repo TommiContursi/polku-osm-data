@@ -216,8 +216,6 @@ class Host:
                 return other
             def close_channel(self):
                 pass
-            def active(self):
-                return not host.dropped
             def quit(self):
                 pass
             close = quit
