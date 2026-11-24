@@ -9,7 +9,8 @@ Beside it, `https://ducksoft.fi/polku-routing/` mirrors BRouter's routing data f
 ([docs/OPERATIONS.md](docs/OPERATIONS.md#routing-data)).
 `https://ducksoft.fi/polku-mml/` holds a copy of the National Land Survey's background-map vector tiles
 ([docs/OPERATIONS.md](docs/OPERATIONS.md#nls-background-map)), and `https://ducksoft.fi/polku-digiroad/` a copy of
-Digiroad's busy roads ([docs/OPERATIONS.md](docs/OPERATIONS.md#digiroad-traffic-volumes)). `https://ducksoft.fi/polku-terrain/`
+Digiroad's busy roads, paved roads, private roads and speed limits
+([docs/OPERATIONS.md](docs/OPERATIONS.md#digiroad)). `https://ducksoft.fi/polku-terrain/`
 holds a copy of Mapterhorn's terrain ([docs/OPERATIONS.md](docs/OPERATIONS.md#terrain)), and
 `https://ducksoft.fi/polku-basemap/` a monthly copy of OpenFreeMap's base map ([docs/OPERATIONS.md](docs/OPERATIONS.md#base-map)).
 

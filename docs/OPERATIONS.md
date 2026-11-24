@@ -136,13 +136,15 @@ credentials apart:
    python tools/osm_data/publish.py promote RELEASE --sha256 SHA --directory osm-promote
    ```
 
-   It requires the manifest bytes Polku checked (by SHA-256), every file at its size (in the
-   release's folder or in `files/`) and nothing else in the folder, a release built after the
-   live one, and that live geometry isn't dropped. It checks the public Range reads again,
-   writes a pending receipt naming the true predecessor, renames a temporary pointer over
-   `current.json`, reads it back and checks the release over HTTPS, and restores the predecessor
-   if that fails. The predecessor is saved for rollback. A rerun after promotion only finishes
-   the receipt.
+   It requires the manifest bytes Polku checked (by SHA-256), still named in
+   `candidates/current.json` (an upload removes a release that is neither the candidate nor
+   live), every file at its size (in the release's folder or in `files/`) and nothing else in
+   the folder, a release built after the live one, and that live geometry isn't dropped. It
+   checks the public Range reads again, writes a pending receipt naming the true predecessor,
+   renames a temporary pointer over `current.json`, reads it back (again for up to 150 s while
+   the host answers as before), checks the release over HTTPS, and restores the predecessor if
+   that fails. The predecessor is saved for rollback. A rerun after promotion only finishes the
+   receipt.
 3. **live** (Polku's checkout, no credentials): `health.py osm-health --release-dir osm-promote`
    requires the promoted release to be live and runs Polku's browser checks against polku.si.
 4. **rollback**, only when the live check failed (only this repository's checkout, the
@@ -197,7 +199,7 @@ The data is served from `https://ducksoft.fi/polku-osm/`, `https://ducksoft.fi/p
 Each folder has its own `.htaccess`: [`hosting.htaccess`](../tools/osm_data/hosting.htaccess),
 installed by hand, [`routing.htaccess`](../tools/osm_data/routing.htaccess) (Routing data,
 above), [`mml.htaccess`](../tools/osm_data/mml.htaccess) in `polku-mml/` (NLS background map, below) and a copy of
-`hosting.htaccess` in `polku-digiroad/`, `polku-terrain/` and `polku-basemap/` (below). They turn off listing and HTTP compression, set the MIME types, allow read-only CORS with
+`hosting.htaccess` in `polku-digiroad/` (Digiroad, below), `polku-terrain/` (Terrain, below) and `polku-basemap/` (Base map, below). They turn off listing and HTTP compression, set the MIME types, allow read-only CORS with
 the Range headers exposed, cache releases as immutable and make `current.json` revalidate, which
 also covers `candidates/current.json`.
 
@@ -249,6 +251,14 @@ attribution, BRouter's, Sonny's (CC BY 4.0, https://sonny.4lima.de) and CIAT's c
 `mml-data.yml`, by hand, copies the National Land Survey's (MML) background-map vector tiles (`taustakartta` v21,
 zooms 11–14 over 19.0–31.6°E and 59.3–70.1°N: 892,856 tiles) into one PMTiles archive a zoom, and uploads them in
 cells as a candidate to `https://ducksoft.fi/polku-mml/`. The format is in [tools/osm_data/README.md](../tools/osm_data/README.md#nls-background-map).
+By default a run is an **update** from the live release. It asks for every tile with `If-Modified-Since`, using the
+date in the live `tiles.tsv.gz`, and takes the tiles MML answers 304 for from the live release's cells (or the first
+copy's one archive), checked against their SHA-256. A stalled download goes on from where it stopped, up to
+three times. Since cells depend only on their tiles, the upload sends only the
+cells whose tiles changed. MML's tiles change daily, a few thousand a day at zoom 14. About a quarter of the first
+copy's dates are when MML drew the tile on request, not when its data changed: such a tile comes back whole and
+unchanged, and its cell is sent again only if its bytes differ. MML's changed map sheets don't narrow the request:
+they aren't checked with Polku's key, and a missed sheet would leave a stale tile looking current.
 
 - **fetch** asks about 40 tiles a second over 8 keep-alive connections, with the key in the repository secret
   `MML_API_KEY`, and a User-Agent naming this repository. A 429, 5xx, timeout or answer slower than 2 s halves the
@@ -256,7 +266,10 @@ cells as a candidate to `https://ducksoft.fi/polku-mml/`. The format is in [tool
   4xx is recorded and not asked again. A 401 or 403, 5 minutes without a good answer, or 429s at one a second stop the
   run, and so does a hand check that doesn't find Helsinki in its tile at every zoom. It runs in up to three parts of
   5 h 20 min, each keeping its tiles in an `mml-store-<part>` artifact; a later run given the run's ID in **store**
-  goes on from the newest.
+  goes on from the newest. An update's store holds only what changed, and is tied to the live pointer's SHA-256: a
+  release promoted meanwhile stops the next part and the pack, and so does the first upload in cells, which rewrites
+  the first copy's pointer once. A tile the table has no date for is asked plainly, and
+  a 304 to a plain request counts as trouble.
 - **pack** needs an answer for every tile and reads the archive back tile for tile. `tiles.tsv.gz` keeps each tile's
   `Last-Modified`, so an update can ask again with `If-Modified-Since`.
 - **upload**, only from `main`, goes through `publish.py`'s upload into `polku-mml/`, as Digiroad's: each zoom's
@@ -270,27 +283,59 @@ cells as a candidate to `https://ducksoft.fi/polku-mml/`. The format is in [tool
   pointer it replaced saved. If polku.si then fails its check, `mml.py restore` puts that pointer back, unless
   another release went live meanwhile.
 
-A smaller **box** tests the whole job. A pull request that changes the job fetches central Helsinki in two parts and
+A smaller **box** tests the whole job. A pull request that changes the job updates central Helsinki in two parts and
 uploads nothing. The tiles are CC BY 4.0: "© Maanmittauslaitos, Maastotietokanta" and the month fetched, in the
 manifest, the archive's metadata and `LICENSE.txt`.
 
-## Digiroad traffic volumes
+## Digiroad
 
-`digiroad-data.yml`, by hand, copies Digiroad's busy roads: the roads of 800 or more vehicles a day in Väylävirasto's
-WFS layer `dr_liikennemaara`, 117,061 of them on 2026-11-23. Väylävirasto's updates to it ended on 2026-09-18, when
-Fintraffic took Digiroad over, so the copy runs again only when a source with newer data exists. The format is in
-[tools/osm_data/README.md](../tools/osm_data/README.md#digiroad-traffic-volumes).
+`digiroad-data.yml`, by hand, copies four of Digiroad's layers from Väylävirasto's WFS, counted on 2026-11-23: the
+roads of 800 or more vehicles a day in `dr_liikennemaara` (117,061), paved roads in `dr_paallystetty_tie`
+(990,799), private roads in `tiekunnalliset_yksityistiet` (510,766) and speed limits in `dr_nopeusrajoitus`
+(1,019,014). Väylävirasto's updates to them ended on 2026-09-18, when Fintraffic took Digiroad over, so the copy runs
+again only when a source with newer data exists. The format is in
+[tools/osm_data/README.md](../tools/osm_data/README.md#digiroad).
 
 - **install-hosting**, once: makes `polku-digiroad/` and puts a copy of
   [`hosting.htaccess`](../tools/osm_data/hosting.htaccess) in it.
-- **copy** asks the WFS for 5,000 roads at a time, ordered by ID, with 5 s between pages, and retries a failed page once
-  after 5 minutes. The count must equal the WFS's own. The release is about 9.5 MB in 1,904 zoom-11 tiles, and goes up
-  as about 20 cells through `publish.py`, as the OSM data does: read back with its SHA-256, checked over HTTPS and
-  named in `candidates/current.json`. A cell the host already holds isn't sent again, and `polku-digiroad/` holds
-  at most 1 GiB.
+- **copy** asks the WFS for 5,000 features at a time, ordered by a unique field, with 5 s between pages, and retries a
+  failed page once after 5 minutes. It fetches the private roads first, since they take longest. Each feature is
+  checked as its page arrives and must come once, and each layer's count must equal the WFS's own. Each layer's
+  features are written to an xz file as they arrive, as the WFS served them. The job keeps these files as an artifact
+  for 7 days before it builds the tiles from them: with `fetched` set to that run's ID, a later run builds and uploads
+  from them without fetching again. From sample pages on 2026-11-23: about 530 pages in about 2.5 hours (a page of
+  private roads takes up to 32 s to answer), about 0.4 GB of zoom-11 tiles and 0.56 GB of xz files, and at most about
+  4 GB of memory for the build. The release goes up as cells through `publish.py`, as the OSM data does, with the xz
+  files whole: read back with its SHA-256, checked over HTTPS and named in `candidates/current.json`. A file or cell
+  the host already holds isn't sent again, and `polku-digiroad/` holds at most 5 GiB: the live release, its
+  predecessor, the candidate and one being uploaded.
+- **Promotion** works like the OSM data's ([Promotion, in Polku](#promotion-in-polku)), though Polku has no workflow
+  for it yet: `publish.py candidate` with the folder's URL, and `promote` and `rollback` with `--folder polku-digiroad`.
+  With nothing live yet, `candidate --first` names the first candidate and `promote` writes the first `current.json`. The
+  predecessor it saves is then `null`, and a rollback to it, which needs `--expected-current`, removes `current.json`
+  again. Uploads then skip retention until the next promotion.
 
-There is no promotion yet. The data is CC BY 4.0: "Traffic volumes: © Fintraffic / Digiroad, from Väylävirasto's
-open data, CC BY 4.0", in the manifest, the archive's metadata and `LICENSE.txt`, which also says what was changed.
+The data is CC BY 4.0: "© Fintraffic / Digiroad, from Väylävirasto's open data, CC BY
+4.0", in the manifest, the archives' metadata and `LICENSE.txt`, which also says what was changed.
+
+## Search index
+
+`search-data.yml` builds the search index on Tuesdays at 04:17 UTC, after Photon's Finnish dump of the Sunday before.
+The format is in [tools/osm_data/README.md](../tools/osm_data/README.md#search-index).
+
+- **install-hosting**, once: makes `polku-search/` and puts [`search.htaccess`](../tools/osm_data/search.htaccess) in
+  it: `hosting.htaccess` with `.gzt` served as `application/octet-stream`, so no Content-Encoding is added.
+- **update** (weekly, or by hand) downloads the newest dated dump from GraphHopper and checks its MD5, NLS's place
+  names (about 80 requests of 10,000, one at a time, a second apart, with `MML_API_KEY`) and GeoNames' towns. It builds
+  on the newest release on the host, the candidate or the live one, reading its files over HTTPS: a group keeps its
+  files and lists what changed, so a week sends about 300 small files. The upload goes through `publish.py` with
+  `OSM_SHARED_FILES=true`, as the OSM data's: read back, checked over HTTPS and named in `candidates/current.json`.
+  `polku-search/` holds at most 2 GiB.
+- **fresh** makes every group's files again: about 52 MB.
+
+`search.py promote` makes a checked candidate live, as the OSM data's `publish.py promote`. The sources' terms:
+ODbL for OSM's data, CC BY 4.0 for NLS's names and GeoNames' towns, all named in the manifest's `attribution` and in
+`LICENSE.txt`.
 
 ## Terrain
 

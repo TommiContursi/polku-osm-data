@@ -199,7 +199,7 @@ def main(doc, folder, budget, box, build):
             publish.require_covers(folder, publish.validate(json.loads((args.directory / 'manifest.json').read_bytes())))
             publish.upload(args.directory, folder=folder, budget=budget)
         elif args.command == 'candidate':
-            found = publish.candidate(publish.product_url(publish.public_url(os.environ.get('OSM_PUBLIC_URL', '')), folder))
+            found = publish.candidate(publish.product_url(publish.public_url(os.environ.get('OSM_PUBLIC_URL', '')), folder), first=True)
             print(json.dumps(found or {}, sort_keys=True))
             return
         elif args.command == 'promote':

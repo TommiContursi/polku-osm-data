@@ -175,7 +175,7 @@ class Host:
                 callback(host.files[name])
             def replace(self, old, new):
                 if (new.endswith('/pointer.json') or new.startswith('maintenance/') or new == 'candidates/current.json'
-                        or self.abs(new).endswith('/polku-mml/current.json')):
+                        or self.abs(new).endswith('/current.json') and self.abs(new) != ROOT + '/current.json'):  # another product's
                     old, new = self.abs(old), self.abs(new)
                     if host.fail_pointer:
                         raise OSError('POSIX rename extension unsupported')
@@ -842,11 +842,14 @@ class PublishTests(unittest.TestCase):
         sha256 = hashlib.sha256(encoded(self.new)).hexdigest()
         base = ROOT + '/releases/new-release/'
         for change, error in [('manifest', 'differs from the one checked'), ('short', 'size differs'),
-                              ('extra', 'Unexpected files'), ('older', 'not newer')]:
+                              ('extra', 'Unexpected files'), ('older', 'not newer'),
+                              ('replaced', 'Another candidate was uploaded meanwhile')]:
             with self.subTest(change=change):
                 files = dict(self.host.files)
                 if change == 'manifest':
                     self.host.files[base + 'manifest.json'] = encoded(dict(self.new, attribution='changed'))
+                elif change == 'replaced':  # another upload named its release and will remove this one
+                    self.host.files[ROOT + '/candidates/current.json'] = encoded(manifest('other-release'))
                 elif change == 'short':
                     self.host.files[base + 'ways.pmtiles'] = ARCHIVE[:-1]
                 elif change == 'extra':
@@ -1520,7 +1523,7 @@ class CellsTests(unittest.TestCase):
         raw, hosted = publish.hosted(directory)
         entry = self.cells(hosted)[1]
         cell = self.host.files.pop(ROOT + '/' + publish.shared_path(entry))
-        with self.assertRaisesRegex(RuntimeError, 'Cell is missing or differs'):
+        with self.assertRaisesRegex(RuntimeError, 'Indexed file is missing or differs'):
             publish.promote_candidate('new-release', hashlib.sha256(raw).hexdigest(), directory)
         self.assertEqual(self.host.pointer_writes, 0)
         self.host.files[ROOT + '/' + publish.shared_path(entry)] = cell
