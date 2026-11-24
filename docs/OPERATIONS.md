@@ -154,8 +154,10 @@ credentials apart:
    requires the promoted release to be live and runs Polku's browser checks against polku.si.
 4. **rollback**, only when the live check failed (only this repository's checkout, the
    environment): `publish.py rollback --manifest <the saved predecessor> --expected-current
-   RELEASE` verifies the predecessor's every file over SFTP and HTTPS and switches the pointer
-   back, unless another release has gone live meanwhile. The run stays failed.
+   RELEASE` finds the predecessor's every file at its size over SFTP and reads its manifest and
+   samples over HTTPS, then switches the pointer back, unless another release has gone live
+   meanwhile. Its files were hashed in full when they went up, and a rollback must finish while
+   the map is broken. The run stays failed.
 
 Rollback by hand runs the same way, to the saved predecessor. The pin moves only through a Polku PR;
 when the contract changes, the PR here comes first, and Polku's PR moves the pin together with
