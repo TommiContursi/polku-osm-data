@@ -478,6 +478,17 @@ def verify_remote(ftp, base, manifest, raw):
     return samples
 
 
+def in_place(ftp, base, manifest, raw):
+    """Every file the release names, at its size. A rollback's release was hashed in full when it went up and never
+    changes, and the rollback has to finish while the map is broken: 8.5 GB read back didn't (Polku#1491)."""
+    def sized(channel, path, entry):
+        require(channel.size(path) == entry['bytes'], 'Release file size differs: ' + path)
+    for f in manifest['files']:
+        sized(ftp, place(manifest['release'], f) if 'url' in f else f"{base}/{f['path']}", f)
+    at_once(ftp, hosted_named(ftp, manifest), lambda channel, entry: sized(channel, place(manifest['release'], entry), entry))
+    verify_manifest(ftp, base, raw)
+
+
 def get(url, byte_range=None, immutable=False, encoding='gzip, br'):
     # The host can reject Python's default user agent, though browser requests succeed.
     headers = {'Origin': 'https://polku.si', 'Accept-Encoding': encoding,
@@ -1025,10 +1036,10 @@ def rollback(manifest_path, expected_current=None, folder=None):
         raw = retrieve(ftp, base + '/manifest.json')
         manifest = validate(json.loads(raw))
         require(current(manifest) == target, 'Rollback manifest differs from immutable release')
-        samples = verify_remote(ftp, base, manifest, raw)
-        probe(url, manifest, raw, samples)
+        in_place(ftp, base, manifest, raw)
+        probe(url, manifest, raw)
         require(previous_pointer(ftp) == previous, 'Live pointer changed during rollback')
-        promote(ftp, url, manifest, previous, path.parent, samples, raw)
+        promote(ftp, url, manifest, previous, path.parent, None, raw)
         maintenance.record_publication(ftp, manifest, raw, previous)
 
 

@@ -1372,11 +1372,12 @@ class SharedFilesTests(unittest.TestCase):
         self.assertEqual(self.sent(), ['_upload.json', 'manifest.json'])
         self.assertEqual(json.loads(self.host.files[ROOT + '/current.json'])['datasets']['ways']['url'], shared(ARCHIVE))
         publish.check(PUBLIC + '/current.json')
-        # Polku's rollback to the predecessor hashes the shared files it names in full
+        # Polku's rollback to the predecessor finds the shared files it names at their sizes, reading none back in full
+        # (it has to finish while the map is broken, Polku#1491)
         saved = next(p for p in rebuilt.glob('rollback-*.json') if json.loads(p.read_bytes())['release'] == 'new-release')
         with patch.object(publish, 'verify_file', wraps=publish.verify_file) as verify:
             publish.rollback(saved, expected_current='rebuilt-release')
-        self.assertEqual({call.args[1] for call in verify.call_args_list}, {shared(ARCHIVE), shared(LICENSE, '.txt')})
+        verify.assert_not_called()
         self.assertEqual(json.loads(self.host.files[ROOT + '/current.json'])['release'], 'new-release')
         # A changed archive is all the next upload sends, and retention keeps what the releases that stay name
         changed = self.build('changed-release', ARCHIVE + b'!', '2026-11-22T00:00:00Z')
@@ -1505,12 +1506,19 @@ class CellsTests(unittest.TestCase):
         self.assertEqual(len(new), 1)
         self.assertEqual(self.sent(), sorted(['_upload.json', 'manifest.json', 'ways.cells.json', new[0]['path']]))
         publish.check(PUBLIC + '/current.json')
-        # Polku's rollback hashes every cell of the predecessor
+        # Polku's rollback finds every cell of the predecessor at its size, and refuses a missing one
         saved = next(p for p in (Path(self.tmp.name) / 'next-release').glob('rollback-*.json')
                      if json.loads(p.read_bytes())['release'] == 'new-release')
+        cell = ROOT + '/' + publish.shared_path(rows[len(rows) // 2])
+        whole = self.host.files[cell]
+        self.host.files[cell] = whole[:-1]
+        with self.assertRaisesRegex((ValueError, RuntimeError), 'size differs'):
+            publish.rollback(saved, expected_current='next-release')
+        self.assertEqual(json.loads(self.host.files[ROOT + '/current.json'])['release'], 'next-release')
+        self.host.files[cell] = whole
         with patch.object(publish, 'verify_file', wraps=publish.verify_file) as verify:
             publish.rollback(saved, expected_current='next-release')
-        self.assertLessEqual({publish.shared_path(entry) for entry in rows}, {call.args[1] for call in verify.call_args_list})
+        verify.assert_not_called()
         # Retention keeps every cell the releases that stay name, and stops when an index is missing
         with publish.connection(publish.settings()) as ftp:
             publish.maintenance.prune(ftp, apply=True)
