@@ -421,19 +421,24 @@ def probe(url, manifest, raw, samples=None):
                         require(body == samples[path][start], 'Public archive bytes differ')
 
 
+def public_bytes(url):
+    """A public file's bytes, or None where the host answers 404."""
+    try:
+        return get(url)
+    except HTTPError as error:
+        if error.code != 404:
+            raise
+        error.close()
+        return None
+
+
 def settle(url, expected, limit, pause=2):
     """Seconds until the public URL answers `expected` (None: a 404), read again every `pause` s for up to `limit` s.
     The host can keep answering a name as it last did: polku-mml/current.json, asked for while missing, stayed 404
     after it was written (Polku run 45242600287)."""
     start = time.monotonic()
     while True:
-        try:
-            body = get(url)
-        except HTTPError as error:
-            if error.code != 404:
-                raise
-            error.close()
-            body = None
+        body = public_bytes(url)
         if body == expected:
             return time.monotonic() - start
         require(time.monotonic() - start < limit, f'{url} did not answer as written within {limit} s')
@@ -742,21 +747,11 @@ def candidate(url):
     """The uploaded candidate newer than the live release, or the first one, for Polku's checks, or None. Reads only
     public HTTP."""
     url = public_url(url)
-    try:
-        raw = get(url + '/candidates/current.json')
-    except HTTPError as error:
-        if error.code == 404:
-            error.close()
-            return None  # nothing uploaded yet
-        raise
+    raw, live = (public_bytes(url + path) for path in ('/candidates/current.json', '/current.json'))
+    if raw is None:
+        return None  # nothing uploaded yet
     manifest = validate(json.loads(raw))
-    try:
-        live = validate(json.loads(get(url + '/current.json')), pointed=True)
-    except HTTPError as error:
-        if error.code != 404:
-            raise
-        error.close()
-        live = None  # nothing promoted yet: a new product's first candidate
+    live = live and validate(json.loads(live), pointed=True)  # None: nothing promoted yet
     if live and manifest['built_at'] <= live['built_at']:
         return None
     location = f"{url}/releases/{manifest['release']}/manifest.json"
@@ -778,6 +773,8 @@ def promote_candidate(release, sha256, directory, folder=None):
         require(ftp.kind(final) == 'directory' and ftp.kind(final + '/manifest.json') == 'file', 'Candidate needs regular files')
         raw = retrieve(ftp, final + '/manifest.json')
         require(hashlib.sha256(raw).hexdigest() == sha256, 'Candidate manifest differs from the one checked')
+        # Still the candidate: an upload that has named another removes this release unless it is live
+        require(retrieve(ftp, 'candidates/current.json') == raw, 'Another candidate was uploaded meanwhile; check it first')
         manifest = validate(json.loads(raw))
         require(manifest['release'] == release, 'Candidate release differs')
         # The upload hashed every file; its author is the only writer, so sizes find what changed since
@@ -810,7 +807,9 @@ def rollback(manifest_path, expected_current=None, folder=None):
     require(os.environ.get('OSM_ALLOW_PUBLISH') == 'true', 'Publication requires approved OSM_ALLOW_PUBLISH=true')
     path = Path(manifest_path)
     target = json.loads(path.read_bytes())
-    if target is not None:
+    if target is None:
+        require(expected_current is not None, 'A rollback to no live release needs --expected-current')
+    else:
         validate(target, pointed=True)
     config = settings()
     with connection(config) as ftp:
@@ -880,9 +879,9 @@ def test_host():
             fresh = config[-2] + '/' + active + '/fresh.json'
             settle(fresh, None, 0)
             ftp.storbinary('STOR ' + active + '/fresh.json', io.BytesIO(replacement))
-            written = settle(fresh, replacement, 150)
+            written = settle(fresh, replacement, SETTLE)
             ftp.remove(active + '/fresh.json')
-            removed = settle(fresh, None, 150)
+            removed = settle(fresh, None, SETTLE)
             ftp.cwd(active)
             try:
                 retention = maintenance.test_retention(ftp)

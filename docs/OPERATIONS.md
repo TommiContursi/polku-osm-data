@@ -136,13 +136,15 @@ credentials apart:
    python tools/osm_data/publish.py promote RELEASE --sha256 SHA --directory osm-promote
    ```
 
-   It requires the manifest bytes Polku checked (by SHA-256), every file at its size (in the
-   release's folder or in `files/`) and nothing else in the folder, a release built after the
-   live one, and that live geometry isn't dropped. It checks the public Range reads again,
-   writes a pending receipt naming the true predecessor, renames a temporary pointer over
-   `current.json`, reads it back and checks the release over HTTPS, and restores the predecessor
-   if that fails. The predecessor is saved for rollback. A rerun after promotion only finishes
-   the receipt.
+   It requires the manifest bytes Polku checked (by SHA-256), still named in
+   `candidates/current.json` (an upload removes a release that is neither the candidate nor
+   live), every file at its size (in the release's folder or in `files/`) and nothing else in
+   the folder, a release built after the live one, and that live geometry isn't dropped. It
+   checks the public Range reads again, writes a pending receipt naming the true predecessor,
+   renames a temporary pointer over `current.json`, reads it back (again for up to 150 s while
+   the host answers as before), checks the release over HTTPS, and restores the predecessor if
+   that fails. The predecessor is saved for rollback. A rerun after promotion only finishes the
+   receipt.
 3. **live** (Polku's checkout, no credentials): `health.py osm-health --release-dir osm-promote`
    requires the promoted release to be live and runs Polku's browser checks against polku.si.
 4. **rollback**, only when the live check failed (only this repository's checkout, the
@@ -296,12 +298,13 @@ again only when a source with newer data exists. The format is in
   private roads takes up to 32 s to answer), about 0.4 GB of zoom-11 tiles and 0.56 GB of xz files, and at most about
   4 GB of memory for the build. The release goes up as cells through `publish.py`, as the OSM data does, with the xz
   files whole: read back with its SHA-256, checked over HTTPS and named in `candidates/current.json`. A file or cell
-  the host already holds isn't sent again, and `polku-digiroad/` holds at most 4 GiB: the live release, the candidate
-  and one being uploaded.
-- **Promotion** goes as the OSM data's (Promotion, in Polku, above): `publish.py candidate` with the folder's URL, and
-  `promote` and `rollback` with `--folder polku-digiroad`. With nothing live yet, `candidate` names the first candidate
-  and `promote` writes the first `current.json`. The predecessor it saves is then `null`, and a rollback to it removes
-  `current.json` again.
+  the host already holds isn't sent again, and `polku-digiroad/` holds at most 5 GiB: the live release, its
+  predecessor, the candidate and one being uploaded.
+- **Promotion** works like the OSM data's ([Promotion, in Polku](#promotion-in-polku)), though Polku has no workflow
+  for it yet: `publish.py candidate` with the folder's URL, and `promote` and `rollback` with `--folder polku-digiroad`.
+  With nothing live yet, `candidate` names the first candidate and `promote` writes the first `current.json`. The
+  predecessor it saves is then `null`, and a rollback to it, which needs `--expected-current`, removes `current.json`
+  again. Uploads then skip retention until the next promotion.
 
 The data is CC BY 4.0: "© Fintraffic / Digiroad, from Väylävirasto's open data, CC BY
 4.0", in the manifest, the archives' metadata and `LICENSE.txt`, which also says what was changed.

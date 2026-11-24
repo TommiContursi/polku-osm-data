@@ -222,7 +222,7 @@ class DigiroadTests(unittest.TestCase):
                 patch.object(publish, 'open_sftp', host.ftp), patch.object(publish.urllib.request, 'urlopen', host.http):
             digiroad.build(self.tmp / 'release', T0)
             with patch.object(publish.maintenance, 'usage', return_value=digiroad.BUDGET - 4096):
-                with self.assertRaisesRegex(RuntimeError, r'polku-digiroad storage budget exceeded \(4 GiB\)'):
+                with self.assertRaisesRegex(RuntimeError, r'polku-digiroad storage budget exceeded \(5 GiB\)'):
                     publish.upload(self.tmp / 'release', folder=digiroad.FOLDER, budget=digiroad.BUDGET)
             self.assertEqual(host.uploads, [], 'a full folder takes nothing')
             publish.upload(self.tmp / 'release', folder=digiroad.FOLDER, budget=digiroad.BUDGET)
@@ -252,7 +252,7 @@ class DigiroadTests(unittest.TestCase):
             host.uploads.clear()
             digiroad.build(self.tmp / 'again', datetime(2026, 11, 24, tzinfo=timezone.utc))
             with patch.object(publish.maintenance, 'usage', return_value=digiroad.BUDGET - 4096):
-                with self.assertRaisesRegex(RuntimeError, r'polku-digiroad storage budget exceeded \(4 GiB\)'):
+                with self.assertRaisesRegex(RuntimeError, r'polku-digiroad storage budget exceeded \(5 GiB\)'):
                     publish.upload(self.tmp / 'again', folder=digiroad.FOLDER, budget=digiroad.BUDGET)
             self.assertEqual(host.uploads, [], 'with a live release too')
             publish.upload(self.tmp / 'again', folder=digiroad.FOLDER, budget=digiroad.BUDGET)
@@ -319,6 +319,10 @@ class DigiroadTests(unittest.TestCase):
             self.assertIsNone(run('rollback', '--manifest', back, '--expected-current', second['release']))
             self.assertEqual(host.files[BASE + '/current.json'], live)
             self.assertIn('Live release changed', run('rollback', '--manifest', back, '--expected-current', second['release']))
+            connections = host.connections
+            with self.assertRaisesRegex(ValueError, 'needs --expected-current'):
+                publish.rollback(saved)  # nor a folder: it would remove polku-osm's pointer
+            self.assertEqual(host.connections, connections, 'refused before the host is asked')
             self.assertIsNone(run('rollback', '--manifest', saved, '--expected-current', first['release']))
             self.assertNotIn(BASE + '/current.json', host.files, 'the way back from the first promotion: no pointer')
             self.assertEqual(publish.candidate(url)['release'], second['release'], 'the candidate is checked again')

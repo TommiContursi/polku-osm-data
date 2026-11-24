@@ -842,11 +842,14 @@ class PublishTests(unittest.TestCase):
         sha256 = hashlib.sha256(encoded(self.new)).hexdigest()
         base = ROOT + '/releases/new-release/'
         for change, error in [('manifest', 'differs from the one checked'), ('short', 'size differs'),
-                              ('extra', 'Unexpected files'), ('older', 'not newer')]:
+                              ('extra', 'Unexpected files'), ('older', 'not newer'),
+                              ('replaced', 'Another candidate was uploaded meanwhile')]:
             with self.subTest(change=change):
                 files = dict(self.host.files)
                 if change == 'manifest':
                     self.host.files[base + 'manifest.json'] = encoded(dict(self.new, attribution='changed'))
+                elif change == 'replaced':  # another upload named its release and will remove this one
+                    self.host.files[ROOT + '/candidates/current.json'] = encoded(manifest('other-release'))
                 elif change == 'short':
                     self.host.files[base + 'ways.pmtiles'] = ARCHIVE[:-1]
                 elif change == 'extra':

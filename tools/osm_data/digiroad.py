@@ -36,7 +36,7 @@ BUSY = 800  # vehicles a day
 ZOOM = 11
 PAGE, PAUSE, BACK_OFF = 5000, 5, 300  # features a request, and seconds between pages and before the one retry
 FOLDER = 'polku-digiroad'
-BUDGET = 4 * 1024**3  # live, candidate and staging: three copies of about 1 GB
+BUDGET = 5 * 1024**3  # live, its predecessor, candidate and staging: four copies of about 1 GB
 SPEEDS = {20, 30, 40, 50, 60, 70, 80, 90, 100, 120}  # km/h
 # The paving classes of the style dr_paallystetty_tie: Asfaltti, Kivi, Sitomaton kulutuskerros, Muut päällysteluokat
 # and Päällystetty, tyyppi tuntematon
