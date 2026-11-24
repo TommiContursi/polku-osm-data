@@ -5,7 +5,6 @@ from contextlib import ExitStack
 from datetime import datetime, timezone
 import gzip
 import json
-import lzma
 from pathlib import Path
 import tempfile
 import unittest
@@ -13,7 +12,7 @@ from unittest.mock import patch
 
 from pmtiles.reader import MmapSource, all_tiles
 
-from tools.osm_data import lipas, publish, wfs
+from tools.osm_data import cells, lipas, publish, wfs
 from tools.osm_data.test_digiroad import WFS, served
 from tools.osm_data.test_publish import ENV
 from tools.osm_data.test_routing import SITE, RoutingHost
@@ -149,7 +148,9 @@ class LipasTests(unittest.TestCase):
             with self.subTest(name):
                 self.assertEqual((self.tmp / 'release' / f'{name}.pmtiles').read_bytes(),
                                  (FIXTURES / f'lipas-{name}.pmtiles').read_bytes())
-        self.assertEqual({name: d['features'] for name, d in manifest['datasets'].items()}, {'4411': 22, '301': 13})
+                self.assertEqual(cells.encoded(cells.index(self.tmp / 'release' / f'{name}.pmtiles', 4096)),
+                                 (FIXTURES / f'lipas-{name}-cells' / 'index.json').read_bytes(), 'and their cells, as Polku reads them')
+        self.assertEqual({name: d['features'] for name, d in manifest['datasets'].items()}, {'4411': 3, '301': 6})
 
     def test_the_release_goes_up_in_cells_into_polku_lipas_and_the_same_features_send_nothing_again(self):
         self.fetch(self.tmp / 'release')
