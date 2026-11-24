@@ -27,8 +27,9 @@ ZOOMS = range(0, 8)
 SEA = b'RIFF-sea-webp'  # one tile the planet stores once for many places
 
 
-def planet():
-    """A clustered WebP planet, zooms 0-7: every tile but a hole of missing ones, the sea stored once."""
+def planet(kind=(TileType.WEBP, Compression.NONE)):
+    """A clustered planet of WebP tiles (or `kind`), zooms 0-7: every tile but a hole of missing ones, the sea stored
+    once."""
     rng, tiles = random.Random(7), {}
     for z in ZOOMS:
         for x in range(2 ** z):
@@ -40,7 +41,7 @@ def planet():
     writer = Writer(out)
     for tile in sorted(tiles):
         writer.write_tile(tile, tiles[tile])
-    writer.finalize({'tile_type': TileType.WEBP, 'tile_compression': Compression.NONE,
+    writer.finalize({'tile_type': kind[0], 'tile_compression': kind[1],
                      'min_lon_e7': -1800000000, 'min_lat_e7': -850000000, 'max_lon_e7': 1800000000, 'max_lat_e7': 850000000},
                     {'attribution': '© Mapterhorn'})
     return out.getvalue(), tiles
@@ -85,7 +86,7 @@ class TerrainTests(unittest.TestCase):
     def test_each_zoom_is_an_archive_of_the_boxs_tiles_byte_for_byte(self):
         manifest = self.build()
         for z in ZOOMS:
-            with open(self.tmp / 'release' / terrain.archive_name(z), 'rb') as f:
+            with open(self.tmp / 'release' / f'terrain-{z}.pmtiles', 'rb') as f:
                 got = {zxy_to_tileid(*zxy): data for zxy, data in all_tiles(MmapSource(f))}
                 header = Reader(MmapSource(f)).header()
             wanted = {t: self.tiles[t] for t in extract.ids(BOX, z) if t in self.tiles}
@@ -93,8 +94,8 @@ class TerrainTests(unittest.TestCase):
             self.assertEqual((header['min_zoom'], header['max_zoom'], header['tile_type'], header['tile_compression']),
                              (z, z, TileType.WEBP, Compression.NONE))
             self.assertEqual(manifest['datasets'][f'terrain-{z}'] | {'url': None},
-                             {'url': None, 'zoom': z, 'tiles': len(wanted), 'bytes': (self.tmp / 'release' / terrain.archive_name(z)).stat().st_size,
-                              'sha256': publish.digest_file(self.tmp / 'release' / terrain.archive_name(z))})
+                             {'url': None, 'zoom': z, 'tiles': len(wanted), 'bytes': (self.tmp / 'release' / f'terrain-{z}.pmtiles').stat().st_size,
+                              'sha256': publish.digest_file(self.tmp / 'release' / f'terrain-{z}.pmtiles')})
         self.assertLess(len(got), len(extract.ids(BOX, 7)), 'the hole has no tiles')
         self.assertEqual(manifest['source'], {'url': terrain.SOURCE, 'timestamp': '2026-09-11T14:58:22Z', 'etag': '"v1"'})
         self.assertEqual(json.loads((self.tmp / 'release' / 'attribution.json').read_text()), {'fi': {'license': 'CC BY 4.0'}})
