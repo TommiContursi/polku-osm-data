@@ -76,7 +76,8 @@ class Host:
         self.fail_upload = self.corrupt_upload = self.fail_pointer = False
         self.bad_range = self.bad_after_pointer = self.changed_manifest_after_pointer = False
         self.denied_login = False
-        self.connections = self.pointer_writes = self.channels = 0
+        self.connections = self.pointer_writes = self.channels = self.cells_sent = 0
+        self.drop_at, self.dropped = set(), False  # the connection drops as the cell uploads counted here begin
         self.pointer_cache = 'no-cache'
         self.uploads = []
         self.unsafe = set()
@@ -95,6 +96,7 @@ class Host:
     def ftp(self, *args, **kwargs):
         host = self
         self.connections += 1
+        self.dropped = False
         _, user, password, _fingerprint = args
         if self.denied_login:
             raise ftplib.error_perm(f'530 {user} {password}')
@@ -115,6 +117,8 @@ class Host:
             def prot_p(self):
                 self.protected = True
             def abs(self, path):
+                if host.dropped:
+                    raise EOFError('Server connection dropped')
                 if not self.protected:
                     raise AssertionError('unencrypted data operation')
                 return posixpath.normpath(posixpath.join(self.path, path))
@@ -160,6 +164,11 @@ class Host:
                 name = self.abs(cmd.removeprefix('STOR '))
                 if host.fail_upload and name.endswith('ways.pmtiles'):
                     raise OSError('upload failed')
+                if name.endswith('.pmtiles') and publish.SHARED_NAME.fullmatch(posixpath.basename(name)):
+                    host.cells_sent += 1
+                    if host.cells_sent in host.drop_at:
+                        host.dropped = True
+                        raise EOFError('Server connection dropped')
                 data = body.read()
                 offset = kwargs.get('rest')
                 host.uploads.append((name, offset, len(data)))
@@ -207,6 +216,8 @@ class Host:
                 return other
             def close_channel(self):
                 pass
+            def active(self):
+                return not host.dropped
             def quit(self):
                 pass
             close = quit
@@ -1545,6 +1556,34 @@ class CellsTests(unittest.TestCase):
         publish.upload(other, resume=True)
         self.assertIn((f"{ROOT}/{stage}/{changed['path']}", None, changed['bytes']), self.host.uploads)
         self.assertEqual(hashlib.sha256(self.host.files[ROOT + '/' + publish.shared_path(changed)]).hexdigest(), changed['sha256'])
+
+    def test_cells_go_up_over_several_channels(self):
+        directory = self.build('new-release', self.tiles)
+        publish.upload(directory)
+        _, hosted = publish.hosted(directory)
+        self.assertGreater(len(self.cells(hosted)), publish.CHANNELS)
+        self.assertEqual(self.host.channels, publish.CHANNELS, "the cells' channels, opened once for each batch of cells")
+
+    def test_a_dropped_connection_connects_again_and_sends_only_the_cells_not_yet_moved(self):
+        directory = self.build('new-release', self.tiles)
+        _, hosted = publish.hosted(directory)
+        count = len(self.cells_named(hosted, directory))
+        self.host.drop_at = {count // 2, count // 2 + 2}  # twice: the second time soon after it connected again
+        with patch.object(publish.time, 'sleep') as sleep, patch.object(publish, 'BATCH', 4):  # (several batches)
+            self.publish(directory)
+        self.assertEqual([c.args[0] for c in sleep.call_args_list][:2], [30, 60])
+        self.assertLessEqual(self.host.cells_sent, count + 2 * publish.CHANNELS, 'only the cells on their way when it dropped go again')
+        for entry in self.cells(hosted):
+            self.assertEqual(hashlib.sha256(self.host.files[ROOT + '/' + publish.shared_path(entry)]).hexdigest(), entry['sha256'])
+        self.assertFalse([d for d in self.host.dirs if '.upload-' in d], 'the stage became the release')
+
+    def test_a_connection_that_keeps_dropping_stops_after_a_few_tries(self):
+        directory = self.build('new-release', self.tiles)
+        self.host.drop_at = set(range(1, 1000))
+        with patch.object(publish.time, 'sleep') as sleep, self.assertRaisesRegex(publish.Dropped, 'connection dropped'):
+            publish.upload(directory)
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [30, 60, 120, 240, 300])
+        self.assertEqual(self.host.pointer_writes, 0)
 
     def cells_named(self, hosted, directory):
         index, = publish.indexes(hosted)

@@ -8,6 +8,7 @@ import argparse
 import base64
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from functools import partial
 from datetime import datetime, timezone
 import hmac
 import hashlib
@@ -44,11 +45,17 @@ SEARCH = 'search-gzt'  # a dataset whose url is a search index's root, which nam
 # SFTP channels at once on the one connection, gently on the host, for a release's many small files: each costs round
 # trips, not bandwidth
 CHANNELS = 4
+BATCH = 64  # cells cut again from an archive, sent at once: at most 64 MiB in memory
+RECONNECTS = 5  # a dropped connection: connect again and go on, after 30 s, 60 s, 120 s… up to 5 minutes
 try:
     from paramiko import SSHException
 except ImportError:  # (the checks of this module that need no SFTP)
     SSHException = OSError
 CHANNEL_ERRORS = (OSError, EOFError, SSHException)
+
+
+class Dropped(RuntimeError):
+    """The SSH connection dropped part of the way; what was verified and moved stays."""
 
 
 def require(ok, message):
@@ -351,6 +358,9 @@ class SFTPFiles:
     def close_channel(self):
         self.sftp.close()
 
+    def active(self):
+        return self.transport.is_active()
+
     def close(self):
         try:
             self.sftp.close()
@@ -388,6 +398,8 @@ def connection(config):
         yield remote
     except Exception as error:
         message = str(error).replace(password, '[redacted]').replace(user, '[redacted]')
+        if remote is not None and isinstance(error, CHANNEL_ERRORS) and not remote.active():
+            raise Dropped(message) from None
         raise RuntimeError(message) from None
     finally:
         if remote is not None:
@@ -761,7 +773,21 @@ def restore(directory, expected_current, folder):
 def upload(directory, resume=False, folder=None, budget=None):
     """Upload, verify and name the candidate; the live pointer is left to Polku's promotion. A file the shared files
     already hold isn't sent again. With folder, into that product's folder beside polku-osm, once its hosting is in;
-    budget is the folder's size limit, the OSM data's by default."""
+    budget is the folder's size limit, the OSM data's by default. A dropped connection connects again and goes on from
+    its stage: a file verified and moved among the shared files isn't sent again."""
+    for attempt in range(RECONNECTS + 1):
+        try:
+            return upload_once(directory, resume, folder, budget, again=attempt > 0)
+        except Dropped as error:
+            if attempt == RECONNECTS:
+                raise
+            pause = min(30 * 2 ** attempt, 300)
+            print(f'The connection dropped ({error}); connecting again in {pause} s', flush=True)
+            time.sleep(pause)
+
+
+def upload_once(directory, resume, folder, budget, again):
+    """upload() over one connection; again, after a dropped one, goes on from this release's stage if there is one."""
     require(os.environ.get('OSM_ALLOW_PUBLISH') == 'true', 'Publication requires approved OSM_ALLOW_PUBLISH=true')
     budget, product = budget or maintenance.BUDGET, folder or 'OSM'
     directory = Path(directory)
@@ -799,6 +825,7 @@ def upload(directory, resume=False, folder=None, budget=None):
         naming = set(places.values()) | {place(release, entry) for entry in indexed}
         expected = send | {'manifest.json': len(raw)}
         incoming = sum(expected.values()) + sum(entry['bytes'] for entry in send_cells.values())
+        resume = resume or again and bool(recovery_candidates(ftp, release))
         if resume:
             candidates = recovery_candidates(ftp, release)
             require(final in candidates or len(candidates) == 1, 'Resume needs exactly one existing stage; inspect before proceeding')
@@ -839,14 +866,13 @@ def upload(directory, resume=False, folder=None, budget=None):
             samples[target] = verify_file(ftp, staged, f)
             if target != f"{final}/{f['path']}":
                 move_shared(ftp, staged, target)
-        here = [(where, entry) for where, entry in send_cells.items() if (directory / entry["path"]).exists()]
-        if here and SHARED not in maintenance.children(ftp):
+        if send_cells and SHARED not in maintenance.children(ftp):
             ftp.mkd(SHARED)
 
-        def send_indexed(channel, pair):  # a search index's file, as the release folder holds it; as move_shared(), but
-            where, entry = pair            # files/ is made once above rather than listed for each file
+        def send_shared(channel, item):  # as move_shared(), but files/ is made once above rather than listed each time
+            where, entry, opener = item
             staged = f"{stage}/{entry['path']}"
-            with (directory / entry['path']).open('rb') as body:
+            with opener() as body:
                 channel.storbinary('STOR ' + staged, body)
             verify_file(channel, staged, entry)
             print(f'Move verified {staged} to {where}', flush=True)
@@ -856,23 +882,28 @@ def upload(directory, resume=False, folder=None, budget=None):
                 # sent again after a channel failed once its rename had gone through: it's there, at its size
                 require(channel.size(where) == entry['bytes'], 'Shared file differs: ' + where)
                 channel.remove(staged)
-        at_once(ftp, here, send_indexed)
-        for where, _ in here:
+        # a search index's files, as the release folder holds them
+        here = [(where, entry, partial((directory / entry['path']).open, 'rb'))
+                for where, entry in send_cells.items() if (directory / entry['path']).exists()]
+        at_once(ftp, here, send_shared)
+        for where, _, _ in here:
             del send_cells[where]
         for f in indexes(manifest):  # each archive cut again, the same way; only its missing cells go up
             if not f['path'].endswith(INDEX) or not any(
                     place(release, entry) in send_cells for entry in cells_of((directory / f['path']).read_bytes(), f)):
                 continue
             from tools.osm_data import cells
+            batch = []
             for _, data in cells.cells(directory / (f['path'].removesuffix(INDEX) + '.pmtiles')):
                 digest = hashlib.sha256(data).hexdigest()
                 entry = share({'path': digest + '.pmtiles', 'bytes': len(data), 'sha256': digest})
                 if send_cells.pop(place(release, entry), None) is None:
                     continue
-                staged = f"{stage}/{entry['path']}"
-                ftp.storbinary('STOR ' + staged, io.BytesIO(data))
-                verify_file(ftp, staged, entry)
-                move_shared(ftp, staged, place(release, entry))
+                batch.append((place(release, entry), entry, partial(io.BytesIO, data)))
+                if len(batch) == BATCH:
+                    at_once(ftp, batch, send_shared)
+                    batch = []
+            at_once(ftp, batch, send_shared)
         require(not send_cells, 'Indexed files missing: ' + ', '.join(sorted(send_cells)[:3]))
         verify_manifest(ftp, stage, raw)
         if stage != final:
