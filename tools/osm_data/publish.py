@@ -36,6 +36,7 @@ SHARED = 'files'  # every release's files, named by their SHA-256, shared by the
 SHARED_NAME = re.compile(r'[a-f0-9]{64}(\.[A-Za-z0-9]{1,16})?\Z')
 CELLS = 'pmtiles-json-cells'  # a dataset whose url is the index of its cells, not one archive
 INDEX = '.cells.json'  # an archive's index takes its name, with this suffix for .pmtiles
+SETTLE = 150  # seconds a public pointer may keep its last answer (settle)
 SEARCH = 'search-gzt'  # a dataset whose url is a search index's root, which names its groups' indexes and their files
 
 
@@ -460,17 +461,21 @@ def settle(url, expected, limit, pause=2):
     after it was written (Polku run 45242600287)."""
     start = time.monotonic()
     while True:
-        try:
-            body = get(url)
-        except HTTPError as error:
-            if error.code != 404:
-                raise
-            error.close()
-            body = None
+        body = found(url)
         if body == expected:
             return time.monotonic() - start
         require(time.monotonic() - start < limit, f'{url} did not answer as written within {limit} s')
         time.sleep(pause)
+
+
+def put_back(ftp, url, previous):
+    """The live pointer as it was before a promotion: the saved bytes, or none at all."""
+    if previous is None:
+        ftp.remove('current.json')
+    else:
+        replace_pointer(ftp, previous)
+    settle(url + '/current.json', previous, SETTLE)
+
 
 def replace_pointer(ftp, raw, path='current.json'):
     name = posixpath.join(posixpath.dirname(path), f'current.{uuid.uuid4().hex}.tmp')
@@ -481,20 +486,18 @@ def replace_pointer(ftp, raw, path='current.json'):
 
 
 def promote(ftp, url, manifest, previous, directory, samples, release_raw):
-    if previous is not None:
-        (directory / f'rollback-{uuid.uuid4().hex}.json').write_bytes(previous)
+    """current.json names the release. The pointer it replaces is saved for rollback: null where there was none."""
+    directory.mkdir(parents=True, exist_ok=True)  # a first promotion saves null too, where nothing was saved before
+    (directory / f'rollback-{uuid.uuid4().hex}.json').write_bytes(previous or b'null')
     raw = json.dumps(current(manifest), sort_keys=True, separators=(',', ':')).encode()
     maintenance.prepare_publication(ftp, manifest, release_raw, previous)
     replace_pointer(ftp, raw)
     try:
-        require(get(url + '/current.json') == raw, 'Promoted pointer differs')
+        print(f"Public pointer after {settle(url + '/current.json', raw, SETTLE):.0f} s", flush=True)
         probe(url, manifest, release_raw, samples)
     except Exception:
-        if previous is None:
-            raise RuntimeError('Promotion verification failed; no previous pointer exists') from None
         try:
-            replace_pointer(ftp, previous)
-            require(get(url + '/current.json') == previous, 'Restored pointer differs')
+            put_back(ftp, url, previous)
         except Exception:
             raise RuntimeError('Promotion verification failed; rollback also failed; use the saved rollback manifest') from None
         raise RuntimeError('Promotion verification failed; previous pointer restored') from None
@@ -817,6 +820,8 @@ def promote_candidate(release, sha256, directory, folder=None):
         require(ftp.kind(final) == 'directory' and ftp.kind(final + '/manifest.json') == 'file', 'Candidate needs regular files')
         raw = retrieve(ftp, final + '/manifest.json')
         require(hashlib.sha256(raw).hexdigest() == sha256, 'Candidate manifest differs from the one checked')
+        # Still the candidate: an upload that has named another removes this release unless it is live
+        require(retrieve(ftp, 'candidates/current.json') == raw, 'Another candidate was uploaded meanwhile; check it first')
         manifest = validate(json.loads(raw))
         require(manifest['release'] == release, 'Candidate release differs')
         # The upload hashed every file; its author is the only writer, so sizes find what changed since
@@ -844,9 +849,15 @@ def promote_candidate(release, sha256, directory, folder=None):
 
 
 def rollback(manifest_path, expected_current=None, folder=None):
+    """current.json back to a saved pointer; a saved null, from a first promotion, removes it. With folder, that
+    product's."""
     require(os.environ.get('OSM_ALLOW_PUBLISH') == 'true', 'Publication requires approved OSM_ALLOW_PUBLISH=true')
     path = Path(manifest_path)
-    target = validate(json.loads(path.read_bytes()), pointed=True)
+    target = json.loads(path.read_bytes())
+    if target is None:
+        require(expected_current is not None, 'A rollback to no live release needs --expected-current')
+    else:
+        validate(target, pointed=True)
     config = settings()
     with connection(config) as ftp:
         url = into_folder(ftp, config[-2], folder)
@@ -854,6 +865,9 @@ def rollback(manifest_path, expected_current=None, folder=None):
         if expected_current is not None:
             require(previous and json.loads(previous)['release'] == expected_current,
                     'Live release changed; do not roll back another publication')
+        if target is None:
+            put_back(ftp, url, None)
+            return
         base = f"releases/{target['release']}"
         raw = retrieve(ftp, base + '/manifest.json')
         manifest = validate(json.loads(raw))
@@ -912,9 +926,9 @@ def test_host():
             fresh = config[-2] + '/' + active + '/fresh.json'
             settle(fresh, None, 0)
             ftp.storbinary('STOR ' + active + '/fresh.json', io.BytesIO(replacement))
-            written = settle(fresh, replacement, 150)
+            written = settle(fresh, replacement, SETTLE)
             ftp.remove(active + '/fresh.json')
-            removed = settle(fresh, None, 150)
+            removed = settle(fresh, None, SETTLE)
             ftp.cwd(active)
             try:
                 retention = maintenance.test_retention(ftp)
@@ -966,16 +980,20 @@ def main():
     publication = commands.add_parser('upload')
     publication.add_argument('directory', type=Path)
     publication.add_argument('--resume', action='store_true', help='Reuse the existing stage or immutable release; never start a new upload')
-    commands.add_parser('candidate').add_argument('url')
+    candidacy = commands.add_parser('candidate')
+    candidacy.add_argument('url')
+    candidacy.add_argument('--first', action='store_true', help='a product with nothing promoted yet has its first candidate')
     promotion = commands.add_parser('promote')
     promotion.add_argument('release')
     promotion.add_argument('--sha256', required=True, help="the checked manifest's SHA-256, from `candidate`")
     promotion.add_argument('--directory', type=Path, required=True, help='where the predecessor is saved for rollback')
+    promotion.add_argument('--folder', help="a product's folder beside polku-osm, such as polku-digiroad")
     commands.add_parser('inspect').add_argument('directory', type=Path)
     commands.add_parser('inspect-retention')
     restore = commands.add_parser('rollback')
     restore.add_argument('--manifest', type=Path, required=True)
     restore.add_argument('--expected-current', help='only if this release is live: never undo another publication')
+    restore.add_argument('--folder', help="a product's folder beside polku-osm, such as polku-digiroad")
     commands.add_parser('check').add_argument('url')
     commands.add_parser('verify-access')
     commands.add_parser('test-host')
@@ -984,10 +1002,10 @@ def main():
         if args.command == 'upload':
             upload(args.directory, resume=args.resume)
         elif args.command == 'candidate':
-            print(json.dumps(candidate(args.url) or {}, sort_keys=True))
+            print(json.dumps(candidate(args.url, args.first) or {}, sort_keys=True))
             return
         elif args.command == 'promote':
-            promote_candidate(args.release, args.sha256, args.directory)
+            promote_candidate(args.release, args.sha256, args.directory, args.folder)
         elif args.command == 'inspect-retention':
             with connection(settings()) as ftp:
                 print(json.dumps(maintenance.prune(ftp), sort_keys=True))
@@ -997,7 +1015,7 @@ def main():
             print('Metadata only; no remote files changed or hashes verified.')
             return
         elif args.command == 'rollback':
-            rollback(args.manifest, expected_current=args.expected_current)
+            rollback(args.manifest, args.expected_current, args.folder)
         elif args.command == 'test-host':
             print(json.dumps(test_host(), sort_keys=True))
         elif args.command == 'verify-access':
