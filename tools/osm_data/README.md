@@ -302,7 +302,7 @@ data's name. Their metadata credits `© Maanmittauslaitos` without a date, so a 
 dated credit is the manifest's `attribution`. `tiles` counts MML's answers by status. A tile with another 4xx is left
 out of the archive. `candidates/current.json` holds the candidate's manifest, and `current.json` the live release's,
 its URLs relative to `polku-mml/`, as the OSM data's. The first copy (release `20261123T023208Z`) is one archive,
-`taustakartta`, in its release's folder: its pointer is put in that form once, by the first upload in cells.
+`taustakartta`, in its release's folder: the first upload in cells puts its pointer in that form, once, and writes its publication receipt.
 
 ## Digiroad traffic volumes
 

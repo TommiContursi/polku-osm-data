@@ -352,6 +352,22 @@ class PackAndUploadTests(unittest.TestCase):
         self.assertEqual(live, publish.current(old))
         self.assertEqual(live['datasets']['taustakartta']['url'], f"releases/{old['release']}/taustakartta.pmtiles")
         self.assertIn(f"{FOLDER}/releases/{old['release']}/taustakartta.pmtiles", self.host.files, 'live: kept')
+        receipt = json.loads(self.host.files[f"{FOLDER}/maintenance/r-{old['release']}.json"])
+        self.assertEqual((receipt['release'], receipt['previous_release']), (old['release'], None))
+        url = PUBLIC.removesuffix('/polku-osm') + '/polku-mml'
+        for hour in (4, 5):  # once neither live nor the predecessor, retention removes it as any release
+            (self.tmp / str(hour)).mkdir()
+            found = publish.candidate(url)
+            publish.promote_candidate(found['release'], found['sha256'], self.tmp / str(hour), folder=mml.FOLDER)
+            mml.upload(self.pack(T0.replace(hour=hour))[0])
+        self.assertFalse([p for p in self.host.files if f"/releases/{old['release']}/" in p])
+
+    def test_nothing_is_written_without_the_publication_guard(self):
+        self.first_copy()
+        before = dict(self.host.files)
+        with patch.dict('os.environ', {'OSM_ALLOW_PUBLISH': ''}), self.assertRaisesRegex(ValueError, 'OSM_ALLOW_PUBLISH'):
+            mml.upload(self.pack()[0])
+        self.assertEqual(self.host.files, before)
 
     def update(self, now, changed=()):
         """An update from the live release: the store, its Base and the fake MML."""
