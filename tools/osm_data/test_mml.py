@@ -402,6 +402,34 @@ class PackAndUploadTests(unittest.TestCase):
         self.assertEqual({z: after[z] for z in after if z != TILES[0][0]}, {z: before[z] for z in before if z != TILES[0][0]})
         self.assertIn(f"{FOLDER}/releases/{old['release']}/taustakartta.pmtiles", self.host.files, 'the predecessor: kept')
 
+    def test_a_stalled_download_of_the_live_release_goes_on_from_where_it_stopped(self):
+        self.first_copy()
+        base = mml.Base.live(self.tmp / 'live')
+        archive = base.manifest['datasets']['taustakartta']
+        data, real, asked = self.host.files[FOLDER + '/' + archive['url']], publish.urllib.request.urlopen, []
+
+        class Stalled(io.BytesIO):
+            status = 200
+            def read(self, size=-1):
+                if self.tell() >= 100:
+                    raise TimeoutError('The read operation timed out')
+                return super().read(min(size if size >= 0 else 100, 100 - self.tell()))
+
+        def urlopen(request, **kwargs):
+            if not request.full_url.endswith(archive['url']):
+                return real(request, **kwargs)
+            asked.append(request.get_header('Range'))
+            if len(asked) == 1:
+                return Stalled(data)
+            rest = io.BytesIO(data[100:])
+            rest.status = 206
+            return rest
+
+        with patch.object(mml.urllib.request, 'urlopen', urlopen), patch.object(mml.time, 'sleep'):
+            path = base.file(archive)
+        self.assertEqual(asked, [None, 'bytes=100-'])
+        self.assertEqual(path.read_bytes(), data)
+
     def test_an_update_needs_its_live_release(self):
         with self.assertRaisesRegex(ValueError, 'promote a whole copy first'):
             mml.Base.live(self.tmp / 'live')

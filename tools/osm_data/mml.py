@@ -506,9 +506,21 @@ class Base:
         path = self.directory / (entry['sha256'] + posixpath.splitext(entry['url'])[1])
         if not path.exists():
             part = path.with_suffix('.part')
-            request = urllib.request.Request(f"{self.url}/{entry['url']}", headers={'User-Agent': AGENT})
-            with urllib.request.urlopen(request, timeout=60) as response, open(part, 'wb') as out:
-                shutil.copyfileobj(response, out, 1 << 20)
+            part.write_bytes(b'')
+            for attempt in range(1, ATTEMPTS + 1):  # a stalled download goes on from where it stopped
+                have = part.stat().st_size
+                headers = {'User-Agent': AGENT} | ({'Range': f'bytes={have}-'} if have else {})
+                try:
+                    with urllib.request.urlopen(urllib.request.Request(f"{self.url}/{entry['url']}", headers=headers),
+                                                timeout=60) as response, open(part, 'ab') as out:
+                        require(response.status == (206 if have else 200), f"{entry['url']}: HTTP {response.status}")
+                        shutil.copyfileobj(response, out, 1 << 20)
+                    break
+                except (TimeoutError, ConnectionError, http.client.HTTPException) as error:
+                    if attempt == ATTEMPTS:
+                        raise
+                    print(f"{entry['url']}: {type(error).__name__} at {part.stat().st_size} bytes; going on", flush=True)
+                    time.sleep(10)
             require(part.stat().st_size == entry['bytes'] and publish.digest_file(part) == entry['sha256'],
                     f"{entry['url']} differs from the live manifest")
             part.rename(path)
