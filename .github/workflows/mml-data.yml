@@ -119,7 +119,7 @@ jobs:
           path: mml
           github-token: ${{ github.token }}
           run-id: ${{ steps.store.outputs.run }}
-      - name: One archive of every tile, read back tile for tile, with the manifest
+      - name: One archive a zoom, read back tile for tile, with the manifest
         run: python tools/osm_data/mml.py pack mml/store.sqlite mml-release
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
