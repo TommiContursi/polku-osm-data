@@ -393,12 +393,6 @@ def pack(path, out, now=None):
     return manifest
 
 
-def folder_url(osm_url):
-    """polku-mml's public URL, beside polku-osm's."""
-    require(osm_url.endswith('/polku-osm'), 'OSM_PUBLIC_URL must end in /polku-osm')
-    return osm_url.removesuffix('/polku-osm') + '/' + FOLDER
-
-
 def point_live(ftp):
     """polku-mml's live pointer in the OSM data's form (current.json's URLs relative to the folder), once: the copy's
     first releases named the manifest's own bytes."""
@@ -416,7 +410,7 @@ def upload(directory):
     again. A test box never replaces a larger candidate: retention would then remove that copy."""
     require(os.environ.get('OSM_CELLS') == 'true', 'The copy goes up in cells: set OSM_CELLS=true')
     manifest = publish.validate(json.loads(Path(directory, 'manifest.json').read_bytes()))
-    old = public_bytes(folder_url(publish.public_url(os.environ.get('OSM_PUBLIC_URL', ''))) + '/candidates/current.json')
+    old = public_bytes(publish.product_url(publish.public_url(os.environ.get('OSM_PUBLIC_URL', '')), FOLDER) + '/candidates/current.json')
     if old is not None:
         old, new = json.loads(old)['bounds'], manifest['bounds']
         require(new[0] <= old[0] and new[1] <= old[1] and new[2] >= old[2] and new[3] >= old[3],
@@ -437,13 +431,6 @@ def public_bytes(url):
             raise
         error.close()
         return None
-
-
-def restore(directory, expected_current):
-    """Back to the pointer promote replaced, the one it saved in directory, unless another release went live meanwhile."""
-    saved = sorted(Path(directory).glob('rollback-*.json'))
-    require(len(saved) == 1, f'{len(saved)} saved pointers in {directory}; restore needs the one promote saved')
-    publish.rollback(saved[0], expected_current, folder=FOLDER)
 
 
 def main():
@@ -481,14 +468,14 @@ def main():
         elif args.command == 'upload':
             upload(args.directory)
         elif args.command == 'candidate':
-            found = publish.candidate(folder_url(publish.public_url(os.environ.get('OSM_PUBLIC_URL', ''))))
+            found = publish.candidate(publish.product_url(publish.public_url(os.environ.get('OSM_PUBLIC_URL', '')), FOLDER))
             print(json.dumps(found or {}, sort_keys=True))
             return
         elif args.command == 'promote':
             args.directory.mkdir(parents=True, exist_ok=True)
             publish.promote_candidate(args.release, args.sha256, args.directory, folder=FOLDER)
         else:
-            restore(args.directory, args.expected_current)
+            publish.restore(args.directory, args.expected_current, FOLDER)
     except Exception as error:
         key = os.environ.get('MML_API_KEY')
         parser.exit(1, f"{args.command} failed: {str(error).replace(key, '[key]') if key else error}\n")

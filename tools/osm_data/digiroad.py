@@ -11,7 +11,6 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import gzip
 import http.client
-import io
 import json
 from pathlib import Path
 import sys
@@ -23,7 +22,7 @@ if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from pmtiles.tile import Compression, TileType, zxy_to_tileid
 from pmtiles.writer import Writer
-from tools.osm_data import maintenance, mml, publish
+from tools.osm_data import mml, publish
 from tools.osm_data.publish import require
 from tools.osm_data.routing import stamp
 
@@ -134,20 +133,6 @@ def build(roads, edited, output, now=None):
     return manifest
 
 
-def install_hosting():
-    """polku-digiroad and its .htaccess, polku-osm's own, once: an existing one is changed by hand."""
-    config = publish.settings()
-    require(config[4].endswith('/polku-osm'), 'OSM_PUBLIC_URL must end in /polku-osm')
-    with publish.connection(config) as ftp:
-        ftp.cwd('..')
-        if FOLDER not in maintenance.children(ftp):
-            ftp.mkd(FOLDER)
-        require(ftp.kind(FOLDER) == 'directory', f'{FOLDER} needs a real directory')
-        ftp.cwd(FOLDER)
-        require('.htaccess' not in maintenance.children(ftp), f'{FOLDER}/.htaccess exists; change it by hand')
-        ftp.storbinary('STOR .htaccess', io.BytesIO(Path(__file__).with_name('hosting.htaccess').read_bytes()))
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
@@ -162,7 +147,7 @@ def main():
         elif args.command == 'upload':
             publish.upload(args.directory, folder=FOLDER, budget=BUDGET)
         else:
-            install_hosting()
+            publish.install_hosting(FOLDER)
     except Exception as error:
         parser.exit(1, f'{args.command} failed: {error}\n')
     print(f'{args.command}: verified')

@@ -333,3 +333,24 @@ tile is gzipped JSON,
 `{"schema": 1, "elements": [{"id": 104141443, "aadt": 10550, "lines": [[[23.62121, 60.813286], …]]}]}`: every road of
 800 or more vehicles a day (`aadt`) whose extent touches the tile, whole, ordered by Digiroad's ID. `lines` holds its
 line strings in WGS84, rounded to six decimal places, without heights.
+
+## Terrain
+
+`terrain.py` copies Mapterhorn's terrain (docs/OPERATIONS.md). A release has one PMTiles archive a zoom,
+`terrain-<z>.pmtiles`, Mapterhorn's WebP tiles unchanged (no tile compression), cut into cells as the OSM data's
+(Cells), with `attribution.json` and `LICENSE.txt` among the shared files. Its manifest, as `build` writes it:
+
+```json
+{"schema": 1, "release": "20261124T060000Z", "built_at": "2026-11-24T06:00:00Z",
+ "source": {"url": "https://download.mapterhorn.com/planet.pmtiles", "timestamp": "2026-09-11T14:58:22Z", "etag": "\"…\""},
+ "attribution": "© Mapterhorn", "license": "Each source's: attribution.json", "zooms": [0, 12],
+ "bounds": [4.0, 53.8, 31.7, 71.3],
+ "datasets": {"terrain-0": {"url": "terrain-0.pmtiles", "zoom": 0, "tiles": 1, "bytes": …, "sha256": "…"}, …,
+              "terrain-12": {"url": "terrain-12.pmtiles", "zoom": 12, "tiles": 125829, …}},
+ "files": [{"path": "terrain-0.pmtiles", …}, …, {"path": "attribution.json", …}, {"path": "LICENSE.txt", …}]}
+```
+
+Each zoom is its own dataset, `terrain-<z>`, as the NLS background map's: on the host its `format` is
+`pmtiles-json-cells` and its `url` its index's, and its cells hold WebP tiles (WebP in their headers, no tile
+compression). `source.timestamp` is the planet archive's `Last-Modified`. A tile the planet lacks is missing here
+too.

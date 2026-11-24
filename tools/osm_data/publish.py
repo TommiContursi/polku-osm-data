@@ -610,12 +610,40 @@ def product_folder(ftp, url, folder):
     """With folder, into that product's folder beside polku-osm, once its hosting is in. The folder's public URL."""
     if not folder:
         return url
-    require(url.endswith('/polku-osm'), 'OSM_PUBLIC_URL must end in /polku-osm')
+    url = product_url(url, folder)
     ftp.cwd('..')
     require(folder in maintenance.children(ftp), f'{folder} is missing: run install-hosting first')
     ftp.cwd(folder)
     require('.htaccess' in maintenance.children(ftp), f'{folder} has no .htaccess: run install-hosting first')
-    return url.removesuffix('/polku-osm') + '/' + folder
+    return url
+
+
+def product_url(osm_url, folder):
+    """A product folder's public URL, beside polku-osm's."""
+    require(osm_url.endswith('/polku-osm'), 'OSM_PUBLIC_URL must end in /polku-osm')
+    return osm_url.removesuffix('/polku-osm') + '/' + folder
+
+
+def install_hosting(folder):
+    """A product's folder beside polku-osm, with a copy of hosting.htaccess, once: an existing one is changed by hand."""
+    config = settings()
+    require(config[4].endswith('/polku-osm'), 'OSM_PUBLIC_URL must end in /polku-osm')
+    with connection(config) as ftp:
+        ftp.cwd('..')
+        if folder not in maintenance.children(ftp):
+            ftp.mkd(folder)
+        require(ftp.kind(folder) == 'directory', f'{folder} needs a real directory')
+        ftp.cwd(folder)
+        require('.htaccess' not in maintenance.children(ftp), f'{folder}/.htaccess exists; change it by hand')
+        ftp.storbinary('STOR .htaccess', io.BytesIO(Path(__file__).with_name('hosting.htaccess').read_bytes()))
+
+
+def restore(directory, expected_current, folder):
+    """Back to the pointer promote_candidate replaced, the one it saved in directory, unless another release went live
+    meanwhile."""
+    saved = sorted(Path(directory).glob('rollback-*.json'))
+    require(len(saved) == 1, f'{len(saved)} saved pointers in {directory}; restore needs the one promote saved')
+    rollback(saved[0], expected_current, folder=folder)
 
 
 def upload(directory, resume=False, folder=None, budget=None):
@@ -741,8 +769,14 @@ def candidate(url):
             return None  # nothing uploaded yet
         raise
     manifest = validate(json.loads(raw))
-    live = validate(json.loads(get(url + '/current.json')), pointed=True)
-    if manifest['built_at'] <= live['built_at']:
+    try:
+        live = validate(json.loads(get(url + '/current.json')), pointed=True)
+    except HTTPError as error:
+        if error.code != 404:
+            raise
+        error.close()
+        live = None  # nothing promoted yet
+    if live and manifest['built_at'] <= live['built_at']:
         return None
     location = f"{url}/releases/{manifest['release']}/manifest.json"
     require(get(location, immutable=True) == raw, 'Candidate pointer differs from its release')

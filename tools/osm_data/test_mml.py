@@ -338,8 +338,8 @@ class PackAndUploadTests(unittest.TestCase):
         self.assertEqual(json.loads(self.host.files[FOLDER + '/current.json']), publish.current(json.loads(raw)))
         self.assertIsNone(publish.candidate(PUBLIC.removesuffix('/polku-osm') + '/polku-mml'), 'nothing newer')
         with self.assertRaisesRegex(Exception, 'Live release changed'):
-            mml.restore(self.tmp / 'one', old['release'])
-        mml.restore(self.tmp / 'one', first['release'])
+            publish.restore(self.tmp / 'one', old['release'], mml.FOLDER)
+        publish.restore(self.tmp / 'one', first['release'], mml.FOLDER)
         self.assertEqual(self.host.files[FOLDER + '/current.json'], before, 'the first copy is live again')
 
     def test_only_the_checked_candidate_with_all_its_cells_is_promoted(self):
