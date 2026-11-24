@@ -68,19 +68,19 @@ def archive(path):
         get_bytes = MmapSource(stream)
         reader = Reader(get_bytes)
         header = reader.header()
-        require(header['min_zoom'] == header['max_zoom'] and header['tile_type'] == TileType.UNKNOWN
-                and header['tile_compression'] == Compression.GZIP, f'{path} is not a one-zoom gzip archive')
+        require(header['min_zoom'] == header['max_zoom'] and header['tile_type'] in (TileType.UNKNOWN, TileType.MVT)
+                and header['tile_compression'] == Compression.GZIP, f'{path} is not a one-zoom gzip archive of JSON or MVT')
         yield header, reader.metadata(), directory(get_bytes, header), get_bytes
 
 
-def cell(get_bytes, tiles, quadrant, metadata):
-    """One cell's bytes: its tiles under a header and metadata that depend only on its quadrant."""
+def cell(get_bytes, tiles, quadrant, metadata, tile_type):
+    """One cell's bytes: its tiles under a header and metadata that depend only on its quadrant and the tiles' type."""
     out = io.BytesIO()
     writer = Writer(out)
     for tile in sorted(tiles):
         writer.write_tile(tile, get_bytes(*tiles[tile]))
     west, south, east, north = bounds(*quadrant)
-    writer.finalize({'tile_type': TileType.UNKNOWN, 'tile_compression': Compression.GZIP,
+    writer.finalize({'tile_type': tile_type, 'tile_compression': Compression.GZIP,
                      'min_lon_e7': west, 'min_lat_e7': south, 'max_lon_e7': east, 'max_lat_e7': north,
                      'center_zoom': quadrant[0], 'center_lon_e7': (west + east) // 2,
                      'center_lat_e7': (south + north) // 2}, metadata)
@@ -93,7 +93,7 @@ def cut(header, metadata, tiles, get_bytes, target):
     require(gzip.compress(b'')[4:8] == bytes(4), 'Cells need gzip without timestamps, as in Python 3.14')
     kept = {key: metadata[key] for key in KEPT if key in metadata}
     for quadrant, group in sorted(quadrants(tiles, header['min_zoom'], target or TARGET).items()):
-        data = cell(get_bytes, {t: tiles[t] for t in group}, quadrant, kept)
+        data = cell(get_bytes, {t: tiles[t] for t in group}, quadrant, kept, header['tile_type'])
         back = Reader(MemorySource(data))
         require(all(back.get(*tileid_to_zxy(t)) == get_bytes(*tiles[t]) for t in group)
                 and back.header()['addressed_tiles_count'] == len(group), f'Cell {quadrant} differs from its archive')

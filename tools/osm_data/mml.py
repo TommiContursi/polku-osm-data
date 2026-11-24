@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """A copy of the National Land Survey of Finland's (MML) background-map vector tiles, taustakartta v21, zooms 11-14
-over a box, fetched once at a paced rate, packed into one PMTiles archive and uploaded as a candidate in polku-mml.
-Polku's mml-promote.yml checks the candidate in the app and promotes it: polku-mml/current.json, the manifest's own
-bytes, is the release people get.
+over a box, fetched once at a paced rate, packed into one PMTiles archive a zoom and uploaded in cells among the shared
+files, as the OSM data's, as a candidate in polku-mml. Polku's mml-promote.yml checks the candidate in the app and
+promotes it into polku-mml/current.json, the release people get.
 
 The tiles are CC BY 4.0. MML may limit a user whose volume disturbs its service, so the fetch halves its rate at any
 sign of load and stops when MML refuses the key. Each tile's Last-Modified goes with the release, so a later update
@@ -10,12 +10,11 @@ can ask again with If-Modified-Since. The key (MML_API_KEY) is only ever put int
 
 import argparse
 from collections import Counter
-from contextlib import contextmanager
+from contextlib import ExitStack
 from datetime import datetime, timezone
 import gzip
 import hashlib
 import http.client
-import io
 import json
 import math
 import os
@@ -52,10 +51,10 @@ CALM, RAISE = 30, 1  # after CALM seconds without trouble the rate rises by RAIS
 GIVE_UP = 300  # seconds without one good answer, or of 429s at the floor rate, before the run stops
 ATTEMPTS = 3  # per tile in one run; a tile still unanswered waits for the next run
 EMPTY = gzip.compress(b'', 6, mtime=0)  # MML's 404: an empty tile
-ARCHIVE, TABLE, LICENSE = 'taustakartta.pmtiles', 'tiles.tsv.gz', 'LICENSE.txt'
-FOLDER, STAGE = 'polku-mml', 'staging'
-SETTLE = 150  # seconds the public pointer may keep its last answer (publish.settle)
-BUDGET = 30 * 1024**3  # live, candidate and staging: three copies of about 9 GB
+TABLE, LICENSE = 'tiles.tsv.gz', 'LICENSE.txt'
+FOLDER = 'polku-mml'
+CREDIT = '© Maanmittauslaitos'  # in the archives: the dated credit, in the manifest, would change every cell
+BUDGET = 30 * 1024**3  # live, its predecessor and the candidate: three copies of about 9 GB at most
 
 
 class Refused(Exception):
@@ -331,9 +330,13 @@ def sample():
     require(not wrong, f"Helsinki's tiles {wrong} are not what MML should answer; the fetch doesn't start")
 
 
+def archive_name(z):
+    return f'taustakartta-{z}.pmtiles'
+
+
 def pack(path, out, now=None):
-    """The release: one PMTiles archive of every tile (404s as empty tiles), tiles.tsv.gz with each tile's status and
-    Last-Modified, the licence and the manifest. Every tile of the box must have its answer."""
+    """The release: one PMTiles archive a zoom of every tile (404s as empty tiles), tiles.tsv.gz with each tile's status
+    and Last-Modified, the licence and the manifest. Every tile of the box must have its answer."""
     now, out = now or datetime.now(timezone.utc), Path(out)
     db = store(path)
     meta = dict(db.execute('SELECT key, value FROM meta'))
@@ -343,45 +346,52 @@ def pack(path, out, now=None):
     require(held == expected, f'{len(set(expected) - set(held))} tiles have no answer yet (and {len(set(held) - set(expected))} '
             "lie outside the box): dispatch the workflow again with this run's ID as store")
     out.mkdir(parents=True, exist_ok=True)
-    statuses, lines = Counter(), [b'z\tx\ty\tstatus\tlast_modified\n']
-    with open(out / ARCHIVE, 'wb') as stream:
-        writer = Writer(stream)
+    fetched = meta.get('fetched_to', stamp(now))
+    attribution = f'{CREDIT}, Maastotietokanta {fetched[5:7]}/{fetched[:4]}'
+    statuses, lines, writers = Counter(), [b'z\tx\ty\tstatus\tlast_modified\n'], {}
+    with ExitStack() as streams:
         for tile, status, modified, data in db.execute('SELECT id, status, modified, data FROM tiles ORDER BY id'):
             statuses[str(status)] += 1
             z, x, y = tileid_to_zxy(tile)
             lines.append(f'{z}\t{x}\t{y}\t{status}\t{modified or ""}\n'.encode())
             if status in (200, 404):
-                writer.write_tile(tile, data if status == 200 else EMPTY)
-        fetched = meta.get('fetched_to', stamp(now))
-        attribution = f'© Maanmittauslaitos, Maastotietokanta {fetched[5:7]}/{fetched[:4]}'
-        writer.finalize({'tile_type': TileType.MVT, 'tile_compression': Compression.GZIP,
-                         'min_lon_e7': round(box[0] * 1e7), 'min_lat_e7': round(box[1] * 1e7),
-                         'max_lon_e7': round(box[2] * 1e7), 'max_lat_e7': round(box[3] * 1e7)},
-                        {'name': 'MML taustakartta v21', 'attribution': attribution, 'source': SOURCE,
-                         'license': 'CC BY 4.0', 'fetched_from': meta.get('fetched_from'), 'fetched_to': fetched})
+                if z not in writers:  # the ids come zoom by zoom
+                    writers[z] = Writer(streams.enter_context(open(out / archive_name(z), 'wb')))
+                writers[z].write_tile(tile, data if status == 200 else EMPTY)
+        for z, writer in writers.items():
+            writer.finalize({'tile_type': TileType.MVT, 'tile_compression': Compression.GZIP,
+                             'min_lon_e7': round(box[0] * 1e7), 'min_lat_e7': round(box[1] * 1e7),
+                             'max_lon_e7': round(box[2] * 1e7), 'max_lat_e7': round(box[3] * 1e7)},
+                            {'name': f'MML taustakartta v21, zoom {z}', 'attribution': CREDIT, 'source': SOURCE,
+                             'license': 'CC BY 4.0'})
     (out / TABLE).write_bytes(gzip.compress(b''.join(lines), 6, mtime=0))
     (out / LICENSE).write_text(
         f'Background map vector tiles (taustakartta v21): {attribution}, National Land Survey of Finland.\n'
         'Licence: Creative Commons Attribution 4.0 International, https://creativecommons.org/licenses/by/4.0/\n'
         f'Source: {SOURCE}, fetched from {meta.get("fetched_from")} to {fetched}.\n'
         'The tiles are MML\'s own, gzipped and packed into PMTiles; nothing in them is changed.\n')
-    # The archive must give back exactly what was fetched, tile for tile
-    with open(out / ARCHIVE, 'rb') as stream:
-        rows = db.execute('SELECT id, status, data FROM tiles WHERE status IN (200, 404) ORDER BY id')
-        for ((z, x, y), data), (tile, status, held_data) in zip(all_tiles(MmapSource(stream)), rows, strict=True):
-            require(zxy_to_tileid(z, x, y) == tile and data == (held_data if status == 200 else EMPTY),
-                    f'The archive differs at {z}/{x}/{y}')
+    # The archives must give back exactly what was fetched, tile for tile
+    rows = db.execute('SELECT id, status, data FROM tiles WHERE status IN (200, 404) ORDER BY id')
+    for z in writers:
+        with open(out / archive_name(z), 'rb') as stream:
+            for (tz, x, y), data in all_tiles(MmapSource(stream)):
+                tile, status, held_data = next(rows)
+                require(zxy_to_tileid(tz, x, y) == tile and data == (held_data if status == 200 else EMPTY),
+                        f'The archive differs at {tz}/{x}/{y}')
+    require(next(rows, None) is None, 'The archives lack tiles')
     files = [{'path': name, 'bytes': (out / name).stat().st_size, 'sha256': publish.digest_file(out / name)}
-             for name in (ARCHIVE, TABLE, LICENSE)]
+             for name in [*map(archive_name, writers), TABLE, LICENSE]]
     manifest = {'schema': 1, 'release': now.strftime('%Y%m%dT%H%M%SZ'), 'built_at': stamp(now), 'source': SOURCE,
                 'fetched_from': meta.get('fetched_from'), 'fetched_to': fetched, 'attribution': attribution,
                 'license': 'CC BY 4.0', 'zooms': [ZOOMS[0], ZOOMS[-1]], 'bounds': list(box), 'tiles': dict(statuses),
-                'datasets': {'taustakartta': {'url': ARCHIVE, 'bytes': files[0]['bytes'], 'sha256': files[0]['sha256']}},
+                'datasets': {f'taustakartta-{z}': {'url': f['path'], 'bytes': f['bytes'], 'sha256': f['sha256'], 'zoom': z}
+                             for z, f in zip(writers, files)},
                 'files': files}
     publish.validate(manifest)
     (out / 'manifest.json').write_bytes(json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode())
     db.close()
-    print(json.dumps({k: manifest[k] for k in ('release', 'tiles', 'attribution')} | {'bytes': files[0]['bytes']}), flush=True)
+    print(json.dumps({k: manifest[k] for k in ('release', 'tiles', 'attribution')}
+                     | {'bytes': sum(f['bytes'] for f in files[:len(writers)])}), flush=True)
     return manifest
 
 
@@ -391,109 +401,43 @@ def folder_url(osm_url):
     return osm_url.removesuffix('/polku-osm') + '/' + FOLDER
 
 
-@contextmanager
-def mml_host():
-    """The pinned-key SFTP login, in polku-mml beside polku-osm, and the folder's public URL."""
-    config = publish.settings()
-    url = folder_url(config[4])
-    with publish.connection(config) as ftp:
-        ftp.cwd('..')
-        if FOLDER not in maintenance.children(ftp):
-            ftp.mkd(FOLDER)
-        require(ftp.kind(FOLDER) == 'directory', f'{FOLDER} needs a real directory')
-        ftp.cwd(FOLDER)
-        yield ftp, url
-
-
-def remove_tree(ftp, base):
-    """Only what this job writes."""
-    for name in maintenance.children(ftp, base):
-        require(ftp.kind(f'{base}/{name}') == 'file' and name in {ARCHIVE, TABLE, LICENSE, 'manifest.json', '_run.json'},
-                f'Unexpected file {base}/{name}; inspect by hand')
-        ftp.remove(f'{base}/{name}')
-    ftp.rmd(base)
+def point_live(ftp, url):
+    """polku-mml's live pointer in the OSM data's form (current.json's URLs relative to the folder), with a receipt for
+    its release, so retention manages it as the OSM data's, once: the first copy's pointer was its manifest's bytes."""
+    if 'current.json' not in maintenance.children(ftp):
+        return
+    raw = publish.retrieve(ftp, 'current.json')
+    try:
+        publish.validate(json.loads(raw), pointed=True)
+        return
+    except ValueError:
+        manifest = publish.validate(json.loads(raw))
+    require(publish.retrieve(ftp, f"releases/{manifest['release']}/manifest.json") == raw, 'The live pointer differs from its release')
+    if 'maintenance' not in maintenance.children(ftp):
+        ftp.mkd('maintenance')
+    maintenance.write_record(ftp, f"maintenance/r-{manifest['release']}.json", {
+        'version': 1, 'release': manifest['release'], 'manifest_sha256': hashlib.sha256(raw).hexdigest(),
+        'published_at': manifest['built_at'], 'previous_release': None})
+    pointed = json.dumps(publish.current(manifest), sort_keys=True, separators=(',', ':')).encode()
+    publish.replace_pointer(ftp, pointed)
+    publish.settle(url + '/current.json', pointed, 150)
 
 
 def upload(directory):
-    """Upload the release into staging (going on from a stopped upload of the same release), read every file back,
-    rename it into releases/, check it over HTTPS and name it in candidates/current.json."""
+    """The release into polku-mml in cells among the shared files, as the OSM data's: a cell the host holds isn't sent
+    again. A test box never replaces a larger candidate: retention would then remove that copy."""
     require(os.environ.get('OSM_ALLOW_PUBLISH') == 'true', 'Publication requires approved OSM_ALLOW_PUBLISH=true')
-    directory = Path(directory)
-    raw, manifest = publish.local_release(directory)
-    release, hosting = manifest['release'], Path(__file__).with_name('mml.htaccess').read_bytes()
-    with mml_host() as (ftp, url):
-        if '.htaccess' not in maintenance.children(ftp):
-            ftp.storbinary('STOR .htaccess', io.BytesIO(hosting))
-        require(publish.retrieve(ftp, '.htaccess') == hosting, f'{FOLDER}/.htaccess differs from mml.htaccess; change it by hand')
-        if 'candidates' in maintenance.children(ftp) and 'current.json' in maintenance.children(ftp, 'candidates'):
-            old = json.loads(publish.retrieve(ftp, 'candidates/current.json'))['bounds']
-            new = manifest['bounds']
-            # A test box never replaces a larger copy: retention would then remove that copy
-            require(new[0] <= old[0] and new[1] <= old[1] and new[2] >= old[2] and new[3] >= old[3],
-                    f'The candidate covers {old}, more than this release; upload a box that covers it')
-        for name in ('releases', 'candidates'):
-            if name not in maintenance.children(ftp):
-                ftp.mkd(name)
-        if release in maintenance.children(ftp, 'releases'):
-            stage = f'releases/{release}'  # renamed before the run stopped: verified again below
-        else:
-            stage = STAGE
-            if STAGE in maintenance.children(ftp):
-                names = maintenance.children(ftp, STAGE)
-                run = json.loads(publish.retrieve(ftp, f'{STAGE}/_run.json')) if '_run.json' in names else {}
-                if run.get('release') != release:
-                    remove_tree(ftp, STAGE)
-            if STAGE not in maintenance.children(ftp):
-                ftp.mkd(STAGE)
-                ftp.storbinary(f'STOR {STAGE}/_run.json', io.BytesIO(json.dumps({'release': release}).encode()))
-            names = maintenance.children(ftp, STAGE)
-            have = {f['path']: ftp.size(f"{STAGE}/{f['path']}") if f['path'] in names else None for f in manifest['files']}
-            incoming = sum(f['bytes'] - (have[f['path']] or 0) for f in manifest['files'])
-            require(maintenance.usage(ftp) + incoming <= BUDGET, f'{FOLDER} storage budget exceeded (30 GiB)')
-            for f in manifest['files']:
-                path, size = f"{STAGE}/{f['path']}", have[f['path']]
-                if size is not None and size > f['bytes']:
-                    ftp.remove(path)
-                    size = None
-                if size != f['bytes']:
-                    with open(directory / f['path'], 'rb') as body:
-                        body.seek(size or 0)
-                        ftp.storbinary('STOR ' + path, body, rest=size)
-            ftp.storbinary(f'STOR {STAGE}/manifest.json', io.BytesIO(raw))
-        try:
-            samples = publish.verify_remote(ftp, stage, manifest, raw)
-        except ValueError:
-            if stage == STAGE:
-                remove_tree(ftp, STAGE)  # a resumed file that doesn't hash right: the next run uploads it whole
-            raise
-        if stage == STAGE:
-            ftp.remove(f'{STAGE}/_run.json')
-            require(set(maintenance.children(ftp, STAGE)) == {f['path'] for f in manifest['files']} | {'manifest.json'},
-                    'Unexpected files in staging')
-            ftp.rename(STAGE, f'releases/{release}')
-        publish.probe(url, manifest, raw, samples)
-        publish.replace_pointer(ftp, raw, 'candidates/current.json')
-        require(publish.get(url + '/candidates/current.json') == raw, 'Public candidate pointer differs')
-        live = json.loads(publish.retrieve(ftp, 'current.json'))['release'] if 'current.json' in maintenance.children(ftp) else None
-        for folder in maintenance.children(ftp, 'releases'):
-            if folder not in {release, live}:
-                remove_tree(ftp, 'releases/' + folder)
-    print(f'Candidate {release}: {url}/releases/{release}/manifest.json', flush=True)
-
-
-def candidate():
-    """The uploaded candidate built after the live release, for Polku's checks, or None. Reads only public HTTP."""
-    url = folder_url(publish.public_url(os.environ.get('OSM_PUBLIC_URL', '')))
-    raw, live = (public_bytes(url + path) for path in ('/candidates/current.json', '/current.json'))
-    if raw is None:
-        return None  # nothing uploaded yet
-    manifest = publish.validate(json.loads(raw))
-    live = live and json.loads(live)  # None: nothing promoted yet
-    if live and manifest['built_at'] <= live['built_at']:
-        return None
-    location = f"{url}/releases/{manifest['release']}/manifest.json"
-    require(publish.get(location, immutable=True) == raw, 'Candidate pointer differs from its release')
-    return {'release': manifest['release'], 'manifest': location, 'sha256': hashlib.sha256(raw).hexdigest()}
+    require(os.environ.get('OSM_CELLS') == 'true', 'The copy goes up in cells: set OSM_CELLS=true')
+    manifest = publish.validate(json.loads(Path(directory, 'manifest.json').read_bytes()))
+    old = public_bytes(folder_url(publish.public_url(os.environ.get('OSM_PUBLIC_URL', ''))) + '/candidates/current.json')
+    if old is not None:
+        old, new = json.loads(old)['bounds'], manifest['bounds']
+        require(new[0] <= old[0] and new[1] <= old[1] and new[2] >= old[2] and new[3] >= old[3],
+                f'The candidate covers {old}, more than this release; upload a box that covers it')
+    config = publish.settings()
+    with publish.connection(config) as ftp:
+        point_live(ftp, publish.into_folder(ftp, config[-2], FOLDER))
+    publish.upload(directory, folder=FOLDER, budget=BUDGET)
 
 
 def public_bytes(url):
@@ -507,67 +451,11 @@ def public_bytes(url):
         return None
 
 
-def require_release(ftp, raw):
-    """The release a manifest names is on the host with every file at its size: the upload hashed them and is their
-    only writer, and an upload's retention removes a release that is neither the candidate nor live."""
-    manifest = publish.validate(json.loads(raw))
-    base = f"releases/{manifest['release']}"
-    require(manifest['release'] in maintenance.children(ftp, 'releases') and publish.retrieve(ftp, base + '/manifest.json') == raw,
-            f"Release {manifest['release']} is not on the host")
-    names = maintenance.children(ftp, base)
-    for f in manifest['files']:
-        require(f['path'] in names and ftp.size(f"{base}/{f['path']}") == f['bytes'], 'Release file is missing or differs: ' + f['path'])
-    return manifest
-
-
-def put_back(ftp, url, previous):
-    """The live pointer as it was: the saved bytes, or none at all, so the app reads MML's own service."""
-    if previous is None:
-        ftp.remove('current.json')
-    else:
-        publish.replace_pointer(ftp, previous)
-    publish.settle(url + '/current.json', previous, SETTLE)
-
-
-def promote(release, sha256, directory):
-    """Make the candidate Polku checked live: current.json gets the manifest's same bytes. The pointer it replaces goes
-    to DIRECTORY/previous.json (null where there was none), for restore."""
-    require(os.environ.get('OSM_ALLOW_PUBLISH') == 'true', 'Publication requires approved OSM_ALLOW_PUBLISH=true')
-    require(publish.NAME.fullmatch(release) and re.fullmatch('[a-f0-9]{64}', sha256), 'Invalid candidate')
-    with mml_host() as (ftp, url):
-        raw = publish.retrieve(ftp, f'releases/{release}/manifest.json')
-        require(hashlib.sha256(raw).hexdigest() == sha256, 'Candidate manifest differs from the one checked')
-        # Still the candidate: an upload that has named another prunes this release unless it is live
-        require(publish.retrieve(ftp, 'candidates/current.json') == raw, 'Another candidate was uploaded meanwhile; check it first')
-        manifest = require_release(ftp, raw)
-        require(manifest['release'] == release, 'Candidate release differs')
-        previous = publish.retrieve(ftp, 'current.json') if 'current.json' in maintenance.children(ftp) else None
-        directory = Path(directory)
-        directory.mkdir(parents=True, exist_ok=True)
-        (directory / 'previous.json').write_bytes(previous or b'null')
-        if previous == raw:
-            return  # promoted already: a restore puts back the same
-        require(not previous or manifest['built_at'] > json.loads(previous)['built_at'], 'Candidate is not newer than the live release')
-        publish.probe(url, manifest, raw)
-        publish.replace_pointer(ftp, raw)
-        try:
-            print(f"Public pointer after {publish.settle(url + '/current.json', raw, SETTLE):.0f} s", flush=True)
-        except Exception:
-            put_back(ftp, url, previous)
-            raise
-
-
 def restore(directory, expected_current):
-    """Back to the pointer promote replaced, unless another release went live meanwhile."""
-    require(os.environ.get('OSM_ALLOW_PUBLISH') == 'true', 'Publication requires approved OSM_ALLOW_PUBLISH=true')
-    previous = Path(directory, 'previous.json').read_bytes()
-    with mml_host() as (ftp, url):
-        live = json.loads(publish.retrieve(ftp, 'current.json'))['release'] if 'current.json' in maintenance.children(ftp) else None
-        require(live == expected_current, 'Live release changed; do not roll back another publication')
-        previous = None if previous == b'null' else previous
-        if previous is not None:
-            require_release(ftp, previous)
-        put_back(ftp, url, previous)
+    """Back to the pointer promote replaced, the one it saved in directory, unless another release went live meanwhile."""
+    saved = sorted(Path(directory).glob('rollback-*.json'))
+    require(len(saved) == 1, f'{len(saved)} saved pointers in {directory}; restore needs the one promote saved')
+    publish.rollback(saved[0], expected_current, folder=FOLDER)
 
 
 def main():
@@ -605,10 +493,12 @@ def main():
         elif args.command == 'upload':
             upload(args.directory)
         elif args.command == 'candidate':
-            print(json.dumps(candidate() or {}, sort_keys=True))
+            found = publish.candidate(folder_url(publish.public_url(os.environ.get('OSM_PUBLIC_URL', ''))))
+            print(json.dumps(found or {}, sort_keys=True))
             return
         elif args.command == 'promote':
-            promote(args.release, args.sha256, args.directory)
+            args.directory.mkdir(parents=True, exist_ok=True)
+            publish.promote_candidate(args.release, args.sha256, args.directory, folder=FOLDER)
         else:
             restore(args.directory, args.expected_current)
     except Exception as error:
