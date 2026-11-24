@@ -41,9 +41,14 @@ CELLS = 'pmtiles-json-cells'  # a dataset whose url is the index of its cells, n
 INDEX = '.cells.json'  # an archive's index takes its name, with this suffix for .pmtiles
 SETTLE = 150  # seconds a public pointer may keep its last answer (settle)
 SEARCH = 'search-gzt'  # a dataset whose url is a search index's root, which names its groups' indexes and their files
-# SFTP channels at once on the one connection, gently on a shared host, for a release's many small files: each costs
-# round trips, not bandwidth
+# SFTP channels at once on the one connection, gently on the host, for a release's many small files: each costs round
+# trips, not bandwidth
 CHANNELS = 4
+try:
+    from paramiko import SSHException
+except ImportError:  # (the checks of this module that need no SFTP)
+    SSHException = OSError
+CHANNEL_ERRORS = (OSError, EOFError, SSHException)
 
 
 def require(ok, message):
@@ -201,21 +206,22 @@ def hosted_named(ftp, manifest, present=None):
 
 
 def at_once(ftp, items, work):
-    """[work(channel, item)] for each item, in order, over CHANNELS channels of ftp's one SSH connection at once. Any
-    channel's error, opening it too, sends what's left one by one over ftp itself, where a real error stops the run."""
+    """[work(channel, item)] for each item, in order, over CHANNELS channels of ftp's one SSH connection at once. A
+    channel's error (OSError, EOFError, paramiko's SSHException), opening it too, sends what's left one by one over ftp
+    itself, where a real error stops the run. Any other error, such as a file that differs, stops it at once."""
     items, done = list(items), {}
-    if len(items) > 1 and hasattr(ftp, 'channel'):
+    if len(items) > 1:
         opened, free, failed = [], queue.SimpleQueue(), threading.Event()
 
         def give_up(error):
             if not failed.is_set():
-                print(f'An SFTP channel failed ({error}); the rest go one at a time', flush=True)
+                print(f'An SFTP channel failed ({type(error).__name__}); the rest go one at a time', flush=True)
             failed.set()
         try:
             for _ in range(min(CHANNELS, len(items))):
                 opened.append(ftp.channel())
                 free.put(opened[-1])
-        except Exception as error:
+        except CHANNEL_ERRORS as error:
             give_up(error)
 
         def one(i):
@@ -224,7 +230,7 @@ def at_once(ftp, items, work):
             channel = free.get()
             try:
                 done[i] = work(channel, items[i])
-            except Exception as error:
+            except CHANNEL_ERRORS as error:
                 give_up(error)
             finally:
                 free.put(channel)
@@ -232,10 +238,7 @@ def at_once(ftp, items, work):
             with ThreadPoolExecutor(len(opened)) as pool:
                 list(pool.map(one, range(len(items))))
         for channel in opened:
-            try:
-                channel.close_channel()
-            except Exception:
-                pass  # the connection goes on without it
+            channel.close_channel()
     return [done[i] if i in done else work(ftp, item) for i, item in enumerate(items)]
 
 
@@ -342,8 +345,7 @@ class SFTPFiles:
         """Another SFTP channel of the same SSH connection, in the same folder, for at_once()."""
         import paramiko
         sftp = paramiko.SFTPClient.from_transport(self.transport)
-        if self.sftp.getcwd():
-            sftp.chdir(self.sftp.getcwd())
+        sftp.chdir(self.sftp.getcwd())
         return SFTPFiles(self.transport, sftp)
 
     def close_channel(self):
@@ -796,15 +798,20 @@ def upload(directory, resume=False, folder=None, budget=None):
         if here and SHARED not in maintenance.children(ftp):
             ftp.mkd(SHARED)
 
-        def send(channel, pair):  # a search index's file, as the release folder holds it
-            where, entry = pair
+        def send_indexed(channel, pair):  # a search index's file, as the release folder holds it; as move_shared(), but
+            where, entry = pair            # files/ is made once above rather than listed for each file
             staged = f"{stage}/{entry['path']}"
             with (directory / entry['path']).open('rb') as body:
                 channel.storbinary('STOR ' + staged, body)
             verify_file(channel, staged, entry)
             print(f'Move verified {staged} to {where}', flush=True)
-            channel.rename(staged, where)
-        at_once(ftp, here, send)
+            try:
+                channel.rename(staged, where)
+            except CHANNEL_ERRORS:
+                # sent again after a channel failed once its rename had gone through: it's there, at its size
+                require(channel.size(where) == entry['bytes'], 'Shared file differs: ' + where)
+                channel.remove(staged)
+        at_once(ftp, here, send_indexed)
         for where, _ in here:
             del send_cells[where]
         for f in indexes(manifest):  # each archive cut again, the same way; only its missing cells go up

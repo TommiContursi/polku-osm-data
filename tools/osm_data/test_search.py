@@ -313,8 +313,15 @@ class AtOnceTests(unittest.TestCase):
                 raise OSError('channel closed')
             return i
         self.assertEqual(publish.at_once(main, range(10), flaky), list(range(10)))
+        def down(c, i):
+            raise OSError('host down')
         with self.assertRaises(OSError):
-            publish.at_once(main, range(3), lambda c, i: (_ for _ in ()).throw(OSError('host down')))
+            publish.at_once(main, range(3), down)  # (and over the connection itself too: it stops)
+        def differs(c, i):
+            raise ValueError('Uploaded file SHA-256 differs')
+        host.update(open=0, closed=0)
+        with self.assertRaisesRegex(ValueError, 'differs'):
+            publish.at_once(main, range(3), differs)  # not a channel's error: no second try
 
 
 class HostTests(unittest.TestCase):
