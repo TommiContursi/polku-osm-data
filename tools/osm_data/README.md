@@ -420,3 +420,12 @@ Each zoom is its own dataset, `terrain-<z>`, as the NLS background map's: on the
 compression). `source.timestamp` is the planet archive's `Last-Modified`. A tile the planet lacks is missing here
 too. `tools/fixtures/terrain-12.pmtiles` is the extract of one zoom-12 tile at Seitseminen (12/2315/1144), and
 `tools/fixtures/terrain-12-cells/` its cut at a 4 KiB target.
+
+## Base map
+
+`basemap.py` copies OpenFreeMap's base map (docs/OPERATIONS.md), laid out as the terrain's: `basemap-<z>.pmtiles`
+for zooms 0–14, OpenFreeMap's gzipped vector tiles unchanged, in cells (MVT in their headers), with `LICENSE.txt`.
+Its manifest's `source` names the build: `{"url": "https://btrfs.openfreemap.com/areas/planet/20261122_124456_pt/tiles.pmtiles",
+"tilejson": "https://tiles.openfreemap.org/planet", "version": "20261122_124456_pt", "timestamp": …, "etag": …}`,
+`timestamp` being the archive's `Last-Modified`. `tools/fixtures/basemap-14.pmtiles` is one zoom-14 tile at
+Seitseminen (14/9260/4577), and `tools/fixtures/basemap-14-cells/` its cut at a 4 KiB target.

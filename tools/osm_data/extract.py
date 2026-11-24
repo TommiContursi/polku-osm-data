@@ -1,11 +1,17 @@
 """A box of a remote PMTiles archive, one zoom at a time, read by HTTP Range: the directory leaves its tiles lie in,
 then the tiles themselves in runs of up to 32 MiB, one request at a time. Each zoom becomes a one-zoom archive of its
-own, its tiles byte for byte the source's."""
+own, its tiles byte for byte the source's. The copies made this way (terrain.py, basemap.py) share their release and
+their commands here."""
 
+import argparse
 from collections import Counter
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 import hashlib
 import http.client
+import json
+import os
+from pathlib import Path
 import re
 import time
 import urllib.request
@@ -15,7 +21,7 @@ from pmtiles.reader import MmapSource, all_tiles
 from pmtiles.tile import deserialize_directory, deserialize_header, find_tile, zxy_to_tileid
 from pmtiles.writer import Writer
 
-from tools.osm_data import mml
+from tools.osm_data import mml, publish
 from tools.osm_data.publish import require
 from tools.osm_data.routing import stamp
 
@@ -135,3 +141,72 @@ def extract(remote, box, z, path, metadata):
             back.update(zxy_to_tileid(tz, x, y).to_bytes(8, 'big') + data)
     require(back.digest() == digest.digest(), f'{path} differs from what was read')
     return len(found)
+
+
+def release(output, remote, box, zooms, name, title, files, fields, now=None):
+    """A copy's release in output: the box's tiles as `<name>-<z>.pmtiles`, a zoom each, titled `title` and the zoom;
+    `files` ({name: bytes}) beside them; and the manifest, with `fields` (source, attribution, licence) in it."""
+    now, output = now or datetime.now(timezone.utc), Path(output)
+    require(not output.exists(), 'The release folder exists')
+    output.mkdir(parents=True)
+    counts = {}
+    for z in zooms:
+        print(f'Zoom {z}', flush=True)
+        counts[z] = extract(remote, box, z, output / f'{name}-{z}.pmtiles',
+                            {'name': f'{title}, zoom {z}', 'attribution': fields['attribution']})
+    for path, body in files.items():
+        (output / path).write_bytes(body)
+    listed = [{'path': path, 'bytes': (output / path).stat().st_size, 'sha256': publish.digest_file(output / path)}
+              for path in [*(f'{name}-{z}.pmtiles' for z in zooms), *files]]
+    manifest = {'schema': 1, 'release': now.strftime('%Y%m%dT%H%M%SZ'), 'built_at': stamp(now), **fields,
+                'zooms': [zooms[0], zooms[-1]], 'bounds': list(box),
+                'datasets': {f'{name}-{z}': {'url': f['path'], 'bytes': f['bytes'], 'sha256': f['sha256'], 'zoom': z,
+                                             'tiles': counts[z]} for z, f in zip(zooms, listed)},
+                'files': listed}
+    (output / 'manifest.json').write_bytes(json.dumps(publish.validate(manifest), sort_keys=True, separators=(',', ':')).encode())
+    print(json.dumps({'release': manifest['release'], 'tiles': sum(counts.values()),
+                      'bytes': sum(f['bytes'] for f in listed[:len(counts)])}), flush=True)
+    return manifest
+
+
+def main(doc, folder, budget, box, build):
+    """A copy's commands: build (with `build(output, box)`), install-hosting, upload, candidate, promote and restore."""
+    parser = argparse.ArgumentParser(description=doc)
+    commands = parser.add_subparsers(dest='command', required=True)
+    building = commands.add_parser('build', help='extract the tiles in the box and write the release')
+    building.add_argument('output', type=Path)
+    building.add_argument('--box', default=','.join(map(str, box)), help='west,south,east,north in degrees')
+    commands.add_parser('install-hosting', help=f'make {folder} and put hosting.htaccess in it, once')
+    commands.add_parser('upload', help='upload the release in cells as the candidate').add_argument('directory', type=Path)
+    commands.add_parser('candidate', help='the candidate built after the live release, over public HTTP')
+    promotion = commands.add_parser('promote')
+    promotion.add_argument('release')
+    promotion.add_argument('--sha256', required=True, help="the checked manifest's SHA-256, from `candidate`")
+    promotion.add_argument('--directory', type=Path, required=True, help='where the replaced pointer is kept for restore')
+    back = commands.add_parser('restore')
+    back.add_argument('--directory', type=Path, required=True, help="promote's directory")
+    back.add_argument('--expected-current', required=True, help='only if this release is live: never undo another publication')
+    args = parser.parse_args()
+    try:
+        if args.command == 'build':
+            given = tuple(float(value) for value in args.box.split(','))
+            require(len(given) == 4 and given[0] < given[2] and given[1] < given[3], 'The box is west,south,east,north')
+            build(args.output, given)
+        elif args.command == 'install-hosting':
+            publish.install_hosting(folder)
+        elif args.command == 'upload':
+            require(os.environ.get('OSM_CELLS') == 'true', 'The copy goes up in cells: set OSM_CELLS=true')
+            publish.require_covers(folder, publish.validate(json.loads((args.directory / 'manifest.json').read_bytes())))
+            publish.upload(args.directory, folder=folder, budget=budget)
+        elif args.command == 'candidate':
+            found = publish.candidate(publish.product_url(publish.public_url(os.environ.get('OSM_PUBLIC_URL', '')), folder), first=True)
+            print(json.dumps(found or {}, sort_keys=True))
+            return
+        elif args.command == 'promote':
+            args.directory.mkdir(parents=True, exist_ok=True)
+            publish.promote_candidate(args.release, args.sha256, args.directory, folder=folder)
+        else:
+            publish.restore(args.directory, args.expected_current, folder)
+    except Exception as error:
+        parser.exit(1, f'{args.command} failed: {error}\n')
+    print(f'{args.command}: done')

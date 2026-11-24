@@ -11,7 +11,8 @@ Beside it, `https://ducksoft.fi/polku-routing/` mirrors BRouter's routing data f
 ([docs/OPERATIONS.md](docs/OPERATIONS.md#nls-background-map)), and `https://ducksoft.fi/polku-digiroad/` a copy of
 Digiroad's busy roads, paved roads, private roads and speed limits
 ([docs/OPERATIONS.md](docs/OPERATIONS.md#digiroad)). `https://ducksoft.fi/polku-terrain/`
-holds a copy of Mapterhorn's terrain ([docs/OPERATIONS.md](docs/OPERATIONS.md#terrain)).
+holds a copy of Mapterhorn's terrain ([docs/OPERATIONS.md](docs/OPERATIONS.md#terrain)), and
+`https://ducksoft.fi/polku-basemap/` a monthly copy of OpenFreeMap's base map ([docs/OPERATIONS.md](docs/OPERATIONS.md#base-map)).
 
 The repository is public so that its long builds run on GitHub's free runners. Its code
 is not open source: see [LICENSE](LICENSE). The data keeps OpenStreetMap's licence.
