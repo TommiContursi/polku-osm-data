@@ -137,6 +137,11 @@ class ReedbedWays:
         return not (reed or way.id in self.members)
 
 
+# Every way of these kinds is in the trails product. The trails dataset record says cycleways:true from this set,
+# so Polku draws cycle paths from it only when the archive keeps every one.
+TRAIL_HIGHWAYS = {'path', 'bridleway', 'steps', 'track', 'cycleway'}
+
+
 def products(kind, tags):
     result = []
     h = tags.get('highway')
@@ -146,9 +151,9 @@ def products(kind, tags):
         hazard = (tags.get('seamark:type') in {'rock', 'obstruction', 'wreck'} or tags.get('natural') in {'rock', 'reef', 'shoal'} or
                   tags.get('waterway') == 'rapids')
     else:
-        trail = (h in {'path', 'bridleway', 'steps', 'track'} or
-                 h in {'footway', 'cycleway'} and
-                 (h == 'footway' and 'mtb:scale' in tags or
+        trail = (h in TRAIL_HIGHWAYS or
+                 h == 'footway' and
+                 ('mtb:scale' in tags or
                   any(tags.get(k) for k in ['obstacle', 'ford', 'mtb:scale:uphill']) or
                   tags.get('surface') == 'mud') or
                  tags.get('barrier') in {'fence', 'wall', 'hedge', 'city_wall'})
@@ -759,6 +764,8 @@ def build_dataset(source, output, source_info, *, full_country=False, started=No
                               'tiles': product['tiles'], 'features': product['features']}
             if name == 'inspection':
                 datasets[name]['nearby_complete'] = product['incomplete_relations'] == 0
+            if name == 'trails' and 'cycleway' in TRAIL_HIGHWAYS:
+                datasets[name]['cycleways'] = True
         stats['build_seconds'] = round(time.monotonic() - started, 3)
         peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         stats['peak_rss_bytes'] = peak if sys.platform == 'darwin' else peak * 1024
