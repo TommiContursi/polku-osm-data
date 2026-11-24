@@ -378,9 +378,10 @@ A key is a name's word, or a name of several words without its spaces, normalise
 
 ```json
 {"schema": 1, "files": [["kos", "T", 1840, "<sha256>"], ["koski", "W", 30211, "<sha256>"], ["koskia", "L", 9120, "<sha256>"], …],
- "changed": ["<record>", …], "removed": ["<id>", …]}
+ "texts": [["koskib", "L", "<record>\n<record>\n"], …], "changed": ["<record>", …], "removed": ["<id>", …]}
 ```
 
+- `files` name the group's files; a file under 1 KiB gzipped is a row of `texts` instead, its text in the row.
 - `L`: every record with a key that starts with the prefix. A prefix with no `L` file is split by its next letter.
 - `T`: a split prefix's 30 most important records.
 - `W`: the records whose key is the prefix exactly; when that is too large, `A` files split it by zoom-7 tile,

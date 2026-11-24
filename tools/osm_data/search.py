@@ -49,6 +49,7 @@ SHORT = 0.9  # of each source's count in the previous release, at least
 TARGET = 48 * 1024  # a file's gzipped bytes, at most, unless one word's records alone are more
 TOP = 30  # records in a split prefix's list, for queries that short
 CHANGES = 24 * 1024  # a group's changed records, in bytes, before its files are made again
+INLINE = 1024  # a file smaller than this, gzipped, goes into its group's index as text: half the files are
 AREA = 7  # the zoom of the tiles a common word's records are split by
 PAGE, PAUSE = 10000, 1  # NLS: names a request, and seconds between requests
 ATTRIBUTION = ('Places: © OpenStreetMap contributors (ODbL), via Photon; place names © National Land Survey of '
@@ -325,15 +326,16 @@ def tile(lon, lat, z=AREA):
 
 
 class Group:
-    """One group's records by key, laid out in files: {name: bytes}, and the index rows [prefix, kind, bytes, sha256].
-    Kinds: L, every record with a key starting with the prefix; T, a split prefix's most important; W, the records
-    whose key is the prefix exactly; A, an area's part of W, its prefix written word@x-y."""
+    """One group's records by key, laid out in files: {name: bytes}, and the index rows [prefix, kind, bytes, sha256];
+    a file under INLINE is a text row [prefix, kind, text] in the index instead. Kinds: L, every record with a key
+    starting with the prefix; T, a split prefix's most important; W, the records whose key is the prefix exactly; A, an
+    area's part of W, its prefix written word@x-y."""
 
     def __init__(self, lines, by_key):
         self.lines, self.by_key = lines, by_key  # {id: line}, {key: set of ids}
         self.keys = sorted(by_key)
         self.rank = {i: float(l.split('\t')[5]) for i, l in lines.items()}
-        self.files, self.rows = {}, []
+        self.files, self.rows, self.texts = {}, [], []
 
     def ids(self, prefix):
         lo = bisect.bisect_left(self.keys, prefix)
@@ -344,11 +346,14 @@ class Group:
         return '\n'.join(self.lines[i] for i in sorted(ids, key=lambda i: (-self.rank[i], i))) + '\n'
 
     def add(self, prefix, kind, ids):
-        data = gz(self.body(ids))
+        text = self.body(ids)
+        data = gz(text)
+        if len(data) < INLINE:
+            self.texts.append([prefix, kind, text])
+            return
         sha = hashlib.sha256(data).hexdigest()
         self.files[sha + SUFFIX] = data
         self.rows.append([prefix, kind, len(data), sha])
-        return len(data)
 
     def fits(self, ids):
         return sum(len(self.lines[i]) + 1 for i in ids) <= TARGET * 4.5 and len(gz(self.body(ids))) <= TARGET
@@ -376,9 +381,9 @@ class Group:
             self.lay(prefix + c)
 
 
-def index(rows, changed=(), removed=()):
-    return gz(json.dumps({'schema': 1, 'files': rows, 'changed': sorted(changed), 'removed': sorted(removed)},
-                         ensure_ascii=False, separators=(',', ':')))
+def index(rows, texts, changed=(), removed=()):
+    return gz(json.dumps({'schema': 1, 'files': rows, 'texts': texts, 'changed': sorted(changed),
+                          'removed': sorted(removed)}, ensure_ascii=False, separators=(',', ':')))
 
 
 def read_index(data):
@@ -388,7 +393,7 @@ def read_index(data):
 
 
 def layout(records, base=None):
-    """The groups' files. Given base, the previous release ({group: (rows, {id: line})}), a group keeps its files
+    """The groups' files. Given base, the previous release ({group: (rows, texts, {id: line})}), a group keeps its files
     and lists what changed since them, until that outgrows CHANGES. Returns ({group: (index bytes, {name: bytes})},
     counts)."""
     lines, by_group = {}, {}
@@ -401,11 +406,11 @@ def layout(records, base=None):
         by_key = by_group[g]
         now = {i: lines[i] for ids in by_key.values() for i in ids}
         if base and g in base:
-            rows, old = base[g]
+            rows, texts, old = base[g]
             changed = [now[i] for i in now if old.get(i) != now[i]]
             removed = [i for i in old if i not in now]
             if sum(len(l) + 1 for l in changed) + sum(len(i) + 1 for i in removed) <= CHANGES:
-                result[g] = (index(rows, changed, removed), {})
+                result[g] = (index(rows, texts, changed, removed), {})
                 counts['kept'] += 1
                 continue
             counts['made'] += 1
@@ -413,7 +418,7 @@ def layout(records, base=None):
             counts['new'] += 1
         made = Group(now, by_key)
         made.lay(g)
-        result[g] = (index(made.rows), made.files)
+        result[g] = (index(made.rows, made.texts), made.files)
     return result, counts
 
 
@@ -422,7 +427,7 @@ def root_of(manifest):
 
 
 def read_base(read, manifest):
-    """The previous release's groups, {group: (rows, {id: line})}: each group's records as its files hold them.
+    """The previous release's groups, {group: (rows, texts, {id: line})}: each group's records as its files hold them.
     read(entry) gives a file's bytes, checked against the entry."""
     root = read_index(read(root_of(manifest)))
     base = {}
@@ -431,11 +436,13 @@ def read_base(read, manifest):
         g, size, sha = row
         body = read_index(read({'path': sha + SUFFIX, 'bytes': size, 'sha256': sha}))
         old = {}
-        for prefix, kind, size, sha in body['files']:
-            if kind in 'LWA':
-                for l in gzip.decompress(read({'path': sha + SUFFIX, 'bytes': size, 'sha256': sha})).decode().splitlines():
-                    old[l.split('\t', 1)[0]] = l
-        return g, (body['files'], old)  # what changed since is listed again, against these files
+        texts = [text for _, kind, text in body['texts'] if kind in 'LWA']
+        texts += [gzip.decompress(read({'path': sha + SUFFIX, 'bytes': size, 'sha256': sha})).decode()
+                  for _, kind, size, sha in body['files'] if kind in 'LWA']
+        for text in texts:
+            for l in text.splitlines():
+                old[l.split('\t', 1)[0]] = l
+        return g, (body['files'], body['texts'], old)  # what changed since is listed again, against these files
 
     with ThreadPoolExecutor(4) as pool:
         for g, value in pool.map(one, root['groups']):
