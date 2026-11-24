@@ -271,6 +271,7 @@ class Stager(osmium.SimpleHandler):
         self.needed = places.wanted()
         self.member_bounds = {}
         self.incomplete_inspection = 0
+        self.incomplete_places = 0
         self.reedbeds = 0
 
     def identity(self, element):
@@ -427,7 +428,10 @@ class Stager(osmium.SimpleHandler):
                 continue
             bounds = bounds_of('r', ref, set())
             if bounds is None and tags is not None:
-                raise ValueError(f'Incomplete overnight place relation {ref}')
+                # The clip cut it at the extract's edge: the neighbouring country's build has it whole, and a partial
+                # copy would conflict with that one in Polku's mergeTiles. Every stay is inspectable, so inspection keeps it.
+                self.incomplete_places += 1
+                tags = None
             incomplete = bounds is None
             if incomplete:
                 self.incomplete_inspection += 1
@@ -701,6 +705,7 @@ def build_dataset(source, output, source_info, *, full_country=False, started=No
                 print(f'Writing {country} {name} archive', flush=True)
                 stats['products'][name] = archive_product(db, stage / f'{name}.pmtiles', name, source_info, handler.bounds)
             stats['products']['inspection']['incomplete_relations'] = handler.incomplete_inspection
+            stats['products']['places']['incomplete_left_out'] = handler.incomplete_places
             # tagged reedbeds osmium couldn't assemble (broken rings, missing members) stay generic wetland on the map
             stats['products']['wetlands']['unassembled'] = handler.reedbeds_tagged - handler.reedbeds
             write_identities(db, stage / 'identities.jsonl.gz')
