@@ -249,6 +249,13 @@ attribution, BRouter's, Sonny's (CC BY 4.0, https://sonny.4lima.de) and CIAT's c
 `mml-data.yml`, by hand, copies the National Land Survey's (MML) background-map vector tiles (`taustakartta` v21,
 zooms 11–14 over 19.0–31.6°E and 59.3–70.1°N: 892,856 tiles) into one PMTiles archive a zoom, and uploads them in
 cells as a candidate to `https://ducksoft.fi/polku-mml/`. The format is in [tools/osm_data/README.md](../tools/osm_data/README.md#nls-background-map).
+By default a run is an **update** from the live release. It asks for every tile with `If-Modified-Since`, using the
+date in the live `tiles.tsv.gz`, and takes the tiles MML answers 304 for from the live release's cells (or the first
+copy's one archive), checked against their SHA-256. Since cells depend only on their tiles, the upload sends only the
+cells whose tiles changed. MML's tiles change daily, a few thousand a day at zoom 14. About a quarter of the first
+copy's dates are when MML drew the tile on request, not when its data changed: such a tile comes back whole and
+unchanged, and its cell is sent again only if its bytes differ. MML's changed map sheets don't narrow the request:
+they aren't checked with Polku's key, and a missed sheet would leave a stale tile looking current.
 
 - **fetch** asks about 40 tiles a second over 8 keep-alive connections, with the key in the repository secret
   `MML_API_KEY`, and a User-Agent naming this repository. A 429, 5xx, timeout or answer slower than 2 s halves the
@@ -256,7 +263,9 @@ cells as a candidate to `https://ducksoft.fi/polku-mml/`. The format is in [tool
   4xx is recorded and not asked again. A 401 or 403, 5 minutes without a good answer, or 429s at one a second stop the
   run, and so does a hand check that doesn't find Helsinki in its tile at every zoom. It runs in up to three parts of
   5 h 20 min, each keeping its tiles in an `mml-store-<part>` artifact; a later run given the run's ID in **store**
-  goes on from the newest.
+  goes on from the newest. An update's store holds only what changed, and is tied to the live pointer's SHA-256: a
+  release promoted meanwhile stops the next part and the pack. A tile the table has no date for is asked plainly, and
+  a 304 to a plain request counts as trouble.
 - **pack** needs an answer for every tile and reads the archive back tile for tile. `tiles.tsv.gz` keeps each tile's
   `Last-Modified`, so an update can ask again with `If-Modified-Since`.
 - **upload**, only from `main`, goes through `publish.py`'s upload into `polku-mml/`, as Digiroad's: each zoom's
@@ -270,7 +279,7 @@ cells as a candidate to `https://ducksoft.fi/polku-mml/`. The format is in [tool
   pointer it replaced saved. If polku.si then fails its check, `mml.py restore` puts that pointer back, unless
   another release went live meanwhile.
 
-A smaller **box** tests the whole job. A pull request that changes the job fetches central Helsinki in two parts and
+A smaller **box** tests the whole job. A pull request that changes the job updates central Helsinki in two parts and
 uploads nothing. The tiles are CC BY 4.0: "© Maanmittauslaitos, Maastotietokanta" and the month fetched, in the
 manifest, the archive's metadata and `LICENSE.txt`.
 
