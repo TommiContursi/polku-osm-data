@@ -151,7 +151,7 @@ def photon(lines):
                 r['extent'] = (min(box[0], box[2]), min(box[1], box[3]), max(box[0], box[2]), max(box[1], box[3]))
             if c.get('osm_key') == 'place' and c.get('osm_value') == 'postcode':
                 r['id'] = 'P' + names[0]
-            elif c.get('osm_key') == 'highway':
+            elif c.get('osm_key') == 'highway' and c.get('object_type') == 'W':  # a bus stop stays a place of its own
                 street = streets.setdefault((names[0], r['city']), [])
                 street.append((c.get('object_type', 'X') + str(c.get('object_id')), r))
                 continue
@@ -184,15 +184,20 @@ def dump_lines(path):
         require(process.wait() == 0, 'zstd could not read the dump')
 
 
-# NLS's place types, as the kind a result shows: the most common ones by NLS's code; the rest by their group
-NLS_KINDS = {1010105: 'natural/island', 1010110: 'natural/island', 1010115: 'natural/islet', 1010205: 'natural/peninsula',
-             1010210: 'natural/cape', 1010305: 'natural/hill', 1010310: 'natural/hill', 1010405: 'natural/valley',
-             1020105: 'natural/water', 1020110: 'natural/water', 1020205: 'waterway/river', 1020210: 'waterway/stream',
-             1020305: 'natural/bay', 1020310: 'natural/strait', 1020405: 'waterway/rapids', 1020505: 'natural/shoal',
-             1030105: 'natural/wetland', 1030110: 'natural/wetland', 1040105: 'natural/wood', 1050105: 'natural/meadow'}
-NLS_GROUPS = {101: 'natural/land', 102: 'natural/water', 103: 'natural/wetland', 104: 'natural/wood', 105: 'landuse/field',
-              201: 'place/settlement', 202: 'place/locality', 203: 'building/house', 301: 'landuse/protected',
-              302: 'tourism/attraction'}
+# NLS's place types, as the kind a result shows: its common ones, read from the Finnish names each code holds most
+# (2026-11-20: 1010210 mäki, vuori, vaara; 1020205 suo, neva; 2010210 lampi, järvi; 1010110 saari, luoto; …)
+NLS_KINDS = {1010105: 'place/islands', 1010110: 'place/island', 1010115: 'natural/rock', 1010120: 'natural/cape',
+             1010130: 'natural/beach', 1010205: 'natural/rocks', 1010210: 'natural/hill', 1010305: 'natural/valley',
+             1010405: 'natural/shoal', 1020105: 'natural/heath', 1020205: 'natural/wetland', 1030105: 'natural/stone',
+             2010110: 'natural/bay', 2010205: 'water/lakes', 2010210: 'water/lake', 2010215: 'natural/bay',
+             2020105: 'waterway/stream', 2020110: 'waterway/channel', 2020115: 'waterway/rapids',
+             3010105: 'place/village', 3010110: 'place/hamlet', 3020105: 'place/locality', 3030105: 'building/house',
+             4010125: 'place/municipality', 4030105: 'amenity/place_of_worship', 5010105: 'boundary/national_park',
+             6010205: 'place/suburb', 8030115: 'natural/beach'}
+# the rest by the first digit of its code: terrain, water, settlements, public buildings, protected and cultural
+# places, transport, industry and commerce, leisure, others
+NLS_GROUPS = {1: 'natural/area', 2: 'natural/water', 3: 'place/locality', 4: 'building/public', 5: 'boundary/protected_area',
+              6: 'landuse/transport', 7: 'landuse/commercial', 8: 'leisure/place', 9: 'natural/area'}
 # NLS's scale relevance on Photon's importance scale: the median importance of the OSM places NLS's match
 NLS_RANK = {25000: 0.11, 50000: 0.11, 100000: 0.13, 250000: 0.13, 500000: 0.15, 1000000: 0.17, 2000000: 0.41,
             4500000: 0.5, 8000000: 0.58}
@@ -250,7 +255,7 @@ def nls(path):
         for raw in f:
             place, name, language, kind, scale, municipality, lon, lat = json.loads(raw)
             r = places.setdefault(place, {'id': f'L{place}', 'names': [], 'kind': NLS_KINDS.get(kind) or
-                                          NLS_GROUPS.get(kind // 10000, 'natural/place'),
+                                          NLS_GROUPS.get(kind // 1000000, 'natural/area'),
                                           'lon': lon, 'lat': lat, 'rank': NLS_RANK.get(scale, 0.1), 'order': []})
             if clean(name) not in r['names']:
                 r['names'].append(clean(name))
@@ -291,6 +296,8 @@ def merge(osm, names):
     """OSM's records, and NLS's places where OSM has no record of the same name in the same or a neighbouring cell."""
     seen = set()
     for r in osm.values():
+        if r['id'][0] == 'C':
+            continue  # a country has no position
         y, x = cell(r['lon'], r['lat'])
         for n in r['names']:
             seen.add((' '.join(words(n)), y, x))
@@ -389,7 +396,7 @@ def lookup(body, read, key, area=None):
     key, and whether that is all of them. body is the group's index; read(row) gives a file's text; area is the tile
     (AREA) of the map's middle, for a common word split by area."""
     rows = {(prefix, kind): row for row in body['files'] for prefix, kind, _, _ in [row]}
-    prefix, texts, complete = group(key), [], True
+    prefix, texts, complete = group(key), [], len(key) > 1  # a letter's group holds only that word: k's are in ka, kb…
     while True:
         if (prefix, 'L') in rows:
             texts.append(read(rows[prefix, 'L']))

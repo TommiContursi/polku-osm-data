@@ -48,7 +48,7 @@ def find(directory, key, area=None, dirs=()):
     root = search.read_index(read(search.root_of(json.loads((Path(directory) / 'manifest.json').read_text()))))
     row = next((r for r in root['groups'] if r[0] == search.group(key)), None)
     if row is None:
-        return {}, True
+        return {}, len(key) > 1  # no such group: nothing, completely, unless the key is one letter
     body = search.read_index(read({'path': row[2] + search.SUFFIX, 'bytes': row[1], 'sha256': row[2]}))
     return search.lookup(body, lambda r: gzip.decompress(read({'path': r[3] + search.SUFFIX, 'sha256': r[3]})).decode(),
                          key, area)
@@ -69,6 +69,7 @@ class SourceTests(unittest.TestCase):
                         'boundary', 'national_park', bbox=[24.4, 60.4, 24.6, 60.2]),
                   place(2, 'Kotikatu', 'highway', 'residential', 26.9, 60.46, 0.05, 'W'),
                   place(3, 'Kotikatu', 'highway', 'residential', 26.91, 60.47, 0.06, 'W'),
+                  place(8, 'Kotikatu', 'highway', 'bus_stop', 26.9, 60.46, 0.01),
                   place(4, 'Kahvila', 'amenity', 'cafe', importance=0.01),
                   place(4, 'Kahvila', 'shop', 'pastry', importance=0.02),
                   place(5, '48100', 'place', 'postcode', kind='X'),
@@ -81,24 +82,26 @@ class SourceTests(unittest.TestCase):
         street = found['SW2']
         self.assertEqual((street['names'], round(street['lon'], 3), street['rank']), (['Kotikatu'], 26.905, 0.06))
         self.assertNotIn('W3', found)
+        self.assertEqual(found['N8']['kind'], 'highway/bus_stop', 'a bus stop of the same name is not the street')
         self.assertEqual(found['N4']['kind'], 'shop/pastry', 'one record an object, under its most important class')
         self.assertIn('P48100', found)
         self.assertEqual(sorted(i for i in found if i[0] == 'C'), ['Cse'], 'countries beyond Finland')
         self.assertEqual(found['Cse']['names'], ['Sverige', 'Ruotsi'])
-        self.assertEqual(len(found), 5, 'no address without a name, nothing beyond Finland but the countries')
+        self.assertEqual(len(found), 6, 'no address without a name, nothing beyond Finland but the countries')
 
     def test_nls_adds_the_places_osm_lacks_with_their_sami_names(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'nls.jsonl.gz'
             with gzip.open(path, 'wt', encoding='utf-8') as f:
-                for row in ([1, 'Inarinjärvi', 'fin', 1020105, 1000000, '148', 27.9, 69.0],
-                            [1, 'Aanaarjävri', 'smn', 1020105, 1000000, '148', 27.9, 69.0],
-                            [1, 'Anárjávri', 'sme', 1020105, 1000000, '148', 27.9, 69.0],
-                            [2, 'Koli', 'fin', 1010305, 250000, '422', 29.98, 63.1]):
+                for row in ([1, 'Inarinjärvi', 'fin', 2010299, 1000000, '148', 27.9, 69.0],
+                            [1, 'Aanaarjävri', 'smn', 2010299, 1000000, '148', 27.9, 69.0],
+                            [1, 'Anárjávri', 'sme', 2010299, 1000000, '148', 27.9, 69.0],
+                            [2, 'Koli', 'fin', 1010210, 250000, '422', 29.98, 63.1]):
                     f.write(json.dumps(row) + '\n')
             names = search.nls(path)
         self.assertEqual(names[1]['names'], ['Inarinjärvi', 'Anárjávri', 'Aanaarjävri'])
-        self.assertEqual((names[1]['kind'], names[1]['rank']), ('natural/water', 0.17))
+        self.assertEqual((names[1]['kind'], names[1]['rank']), ('natural/water', 0.17), 'a type by its first digit')
+        self.assertEqual(names[2]['kind'], 'natural/hill')
         osm = records([rec('N9', 'Koli', 29.97, 63.09)])
         merged = search.merge(osm, names)
         self.assertEqual(sorted(merged), ['L1', 'N9'], "NLS's Koli is OSM's")
@@ -188,6 +191,7 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(find(self.tmp / 'one', 'isoh')[0].keys(), {'N500'})
         self.assertEqual(find(self.tmp / 'one', 'qq'), ({}, True), 'no such group: nothing, completely')
         self.assertEqual(find(self.tmp / 'one', 'koskix'), ({}, True))
+        self.assertFalse(find(self.tmp / 'one', 'k')[1], "a letter's group holds only the word itself")
         publish.local_release(self.tmp / 'one')
 
     def test_the_next_release_keeps_the_files_and_lists_what_changed(self):
