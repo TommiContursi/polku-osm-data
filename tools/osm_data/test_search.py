@@ -280,6 +280,26 @@ class LayoutTests(unittest.TestCase):
         self.everything_is_found(self.tmp / 'two', now, [self.tmp / 'one'])
 
 
+
+class AtOnceTests(unittest.TestCase):
+    def test_a_host_that_refuses_more_channels_gets_fewer(self):
+        class Channel:
+            def __init__(self, host):
+                self.host = host
+            def channel(self):
+                if self.host['open'] == 2:
+                    raise OSError('Administratively prohibited')
+                self.host['open'] += 1
+                return Channel(self.host)
+            def close_channel(self):
+                self.host['closed'] += 1
+        host = {'open': 0, 'closed': 0}
+        self.assertEqual(publish.at_once(Channel(host), range(20), lambda c, i: i * 2), [i * 2 for i in range(20)])
+        self.assertEqual(host, {'open': 2, 'closed': 2})
+        host['open'] = 2
+        self.assertEqual(publish.at_once(Channel(host), range(3), lambda c, i: i), [0, 1, 2], 'none at all: one by one')
+
+
 class HostTests(unittest.TestCase):
     def test_upload_sends_only_what_the_host_lacks_and_promotion_points_at_it(self):
         host = RoutingHost()
@@ -311,6 +331,7 @@ class HostTests(unittest.TestCase):
             publish.upload(tmp / 'two', folder=search.FOLDER, budget=search.BUDGET)
             sent = [p for p, _, _ in host.uploads if p.endswith('.gzt')]
             self.assertEqual(len(sent), 5, "the root, pa's index, uu's and ni's indexes, and their one file: the same record")
+            self.assertGreater(host.channels, 1, 'many small files go over several channels at once')
             candidate = publish.candidate(url)
             (tmp / 'promote2').mkdir()  # where the replaced pointer is kept for a rollback
             publish.promote_candidate(candidate['release'], candidate['sha256'], tmp / 'promote2', search.FOLDER)

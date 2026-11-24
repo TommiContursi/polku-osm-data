@@ -6,6 +6,7 @@ the app's checks against it and runs `promote` (and `health.py`) from Polku's ch
 
 import argparse
 import base64
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import hmac
@@ -16,6 +17,7 @@ import json
 import os
 from pathlib import Path
 import posixpath
+import queue
 import re
 import stat
 import sys
@@ -38,6 +40,7 @@ CELLS = 'pmtiles-json-cells'  # a dataset whose url is the index of its cells, n
 INDEX = '.cells.json'  # an archive's index takes its name, with this suffix for .pmtiles
 SETTLE = 150  # seconds a public pointer may keep its last answer (settle)
 SEARCH = 'search-gzt'  # a dataset whose url is a search index's root, which names its groups' indexes and their files
+CHANNELS = 8  # SFTP channels at once for a release's many small files: each costs round trips, not bandwidth
 
 
 def require(ok, message):
@@ -163,9 +166,10 @@ def indexes(manifest):
     return [f for f in manifest['files'] if f.get('url', f['path']) in urls]
 
 
-def named(manifest, read):
+def named(manifest, read, read_all=None):
     """Every shared file the manifest's indexes name: a cells index's cells, a search root's group indexes and the
-    files they name. read(entry) gives an index's bytes, or None where it isn't there: it then names nothing."""
+    files they name. read(entry) gives an index's bytes, or None where it isn't there: it then names nothing. read_all
+    reads a list of them at once, in order."""
     for f in indexes(manifest):
         body = read(f)
         if body is None:
@@ -173,9 +177,9 @@ def named(manifest, read):
         if f['path'].endswith(INDEX):
             yield from cells_of(body, f)
             continue
-        for group in search_index(body, f):
-            yield group
-            body = read(group)
+        groups = search_index(body, f)
+        yield from groups
+        for group, body in zip(groups, read_all(groups) if read_all else map(read, groups)):
             if body is not None:
                 yield from search_index(body, group)
 
@@ -187,10 +191,41 @@ def index_entry(dataset):
 
 def hosted_named(ftp, manifest, present=None):
     """Every file the manifest's indexes on the host name. Given present, an index not among them names none."""
-    def read(entry):
+    def read(entry, channel=ftp):
         path = place(manifest['release'], entry)
-        return retrieve(ftp, path) if present is None or path in present else None
-    return named(manifest, read)
+        return retrieve(channel, path) if present is None or path in present else None
+    return named(manifest, read, lambda entries: at_once(ftp, entries, lambda channel, entry: read(entry, channel)))
+
+
+def at_once(ftp, items, work):
+    """[work(channel, item)] for each item, in order, over CHANNELS channels of ftp's SSH connection at once; one by
+    one where the connection has no channels."""
+    items = list(items)
+    if len(items) < 2 or not hasattr(ftp, 'channel'):
+        return [work(ftp, item) for item in items]
+    opened, free = [], queue.SimpleQueue()
+    try:
+        for _ in range(min(CHANNELS, len(items))):
+            try:
+                opened.append(ftp.channel())
+            except Exception as error:  # a host may allow fewer sessions a connection (OpenSSH's MaxSessions)
+                print(f'{len(opened) + 1} SFTP channels at once refused ({error}); {len(opened) or 1} go on', flush=True)
+                break
+            free.put(opened[-1])
+        if not opened:
+            return [work(ftp, item) for item in items]
+
+        def one(item):
+            channel = free.get()
+            try:
+                return work(channel, item)
+            finally:
+                free.put(channel)
+        with ThreadPoolExecutor(len(opened)) as pool:
+            return list(pool.map(one, items))
+    finally:
+        for channel in opened:
+            channel.close_channel()
 
 
 def shared_manifest(manifest):
@@ -291,6 +326,17 @@ class SFTPFiles:
         # POSIX rename-over-existing is mandatory for atomic pointer switching.
         # Do not delete current.json or fall back to an unsafe SFTP rename.
         return self.sftp.posix_rename(old, new)
+
+    def channel(self):
+        """Another SFTP channel of the same SSH connection, in the same folder, for at_once()."""
+        import paramiko
+        sftp = paramiko.SFTPClient.from_transport(self.transport)
+        if self.sftp.getcwd():
+            sftp.chdir(self.sftp.getcwd())
+        return SFTPFiles(self.transport, sftp)
+
+    def close_channel(self):
+        self.sftp.close()
 
     def close(self):
         try:
@@ -398,8 +444,7 @@ def verify_remote(ftp, base, manifest, raw):
     for f in manifest['files']:
         path = place(manifest['release'], f)
         samples[path] = verify_file(ftp, path if 'url' in f else f"{base}/{f['path']}", f)
-    for entry in hosted_named(ftp, manifest):
-        verify_file(ftp, place(manifest['release'], entry), entry)
+    at_once(ftp, hosted_named(ftp, manifest), lambda channel, entry: verify_file(channel, place(manifest['release'], entry), entry))
     verify_manifest(ftp, base, raw)
     return samples
 
@@ -736,14 +781,21 @@ def upload(directory, resume=False, folder=None, budget=None):
             samples[target] = verify_file(ftp, staged, f)
             if target != f"{final}/{f['path']}":
                 move_shared(ftp, staged, target)
-        for where, entry in list(send_cells.items()):  # a search index's files, as the release folder holds them
-            if (directory / entry['path']).exists():
-                staged = f"{stage}/{entry['path']}"
-                with (directory / entry['path']).open('rb') as body:
-                    ftp.storbinary('STOR ' + staged, body)
-                verify_file(ftp, staged, entry)
-                move_shared(ftp, staged, where)
-                del send_cells[where]
+        here = [(where, entry) for where, entry in send_cells.items() if (directory / entry["path"]).exists()]
+        if here and SHARED not in maintenance.children(ftp):
+            ftp.mkd(SHARED)
+
+        def send(channel, pair):  # a search index's file, as the release folder holds it
+            where, entry = pair
+            staged = f"{stage}/{entry['path']}"
+            with (directory / entry['path']).open('rb') as body:
+                channel.storbinary('STOR ' + staged, body)
+            verify_file(channel, staged, entry)
+            print(f'Move verified {staged} to {where}', flush=True)
+            channel.rename(staged, where)
+        at_once(ftp, here, send)
+        for where, _ in here:
+            del send_cells[where]
         for f in indexes(manifest):  # each archive cut again, the same way; only its missing cells go up
             if not f['path'].endswith(INDEX) or not any(
                     place(release, entry) in send_cells for entry in cells_of((directory / f['path']).read_bytes(), f)):
