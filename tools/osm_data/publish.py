@@ -705,12 +705,57 @@ def into_folder(ftp, url, folder):
     """Into a product's folder beside polku-osm, once its hosting is in; its public URL. Without folder, polku-osm."""
     if not folder:
         return url
-    require(url.endswith('/polku-osm'), 'OSM_PUBLIC_URL must end in /polku-osm')
+    url = product_url(url, folder)
     ftp.cwd('..')
     require(folder in maintenance.children(ftp), f'{folder} is missing: run install-hosting first')
     ftp.cwd(folder)
     require('.htaccess' in maintenance.children(ftp), f'{folder} has no .htaccess: run install-hosting first')
-    return url.removesuffix('/polku-osm') + '/' + folder
+    return url
+
+
+def product_url(osm_url, folder):
+    """A product folder's public URL, beside polku-osm's."""
+    require(osm_url.endswith('/polku-osm'), 'OSM_PUBLIC_URL must end in /polku-osm')
+    return osm_url.removesuffix('/polku-osm') + '/' + folder
+
+
+def install_hosting(folder):
+    """A product's folder beside polku-osm, with a copy of hosting.htaccess, once: an existing one is changed by hand."""
+    config = settings()
+    product_url(config[4], folder)  # (polku-osm's URL ends as it should)
+    with connection(config) as ftp:
+        ftp.cwd('..')
+        if folder not in maintenance.children(ftp):
+            ftp.mkd(folder)
+        require(ftp.kind(folder) == 'directory', f'{folder} needs a real directory')
+        ftp.cwd(folder)
+        require('.htaccess' not in maintenance.children(ftp), f'{folder}/.htaccess exists; change it by hand')
+        ftp.storbinary('STOR .htaccess', io.BytesIO(Path(__file__).with_name('hosting.htaccess').read_bytes()))
+
+
+def require_covers(folder, manifest):
+    """A test box never replaces a larger copy: the release must cover the product's candidate and live release, or
+    retention would remove the larger one, and a promotion would make the smaller one live."""
+    url = product_url(public_url(os.environ.get('OSM_PUBLIC_URL', '')), folder)
+    for pointer in ('candidates/current.json', 'current.json'):
+        try:
+            old = json.loads(get(f'{url}/{pointer}'))['bounds']
+        except HTTPError as error:
+            if error.code != 404:
+                raise
+            error.close()
+            continue
+        new = manifest['bounds']
+        require(new[0] <= old[0] and new[1] <= old[1] and new[2] >= old[2] and new[3] >= old[3],
+                f'{pointer} covers {old}, more than this release; upload a box that covers it')
+
+
+def restore(directory, expected_current, folder):
+    """Back to the pointer promote_candidate replaced, the one it saved in directory, unless another release went live
+    meanwhile."""
+    saved = sorted(Path(directory).glob('rollback-*.json'))
+    require(len(saved) == 1, f'{len(saved)} saved pointers in {directory}; restore needs the one promote saved')
+    rollback(saved[0], expected_current, folder=folder)
 
 
 def upload(directory, resume=False, folder=None, budget=None):

@@ -62,9 +62,9 @@ class CellTests(unittest.TestCase):
         for _, data in cells.cells(mvt, 4096):
             self.assertEqual(Reader(MemorySource(data)).header()['tile_type'], TileType.MVT)
 
-    def test_the_cell_fixtures_are_the_cuts_of_the_geometry_and_traffic_fixtures(self):
+    def test_the_cell_fixtures_are_the_cuts_of_their_archives(self):
         fixtures = Path(__file__).resolve().parents[1] / 'fixtures'
-        for name in ('osm-geometry', 'digiroad-traffic'):
+        for name in ('osm-geometry', 'digiroad-traffic', 'terrain-12', 'basemap-14'):
             with self.subTest(name):
                 made = {hashlib.sha256(data).hexdigest() + '.pmtiles': data
                         for _, data in cells.cells(fixtures / f'{name}.pmtiles', 4096)}

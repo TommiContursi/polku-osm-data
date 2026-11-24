@@ -401,3 +401,34 @@ nothing. The manifest also carries `coverage`, Finland's polygon.
 On 2026-11-08 and 2026-11-15's dumps with NLS's names of 2026-11-20: 1,303,224 records in 10,974 files, 51.8 MB (13,938
 before the smallest went into the group indexes); the second week sent 286 files, 1.3 MB. The build takes about 100 s
 and 2 GB of memory.
+
+## Terrain
+
+`terrain.py` copies Mapterhorn's terrain (docs/OPERATIONS.md). A release has one PMTiles archive a zoom,
+`terrain-<z>.pmtiles`, Mapterhorn's WebP tiles unchanged (no tile compression), cut into cells as the OSM data's
+(Cells), with `attribution.json` and `LICENSE.txt` among the shared files. Its manifest, as `build` writes it:
+
+```json
+{"schema": 1, "release": "20261124T060000Z", "built_at": "2026-11-24T06:00:00Z",
+ "source": {"url": "https://download.mapterhorn.com/planet.pmtiles", "timestamp": "2026-09-11T14:58:22Z", "etag": "\"…\""},
+ "attribution": "© Mapterhorn", "license": "Each source's: attribution.json", "zooms": [0, 12],
+ "bounds": [4.0, 53.8, 31.7, 71.3],
+ "datasets": {"terrain-0": {"url": "terrain-0.pmtiles", "zoom": 0, "tiles": 1, "bytes": …, "sha256": "…"}, …,
+              "terrain-12": {"url": "terrain-12.pmtiles", "zoom": 12, "tiles": 125829, …}},
+ "files": [{"path": "terrain-0.pmtiles", …}, …, {"path": "attribution.json", …}, {"path": "LICENSE.txt", …}]}
+```
+
+Each zoom is its own dataset, `terrain-<z>`, as the NLS background map's: on the host its `format` is
+`pmtiles-json-cells` and its `url` its index's, and its cells hold WebP tiles (WebP in their headers, no tile
+compression). `source.timestamp` is the planet archive's `Last-Modified`. A tile the planet lacks is missing here
+too. `tools/fixtures/terrain-12.pmtiles` is the extract of one zoom-12 tile at Seitseminen (12/2315/1144), and
+`tools/fixtures/terrain-12-cells/` its cut at a 4 KiB target.
+
+## Base map
+
+`basemap.py` copies OpenFreeMap's base map (docs/OPERATIONS.md), laid out as the terrain's: `basemap-<z>.pmtiles`
+for zooms 0–14, OpenFreeMap's gzipped vector tiles unchanged, in cells (MVT in their headers), with `LICENSE.txt`.
+Its manifest's `source` names the build: `{"url": "https://btrfs.openfreemap.com/areas/planet/20261122_124456_pt/tiles.pmtiles",
+"tilejson": "https://tiles.openfreemap.org/planet", "version": "20261122_124456_pt", "timestamp": …, "etag": …}`,
+`timestamp` being the archive's `Last-Modified`. `tools/fixtures/basemap-14.pmtiles` is one zoom-14 tile at
+Seitseminen (14/9260/4577), and `tools/fixtures/basemap-14-cells/` its cut at a 4 KiB target.

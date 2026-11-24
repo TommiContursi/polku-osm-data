@@ -1,0 +1,101 @@
+name: Polku terrain
+run-name: Terrain / ${{ github.event_name == 'workflow_dispatch' && inputs.operation || 'test' }}
+
+# Extracts Mapterhorn's terrain to zoom 12 over the Nordic and Baltic countries, by hand about once a year, and uploads
+# a candidate in cells. A pull request that changes the job extracts central Helsinki and uploads nothing.
+on:
+  pull_request:
+    paths: [tools/osm_data/terrain.py, tools/osm_data/extract.py, .github/workflows/terrain-data.yml]
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Install polku-terrain and its .htaccess once, or extract the terrain and upload the candidate
+        type: choice
+        options: [install-hosting, copy]
+        default: copy
+      box:
+        description: West,south,east,north in degrees; a small box tests the whole job
+        type: string
+        default: '4.0,53.8,31.7,71.3'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('terrain-data-pr-{0}', github.event.pull_request.number) || 'terrain-data' }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.14.3'
+      - name: Install pinned dependencies
+        run: python -m pip install --require-hashes -r tools/osm_data/requirements.txt
+      - name: Extract central Helsinki from Mapterhorn
+        run: python tools/osm_data/terrain.py build release --box 24.92,60.16,24.96,60.18
+
+  host:
+    if: github.event_name == 'workflow_dispatch' && inputs.operation == 'install-hosting'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: osm-data-production
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.14.3'
+      - name: Install pinned SFTP dependency
+        run: python -m pip install --require-hashes -r tools/osm_data/sftp-requirements.txt
+      - name: Put polku-terrain and its .htaccess in place once
+        env:
+          OSM_FTP_HOST: ${{ secrets.OSM_FTP_HOST }}
+          OSM_FTP_USER: ${{ secrets.OSM_FTP_USER }}
+          OSM_FTP_PASSWORD: ${{ secrets.OSM_FTP_PASSWORD }}
+          OSM_SFTP_HOST_KEY_SHA256: ${{ secrets.OSM_SFTP_HOST_KEY_SHA256 }}
+          OSM_FTP_ROOT: ${{ vars.OSM_FTP_ROOT }}
+          OSM_PUBLIC_URL: ${{ vars.OSM_PUBLIC_URL }}
+        run: python tools/osm_data/terrain.py install-hosting
+
+  copy:
+    if: github.event_name == 'workflow_dispatch' && inputs.operation == 'copy'
+    runs-on: ubuntu-24.04
+    # 7.25 GB read in runs of 32 MiB, then the cells the host lacks sent and read back one by one
+    timeout-minutes: 340
+    environment: osm-data-production
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.14.3'
+      - name: Install pinned dependencies
+        run: python -m pip install --require-hashes -r tools/osm_data/sftp-requirements.txt
+      - name: Extract the terrain zoom by zoom and build the release
+        env:
+          BOX: ${{ inputs.box }}
+        run: |
+          df -h .
+          python tools/osm_data/terrain.py build release --box "$BOX"
+          df -h .
+      - name: Upload the release in cells and name the candidate
+        env:
+          OSM_ALLOW_PUBLISH: 'true'
+          OSM_CELLS: 'true'
+          OSM_FTP_HOST: ${{ secrets.OSM_FTP_HOST }}
+          OSM_FTP_USER: ${{ secrets.OSM_FTP_USER }}
+          OSM_FTP_PASSWORD: ${{ secrets.OSM_FTP_PASSWORD }}
+          OSM_SFTP_HOST_KEY_SHA256: ${{ secrets.OSM_SFTP_HOST_KEY_SHA256 }}
+          OSM_FTP_ROOT: ${{ vars.OSM_FTP_ROOT }}
+          OSM_PUBLIC_URL: ${{ vars.OSM_PUBLIC_URL }}
+        run: python tools/osm_data/terrain.py upload release

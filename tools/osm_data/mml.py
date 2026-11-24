@@ -419,12 +419,6 @@ def pack(path, out, now=None, base=None):
     return manifest
 
 
-def folder_url(osm_url):
-    """polku-mml's public URL, beside polku-osm's."""
-    require(osm_url.endswith('/polku-osm'), 'OSM_PUBLIC_URL must end in /polku-osm')
-    return osm_url.removesuffix('/polku-osm') + '/' + FOLDER
-
-
 def point_live(ftp, url):
     """polku-mml's live pointer in the OSM data's form (current.json's URLs relative to the folder), with a receipt for
     its release, so retention manages it as the OSM data's, once: the first copy's pointer was its manifest's bytes."""
@@ -452,12 +446,7 @@ def upload(directory):
     again. A test box never replaces a larger candidate: retention would then remove that copy."""
     require(os.environ.get('OSM_ALLOW_PUBLISH') == 'true', 'Publication requires approved OSM_ALLOW_PUBLISH=true')
     require(os.environ.get('OSM_CELLS') == 'true', 'The copy goes up in cells: set OSM_CELLS=true')
-    manifest = publish.validate(json.loads(Path(directory, 'manifest.json').read_bytes()))
-    old = public_bytes(folder_url(publish.public_url(os.environ.get('OSM_PUBLIC_URL', ''))) + '/candidates/current.json')
-    if old is not None:
-        old, new = json.loads(old)['bounds'], manifest['bounds']
-        require(new[0] <= old[0] and new[1] <= old[1] and new[2] >= old[2] and new[3] >= old[3],
-                f'The candidate covers {old}, more than this release; upload a box that covers it')
+    publish.require_covers(FOLDER, publish.validate(json.loads(Path(directory, 'manifest.json').read_bytes())))
     config = publish.settings()
     with publish.connection(config) as ftp:
         point_live(ftp, publish.into_folder(ftp, config[-2], FOLDER))
@@ -486,13 +475,13 @@ class Base:
             self.manifest = publish.validate(manifest, pointed=True)
         except ValueError:
             self.manifest = publish.current(publish.validate(manifest))  # the first copy's pointer, its manifest's bytes
-        self.url = folder_url(publish.public_url(os.environ.get('OSM_PUBLIC_URL', '')))
+        self.url = publish.product_url(publish.public_url(os.environ.get('OSM_PUBLIC_URL', '')), FOLDER)
         self.indexes, self.readers = {}, {}
 
     @classmethod
     def live(cls, directory):
         """The live pointer, saved in directory."""
-        url = folder_url(publish.public_url(os.environ.get('OSM_PUBLIC_URL', '')))
+        url = publish.product_url(publish.public_url(os.environ.get('OSM_PUBLIC_URL', '')), FOLDER)
         raw = public_bytes(url + '/current.json')
         require(raw is not None, 'No live release to update: promote a whole copy first')
         Path(directory).mkdir(parents=True, exist_ok=True)
@@ -569,12 +558,6 @@ class Base:
         return state[2][1]
 
 
-def restore(directory, expected_current):
-    """Back to the pointer promote replaced, the one it saved in directory, unless another release went live meanwhile."""
-    saved = sorted(Path(directory).glob('rollback-*.json'))
-    require(len(saved) == 1, f'{len(saved)} saved pointers in {directory}; restore needs the one promote saved')
-    publish.rollback(saved[0], expected_current, folder=FOLDER)
-
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -613,14 +596,14 @@ def main():
         elif args.command == 'upload':
             upload(args.directory)
         elif args.command == 'candidate':
-            found = publish.candidate(folder_url(publish.public_url(os.environ.get('OSM_PUBLIC_URL', ''))))
+            found = publish.candidate(publish.product_url(publish.public_url(os.environ.get('OSM_PUBLIC_URL', '')), FOLDER))
             print(json.dumps(found or {}, sort_keys=True))
             return
         elif args.command == 'promote':
             args.directory.mkdir(parents=True, exist_ok=True)
             publish.promote_candidate(args.release, args.sha256, args.directory, folder=FOLDER)
         else:
-            restore(args.directory, args.expected_current)
+            publish.restore(args.directory, args.expected_current, FOLDER)
     except Exception as error:
         key = os.environ.get('MML_API_KEY')
         parser.exit(1, f"{args.command} failed: {str(error).replace(key, '[key]') if key else error}\n")

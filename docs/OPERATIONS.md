@@ -194,12 +194,12 @@ anything.
 
 ## The host
 
-The data is served from `https://ducksoft.fi/polku-osm/`, `https://ducksoft.fi/polku-routing/`, `https://ducksoft.fi/polku-mml/`
-and `https://ducksoft.fi/polku-digiroad/`.
+The data is served from `https://ducksoft.fi/polku-osm/`, `https://ducksoft.fi/polku-routing/`, `https://ducksoft.fi/polku-mml/`,
+`https://ducksoft.fi/polku-digiroad/`, `https://ducksoft.fi/polku-terrain/` and `https://ducksoft.fi/polku-basemap/`.
 Each folder has its own `.htaccess`: [`hosting.htaccess`](../tools/osm_data/hosting.htaccess),
 installed by hand, [`routing.htaccess`](../tools/osm_data/routing.htaccess) (Routing data,
 above), [`mml.htaccess`](../tools/osm_data/mml.htaccess) in `polku-mml/` (NLS background map, below) and a copy of
-`hosting.htaccess` in `polku-digiroad/` (Digiroad, below). They turn off listing and HTTP compression, set the MIME types, allow read-only CORS with
+`hosting.htaccess` in `polku-digiroad/` (Digiroad, below), `polku-terrain/` (Terrain, below) and `polku-basemap/` (Base map, below). They turn off listing and HTTP compression, set the MIME types, allow read-only CORS with
 the Range headers exposed, cache releases as immutable and make `current.json` revalidate, which
 also covers `candidates/current.json`.
 
@@ -342,3 +342,40 @@ The format is in [tools/osm_data/README.md](../tools/osm_data/README.md#search-i
 `search.py promote` makes a checked candidate live, as the OSM data's `publish.py promote`. The sources' terms:
 ODbL for OSM's data, CC BY 4.0 for NLS's names and GeoNames' towns, all named in the manifest's `attribution` and in
 `LICENSE.txt`.
+
+## Terrain
+
+`terrain-data.yml`, by hand about once a year, extracts Mapterhorn's terrain from its planet archive
+(`https://download.mapterhorn.com/planet.pmtiles`, WebP terrarium tiles): zooms 0–12 over 4.0–31.7°E and
+53.8–71.3°N, about 168,000 tiles and 7.25 GB (measured 2026-11-24). The format is in
+[tools/osm_data/README.md](../tools/osm_data/README.md#terrain).
+
+- **install-hosting**, once: makes `polku-terrain/` and puts a copy of
+  [`hosting.htaccess`](../tools/osm_data/hosting.htaccess) in it.
+- **copy** reads the directory leaves the box's tiles lie in, then the tiles in runs of up to 32 MiB, one request at a
+  time, and retries a failed request twice after a minute (`extract.py`). The archive must keep its `Last-Modified`
+  and `ETag` throughout. Each zoom is read back against what was read. The release goes up in cells through
+  `publish.py`, about 16,300 of them; a cell the host holds isn't sent again, and `polku-terrain/` holds at most
+  16 GiB. A run that stops before the end is dispatched again: it extracts again and sends only the cells still
+  missing.
+- **Promotion** is Polku's `terrain-promote.yml`, by hand: `terrain.py candidate`, then `terrain.py promote` and,
+  if polku.si then fails its check, `terrain.py restore`, as the NLS background map's.
+
+A smaller **box** tests the whole job; a pull request that changes it extracts central Helsinki and uploads nothing.
+Mapterhorn adds no licence of its own: each source's licence and credit is in `attribution.json`, Mapterhorn's own
+list, copied into the release beside `LICENSE.txt`.
+
+## Base map
+
+`basemap-data.yml`, monthly on the 2nd at 04:43 UTC while `BASEMAP_UPLOAD_ENABLED` is `true`, or by hand, extracts
+OpenFreeMap's base map from the planet archive of the build its TileJSON (`https://tiles.openfreemap.org/planet`)
+names: zooms 0–14 over the terrain's box, about 2.97 million tiles and 6.23 GB, about 13,700 cells (measured
+2026-11-24). The format is in [tools/osm_data/README.md](../tools/osm_data/README.md#base-map).
+
+- **install-hosting**, once: makes `polku-basemap/` and puts a copy of `hosting.htaccess` in it.
+- **copy** extracts as the terrain's does (`extract.py`), and uploads in cells; `polku-basemap/` holds at most 20 GiB.
+  OpenFreeMap's weekly builds change most of their tiles' bytes, so the copy is monthly. A run that stops before the
+  end is dispatched again.
+- **Promotion** is Polku's `basemap-promote.yml`: `basemap.py candidate`, `promote` and `restore`, as the terrain's.
+
+The data is © OpenStreetMap contributors (ODbL), in OpenMapTiles' schema (CC BY 4.0), in `LICENSE.txt`.
