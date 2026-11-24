@@ -258,8 +258,9 @@ zooms 11–14 over 19.0–31.6°E and 59.3–70.1°N: 892,856 tiles) into one PM
 cells as a candidate to `https://ducksoft.fi/polku-mml/`. The format is in [tools/osm_data/README.md](../tools/osm_data/README.md#nls-background-map).
 By default a run is an **update** from the live release. It asks for every tile with `If-Modified-Since`, using the
 date in the live `tiles.tsv.gz`, and takes the tiles MML answers 304 for from the live release's cells (or the first
-copy's one archive), checked against their SHA-256. A stalled download goes on from where it stopped, up to
-three times. Since cells depend only on their tiles, the upload sends only the
+copy's one archive), checked against their SHA-256. A stalled or cut-short download goes on from where it
+stopped for as long as it gets further. Six tries in a row without a byte more, up to about 18 minutes with their
+waits and timeouts, fail it. Since cells depend only on their tiles, the upload sends only the
 cells whose tiles changed. MML's tiles change daily, a few thousand a day at zoom 14. About a quarter of the first
 copy's dates are when MML drew the tile on request, not when its data changed: such a tile comes back whole and
 unchanged, and its cell is sent again only if its bytes differ. MML's changed map sheets don't narrow the request:
