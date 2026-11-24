@@ -298,6 +298,10 @@ again only when a source with newer data exists. The format is in
   files whole: read back with its SHA-256, checked over HTTPS and named in `candidates/current.json`. A file or cell
   the host already holds isn't sent again, and `polku-digiroad/` holds at most 4 GiB: the live release, the candidate
   and one being uploaded.
+- **Promotion** goes as the OSM data's (Promotion, in Polku, above): `publish.py candidate` with the folder's URL, and
+  `promote` and `rollback` with `--folder polku-digiroad`. With nothing live yet, `candidate` names the first candidate
+  and `promote` writes the first `current.json`. The predecessor it saves is then `null`, and a rollback to it removes
+  `current.json` again.
 
-There is no promotion yet. The data is CC BY 4.0: "© Fintraffic / Digiroad, from Väylävirasto's open data, CC BY
+The data is CC BY 4.0: "© Fintraffic / Digiroad, from Väylävirasto's open data, CC BY
 4.0", in the manifest, the archives' metadata and `LICENSE.txt`, which also says what was changed.

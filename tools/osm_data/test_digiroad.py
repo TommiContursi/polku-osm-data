@@ -1,7 +1,7 @@
 """Digiroad's four layers: fetched page by page from a fake WFS into files of the features as served, built into
 zoom-11 tiles, and uploaded in cells beside those files."""
 
-from contextlib import ExitStack
+from contextlib import ExitStack, redirect_stderr
 from datetime import datetime, timezone
 import gzip
 import io
@@ -261,6 +261,71 @@ class DigiroadTests(unittest.TestCase):
             del host.files[BASE + '/.htaccess']
             with self.assertRaisesRegex(RuntimeError, 'run install-hosting first'):
                 publish.upload(self.tmp / 'again', folder=digiroad.FOLDER, budget=digiroad.BUDGET)
+
+    def test_a_candidate_goes_live_only_when_promoted_and_the_way_back_from_the_first_removes_the_pointer(self):
+        self.fetch(self.tmp / 'release')
+        shutil.copytree(self.tmp / 'release', self.tmp / 'again')
+        host = RoutingHost()
+        host.dirs.add(BASE)
+        host.files[BASE + '/.htaccess'] = b'installed'
+        url = ENV['OSM_PUBLIC_URL'].removesuffix('/polku-osm') + '/' + digiroad.FOLDER
+        real, stale = publish.get, {'left': 2}
+        def get(address, *args, **kwargs):  # a pointer asked for while missing answers 404 for a while once written
+            if address == url + '/current.json' and stale['left'] and BASE + '/current.json' in host.files:
+                stale['left'] -= 1
+                raise publish.HTTPError(address, 404, 'missing', {}, None)
+            return real(address, *args, **kwargs)
+
+        def candidate(directory, now):
+            digiroad.build(directory, now)
+            publish.upload(directory, folder=digiroad.FOLDER, budget=digiroad.BUDGET)
+            found = publish.candidate(url)
+            self.assertEqual(found['manifest'], f"{url}/releases/{found['release']}/manifest.json")
+            return found
+
+        def run(*args):
+            """publish.py with --folder, as Polku's workflow runs it: its error, or None."""
+            with patch.object(sys, 'argv', ['publish.py', *map(str, args), '--folder', digiroad.FOLDER]), \
+                    redirect_stderr(io.StringIO()) as error:
+                try:
+                    publish.main()
+                except SystemExit:
+                    return error.getvalue()
+
+        def promote(found, name):
+            (self.tmp / name).mkdir()
+            return run('promote', found['release'], '--sha256', found['sha256'], '--directory', self.tmp / name)
+
+        with patch.dict('os.environ', ENV | {'OSM_CELLS': 'true'}, clear=True), patch.object(publish, 'get', get), \
+                patch.object(publish.time, 'sleep'), patch.object(publish, 'open_sftp', host.ftp), \
+                patch.object(publish.urllib.request, 'urlopen', host.http):
+            first = candidate(self.tmp / 'release', T0)
+            self.assertNotIn(BASE + '/current.json', host.files, 'an upload never names the live release')
+            self.assertIsNone(promote(first, 'one'))
+            self.assertEqual(stale['left'], 0, 'the new pointer is read again until the host answers it')
+            live = host.files[BASE + '/current.json']
+            manifest = json.loads(host.files[f"{BASE}/releases/{first['release']}/manifest.json"])
+            self.assertEqual(json.loads(live), publish.current(manifest))
+            saved, = (self.tmp / 'one').glob('rollback-*.json')
+            self.assertEqual(saved.read_bytes(), b'null', 'nothing was live before')
+            self.assertIsNone(publish.candidate(url), 'nothing newer than the live release')
+            self.assertFalse(any(p.startswith(SITE + '/polku-osm/') for p in host.files), 'nothing in polku-osm')
+
+            second = candidate(self.tmp / 'again', datetime(2026, 11, 24, tzinfo=timezone.utc))
+            self.assertEqual(host.files[BASE + '/current.json'], live, 'the new candidate waits for its promotion')
+            self.assertIsNone(promote(second, 'two'))
+            back, = (self.tmp / 'two').glob('rollback-*.json')
+            self.assertEqual(back.read_bytes(), live)
+            self.assertIsNone(run('rollback', '--manifest', back, '--expected-current', second['release']))
+            self.assertEqual(host.files[BASE + '/current.json'], live)
+            self.assertIn('Live release changed', run('rollback', '--manifest', back, '--expected-current', second['release']))
+            self.assertIsNone(run('rollback', '--manifest', saved, '--expected-current', first['release']))
+            self.assertNotIn(BASE + '/current.json', host.files, 'the way back from the first promotion: no pointer')
+            self.assertEqual(publish.candidate(url)['release'], second['release'], 'the candidate is checked again')
+
+            host.pointer_cache = 'public, max-age=31536000, immutable'  # a pointer no reader would read again
+            self.assertIn('previous pointer restored', promote(second, 'three'))
+            self.assertNotIn(BASE + '/current.json', host.files, 'the pointer that was there before: none')
 
 
 if __name__ == '__main__':
