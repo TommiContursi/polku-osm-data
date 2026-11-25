@@ -119,9 +119,10 @@ def is_reedbed(tags):
 
 
 def is_point(tags):
-    """Polku's points with icons of their own (Polku #1179): fire places, springs, cave entrances, bunkers and tar kilns,
-    and anything with a fire place (a shelter's card says it has one)."""
-    return (tags.get('leisure') == 'firepit' or tags.get('amenity') == 'bbq' or tags.get('natural') in {'spring', 'cave_entrance'} or
+    """Polku's points with icons of their own (Polku #1179, #1537): fire places, springs, cave entrances, bunkers, tar kilns,
+    benches, picnic tables, saunas and single trees, and anything with a fire place (a shelter's card says it has one)."""
+    return (tags.get('leisure') in {'firepit', 'picnic_table', 'sauna'} or tags.get('amenity') in {'bbq', 'bench'} or
+            tags.get('natural') in {'spring', 'cave_entrance', 'tree'} or
             tags.get('military') == 'bunker' or tags.get('historic') == 'tar_kiln' or tags.get('fireplace') == 'yes')
 
 
@@ -156,7 +157,8 @@ def products(kind, tags):
                  ('mtb:scale' in tags or
                   any(tags.get(k) for k in ['obstacle', 'ford', 'mtb:scale:uphill']) or
                   tags.get('surface') == 'mud') or
-                 tags.get('barrier') in {'fence', 'wall', 'hedge', 'city_wall'})
+                 tags.get('barrier') in {'fence', 'wall', 'hedge', 'city_wall', 'retaining_wall'} or
+                 tags.get('natural') == 'tree_row')
         hazard = (tags.get('natural') in {'reef', 'shoal'} or tags.get('seamark:type') in {'rock', 'obstruction'} or
                   tags.get('waterway') == 'rapids')
         if ('mtb:winter' in tags or any(tags.get(k) for k in ['snowplowing', 'winter_service', 'bicycle:winter', 'foot:winter']) or

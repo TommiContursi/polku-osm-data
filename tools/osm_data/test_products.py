@@ -32,6 +32,8 @@ WAYS = '''
 <way id="31"><nd ref="1"/><nd ref="2"/><tag k="winter_road" v="yes"/></way>
 <way id="32"><nd ref="1"/><nd ref="2"/><tag k="hazard" v="thin_ice"/></way>
 <way id="33"><nd ref="1"/><nd ref="2"/><tag k="ice_road" v="no"/></way>
+<way id="34"><nd ref="1"/><nd ref="2"/><tag k="barrier" v="retaining_wall"/></way>
+<way id="35"><nd ref="1"/><nd ref="2"/><tag k="natural" v="tree_row"/></way>
 '''
 REL = '''<relation id="200"><member type="way" ref="23" role="outer"/>
 <tag k="tourism" v="camp_site"/><tag k="custom:tag" v="full tags"/></relation>'''
@@ -55,7 +57,7 @@ class ProductTests(unittest.TestCase):
         text = OSM.replace('  <way id="10">', EXTRA + '  <way id="10">')
         text = text.replace('  <relation id="100">', WAYS + '  <relation id="100">').replace('</osm>', REL + '</osm>')
         out, manifest = self.build(text)
-        for name, zoom, ids in [('trails', 13, [4, 5, 10, 20, 24, 25, 29]), ('winter', 12, [21, 24, 30, 31, 32]),
+        for name, zoom, ids in [('trails', 13, [4, 5, 10, 20, 24, 25, 29, 34, 35]), ('winter', 12, [21, 24, 30, 31, 32]),
                                 ('hazards', 11, [6, 12, 22, 28]), ('places', 12, [7, 23, 200])]:
             self.assertIn(name, manifest['datasets'])
             self.assertEqual(manifest['datasets'][name]['zoom'], zoom)
@@ -152,17 +154,18 @@ class ProductTests(unittest.TestCase):
         reader = Reader(MemorySource((out / 'wetlands.pmtiles').read_bytes()))
         self.assertEqual([bool(reader.get(12, 2048 + i, 2048)) for i in range(3)], [True, True, False])
 
-    def test_points_are_fire_places_springs_caves_bunkers_tar_kilns_and_what_has_a_fire_place(self):
+    def test_points_are_fire_places_springs_caves_bunkers_tar_kilns_benches_and_what_has_a_fire_place(self):
         node = lambda i, lon, *tags: f'<node id="{i}" lon="{lon}" lat="-0.005">' + ''.join(f'<tag k="{k}" v="{v}"/>' for k, v in tags) + '</node>'
         nodes = (node(50, 0.001, ('leisure', 'firepit')) + node(51, 0.002, ('amenity', 'bbq')) + node(52, 0.003, ('natural', 'spring'), ('drinking_water', 'yes'))
                  + node(53, 0.004, ('natural', 'cave_entrance')) + node(54, 0.005, ('military', 'bunker')) + node(55, 0.006, ('historic', 'tar_kiln'))
                  + node(56, 0.007, ('amenity', 'shelter'), ('fireplace', 'yes')) + node(57, 0.008, ('amenity', 'shelter'), ('fireplace', 'no'))
-                 + node(58, 0.009, ('natural', 'peak')))
+                 + node(58, 0.009, ('natural', 'peak')) + node(59, 0.010, ('amenity', 'bench')) + node(61, 0.011, ('leisure', 'picnic_table'))
+                 + node(62, 0.012, ('natural', 'tree')) + node(63, 0.013, ('leisure', 'sauna')))
         way = '<way id="60"><nd ref="1"/><nd ref="2"/><nd ref="3"/><nd ref="1"/><tag k="military" v="bunker"/><tag k="building" v="bunker"/></way>'
         out, manifest = self.build(OSM.replace('  <way id="10">', nodes + way + '  <way id="10">'))
         self.assertEqual(manifest['datasets']['points']['zoom'], 12)
         els = {e['id']: e for e in self.tile(out, 'points', 12)}
-        self.assertEqual(sorted(els), [50, 51, 52, 53, 54, 55, 56, 60])
+        self.assertEqual(sorted(els), [50, 51, 52, 53, 54, 55, 56, 59, 60, 61, 62, 63])
         self.assertEqual(els[52]['tags']['drinking_water'], 'yes')
         self.assertIn('center', els[60])  # a bunker drawn as a building: its point is its centre
         cut = cells.index(out / manifest['datasets']['points']['url'])  # goes up in cells as every product does
