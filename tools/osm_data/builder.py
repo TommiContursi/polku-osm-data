@@ -119,9 +119,10 @@ def is_reedbed(tags):
 
 
 def is_point(tags):
-    """Polku's points with icons of their own (Polku #1179): fire places, springs, cave entrances, bunkers and tar kilns,
-    and anything with a fire place (a shelter's card says it has one)."""
-    return (tags.get('leisure') == 'firepit' or tags.get('amenity') == 'bbq' or tags.get('natural') in {'spring', 'cave_entrance'} or
+    """Polku's points with icons of their own (Polku #1179, #1537): fire places, springs, cave entrances, bunkers, tar kilns,
+    benches and picnic tables, and anything with a fire place (a shelter's card says it has one)."""
+    return (tags.get('leisure') in {'firepit', 'picnic_table'} or tags.get('amenity') in {'bbq', 'bench'} or
+            tags.get('natural') in {'spring', 'cave_entrance'} or
             tags.get('military') == 'bunker' or tags.get('historic') == 'tar_kiln' or tags.get('fireplace') == 'yes')
 
 
