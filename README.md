@@ -14,7 +14,8 @@ Digiroad's busy roads, paved roads, private roads and speed limits
 ([docs/OPERATIONS.md](docs/OPERATIONS.md#digiroad)). `https://ducksoft.fi/polku-terrain/`
 holds a copy of Mapterhorn's terrain ([docs/OPERATIONS.md](docs/OPERATIONS.md#terrain)),
 `https://ducksoft.fi/polku-basemap/` a monthly copy of OpenFreeMap's base map ([docs/OPERATIONS.md](docs/OPERATIONS.md#base-map)),
-and `https://ducksoft.fi/polku-lipas/` a copy of LIPAS's routes and places ([docs/OPERATIONS.md](docs/OPERATIONS.md#lipas)).
+`https://ducksoft.fi/polku-lipas/` a copy of LIPAS's routes and places ([docs/OPERATIONS.md](docs/OPERATIONS.md#lipas)),
+and `https://ducksoft.fi/polku-forest/` the forest's kind from Syke and Copernicus ([docs/OPERATIONS.md](docs/OPERATIONS.md#forest-kind)).
 
 The repository is public so that its long builds run on GitHub's free runners. Its code
 is not open source: see [LICENSE](LICENSE). The data keeps OpenStreetMap's licence.
@@ -33,6 +34,7 @@ Badges show the latest run on `main`. A run by hand or on a schedule only change
 | Search | [![Search build](https://github.com/TommiContursi/polku-osm-data/actions/workflows/search-data.yml/badge.svg?branch=main)](https://github.com/TommiContursi/polku-osm-data/actions/workflows/search-data.yml) | Tue | [![Search promotion](https://github.com/TommiContursi/Polku/actions/workflows/search-promote.yml/badge.svg?branch=main)](https://github.com/TommiContursi/Polku/actions/workflows/search-promote.yml) | Tue |
 | Digiroad | [![Digiroad build](https://github.com/TommiContursi/polku-osm-data/actions/workflows/digiroad-data.yml/badge.svg?branch=main)](https://github.com/TommiContursi/polku-osm-data/actions/workflows/digiroad-data.yml) | by hand | — |  |
 | LIPAS | [![LIPAS build](https://github.com/TommiContursi/polku-osm-data/actions/workflows/lipas-data.yml/badge.svg?branch=main)](https://github.com/TommiContursi/polku-osm-data/actions/workflows/lipas-data.yml) | by hand | [![LIPAS promotion](https://github.com/TommiContursi/Polku/actions/workflows/lipas-promote.yml/badge.svg?branch=main)](https://github.com/TommiContursi/Polku/actions/workflows/lipas-promote.yml) | by hand |
+| Forest kind | [![Forest kind build](https://github.com/TommiContursi/polku-osm-data/actions/workflows/forest-data.yml/badge.svg?branch=main)](https://github.com/TommiContursi/polku-osm-data/actions/workflows/forest-data.yml) | by hand | — |  |
 | Alerts | [![Alerts build](https://github.com/TommiContursi/polku-osm-data/actions/workflows/osm-data-alerts.yml/badge.svg?branch=main)](https://github.com/TommiContursi/polku-osm-data/actions/workflows/osm-data-alerts.yml) | after a failed OSM or routing run | — |  |
 
 Schedules are in each workflow. Polku's badges show only while Polku is public.
