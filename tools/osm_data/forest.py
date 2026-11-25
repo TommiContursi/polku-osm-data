@@ -65,7 +65,7 @@ YEAR = 2024
 ENDPOINT = 'eodata.dataspace.copernicus.eu'
 SQUARE = 100_000  # m: Forest Type's files are 100 km squares of EPSG:3035
 BROADLEAVED, CONIFER = 1, 2  # Forest Type's values; 0 is no forest, 255 outside its area
-RADIUS, LINE = 30, 75  # m and %: mixed unless one kind has LINE % of the forest within RADIUS (tune)
+RADIUS, LINE = 30, 85  # m and %: mixed unless one kind has LINE % of the forest within RADIUS (tune, 2026-11-25)
 
 PALETTE = bytes.fromhex('000000' 'bad4b4' 'd1e2be' 'e9f0c2')  # Trail's greens; Polku swaps them for each map
 CREDIT = '© Syke, © EU, Copernicus Land Monitoring Service'
@@ -412,7 +412,7 @@ def build(output, box):
                             datetime.now(timezone.utc))
 
 
-RADII, LINES = (10, 20, 30, 50, 75, 100), (60, 65, 70, 75, 80, 85)
+RADII, LINES = (10, 20, 30, 50, 75, 100), (60, 65, 70, 75, 80, 85, 90)
 SAMPLE = 30_000  # m: the middle of a square compared
 
 
