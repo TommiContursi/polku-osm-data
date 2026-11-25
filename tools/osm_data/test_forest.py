@@ -13,7 +13,7 @@ from rasterio.transform import from_origin
 from rasterio.warp import transform
 from pmtiles.reader import MmapSource, Reader, all_tiles
 
-from tools.osm_data import forest, mml
+from tools.osm_data import cells, forest, mml
 from tools.osm_data.forest import CONIFEROUS, DECIDUOUS, MIXED, NONE, OUTSIDE, SIZE
 
 
@@ -108,6 +108,8 @@ class ForestTests(unittest.TestCase):
             lon, lat = transform('EPSG:3067', 'EPSG:4326', [366000 + 2000], [7306000 - 2000])
             middle = decoded(tiles[(12, mml.column(lon[0], 12), mml.row(lat[0], 12))])[0]
             self.assertIn(CONIFEROUS, middle)  # Finland's, though Sweden's raster has deciduous there too
+            index = cells.index(Path(tmp) / 'release' / 'forest-12.pmtiles', 4096)  # PNG archives cut into cells
+            self.assertEqual(sum(row[3] > 0 for row in index['cells']), len(index['cells']))
             self.assertIn(DECIDUOUS, middle)
             self.assertLess(len(tiles), (mml.column(box[2], 12) - mml.column(box[0], 12) + 1)
                             * (mml.row(box[1], 12) - mml.row(box[3], 12) + 1))

@@ -37,6 +37,8 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      TORNIO: '23.95,65.75,24.35,65.95'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -53,15 +55,17 @@ jobs:
           CDSE_S3_ACCESS_KEY: ${{ secrets.CDSE_S3_ACCESS_KEY }}
           CDSE_S3_SECRET_KEY: ${{ secrets.CDSE_S3_SECRET_KEY }}
         run: python tools/osm_data/forest.py check
-      - name: Build the border at Tornio and Haparanda
-        env:
-          CDSE_S3_ACCESS_KEY: ${{ secrets.CDSE_S3_ACCESS_KEY }}
-          CDSE_S3_SECRET_KEY: ${{ secrets.CDSE_S3_SECRET_KEY }}
-          TORNIO: '23.95,65.75,24.35,65.95'
+      - name: Fetch Finland at Tornio from Syke
         run: |
           mkdir forest-sources
           python tools/osm_data/forest.py fetch finland forest-sources/finland.tif --box "$TORNIO"
-          python tools/osm_data/forest.py fetch sweden forest-sources/sweden.tif --box "$TORNIO"
+      - name: Fetch Sweden at Haparanda from the Copernicus Data Space
+        env:
+          CDSE_S3_ACCESS_KEY: ${{ secrets.CDSE_S3_ACCESS_KEY }}
+          CDSE_S3_SECRET_KEY: ${{ secrets.CDSE_S3_SECRET_KEY }}
+        run: python tools/osm_data/forest.py fetch sweden forest-sources/sweden.tif --box "$TORNIO"
+      - name: Build the border's tiles
+        run: |
           python tools/osm_data/forest.py build release --box "$TORNIO"
           ls -l release
 
@@ -85,8 +89,9 @@ jobs:
       - name: Fetch the country's kinds
         env:
           COUNTRY: ${{ matrix.country }}
-          CDSE_S3_ACCESS_KEY: ${{ secrets.CDSE_S3_ACCESS_KEY }}
-          CDSE_S3_SECRET_KEY: ${{ secrets.CDSE_S3_SECRET_KEY }}
+          # Syke's file needs no login: the keys go only to the Data Space's countries
+          CDSE_S3_ACCESS_KEY: ${{ matrix.country != 'finland' && secrets.CDSE_S3_ACCESS_KEY || '' }}
+          CDSE_S3_SECRET_KEY: ${{ matrix.country != 'finland' && secrets.CDSE_S3_SECRET_KEY || '' }}
         run: |
           df -h .
           mkdir forest-sources
@@ -99,6 +104,7 @@ jobs:
         env:
           CDSE_S3_ACCESS_KEY: ${{ secrets.CDSE_S3_ACCESS_KEY }}
           CDSE_S3_SECRET_KEY: ${{ secrets.CDSE_S3_SECRET_KEY }}
+        shell: bash  # with pipefail, so a failed tune fails the step rather than tee's success
         run: python tools/osm_data/forest.py tune | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
@@ -135,6 +141,7 @@ jobs:
           du -sb release
           df -h .
       - name: Measure the cells
+        shell: bash  # with pipefail
         run: |
           python - <<'EOF' | tee -a "$GITHUB_STEP_SUMMARY"
           import json

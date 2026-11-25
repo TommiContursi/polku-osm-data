@@ -65,7 +65,9 @@ YEAR = 2024
 ENDPOINT = 'eodata.dataspace.copernicus.eu'
 SQUARE = 100_000  # m: Forest Type's files are 100 km squares of EPSG:3035
 BROADLEAVED, CONIFER = 1, 2  # Forest Type's values; 0 is no forest, 255 outside its area
-RADIUS, LINE = 30, 85  # m and %: mixed unless one kind has LINE % of the forest within RADIUS (tune, 2026-11-25)
+# m and %: mixed unless one kind has LINE % of the forest within RADIUS in each direction (a square 2 RADIUS + 10 m
+# across). Tuned 2026-11-25: of the best mean F1s, the closest to Syke's shares and agreement (90 % ties on F1)
+RADIUS, LINE = 30, 85
 
 PALETTE = bytes.fromhex('000000' 'bad4b4' 'd1e2be' 'e9f0c2')  # Trail's greens; Polku swaps them for each map
 CREDIT = ("Source: Syke, CORINE Land Cover 2024 (modified); generated using European Union's Copernicus Land "
@@ -79,8 +81,8 @@ Metadata: https://metatieto.ymparisto.fi/geonetwork/srv/api/records/%7B65682849-
 
 Sweden, Norway and Estonia: High Resolution Layer Forest Type {year}, 10 m ({collection}).
 Generated using European Union's Copernicus Land Monitoring Service information, modified as above; mixed forest is
-this build's, where neither kind has {line} % of the forest within {radius} m. Free and open under the Copernicus Land
-Monitoring Service data policy (https://land.copernicus.eu/en/data-policy).
+this build's, where neither kind has {line} % of the forest within {radius} m in each direction. Free and open under
+the Copernicus Land Monitoring Service data policy (https://land.copernicus.eu/en/data-policy).
 '''
 
 
@@ -159,8 +161,10 @@ def download(url, path):
     """url into path; its Last-Modified and ETag."""
     request = urllib.request.Request(url, headers={'User-Agent': mml.AGENT})
     with urllib.request.urlopen(request, timeout=300) as response, open(path, 'wb') as out:
+        modified = response.headers.get('Last-Modified')
+        require(modified, f'{url} has no Last-Modified')
         shutil.copyfileobj(response, out, 1 << 20)
-        return stamp(parsedate_to_datetime(response.headers['Last-Modified'])), response.headers.get('ETag')
+        return stamp(parsedate_to_datetime(modified)), response.headers.get('ETag')
 
 
 def finland(out, box=None, work=Path('syke')):
@@ -245,11 +249,12 @@ def copernicus(country, out, box=None):
         with rasterio.open(out, 'w', **profile(CRS.from_epsg(3035), grid, width, height)) as dst:
             for e, n in sorted(found):
                 core = (e * SQUARE, n * SQUARE, (e + 1) * SQUARE, (n + 1) * SQUARE)
-                if wanted and not (core[0] < wanted[2] and wanted[0] < core[2] and core[1] < wanted[3] and wanted[1] < core[3]):
+                if wanted and not (core[0] < wanted[2] and wanted[0] < core[2]
+                                   and core[1] < wanted[3] and wanted[1] < core[3]):
                     continue
                 pad = HALO * 10
                 bounds = (core[0] - pad, core[1] - pad, core[2] + pad, core[3] + pad)
-                near = [found[k] for k in ((e + i, n + j) for i in (-1, 0, 1) for j in (-1, 0, 1)) if k in found]
+                near = neighbours(found, e, n)
                 at = from_origin(bounds[0], bounds[3], 10, 10)
                 shape_px = ((bounds[3] - bounds[1]) // 10, (bounds[2] - bounds[0]) // 10)
                 inside = rasterize([local], shape_px, transform=at, fill=0, default_value=1, dtype='uint8')
@@ -268,6 +273,11 @@ def copernicus(country, out, box=None):
     return {'collection': COLLECTION, 'year': YEAR, 'squares': len(found), 'radius': RADIUS, 'line': LINE}
 
 
+def neighbours(found, e, n):
+    """The paths of square (e, n) and of those around it that Forest Type has, for its halo."""
+    return [found[k] for k in ((e + i, n + j) for i in (-1, 0, 1) for j in (-1, 0, 1)) if k in found]
+
+
 def read(paths, bounds):
     """The squares' pixels over bounds, OUTSIDE where none has any; refused keys say so."""
     try:
@@ -279,7 +289,7 @@ def read(paths, bounds):
 
 def refused(error):
     """A read's error, said plainly when the Data Space refused the keys."""
-    if any(word in str(error) for word in ('403', 'AccessDenied', 'Access Denied', 'InvalidAccessKeyId',
+    if any(word in str(error) for word in ('response code: 403', 'AccessDenied', 'Access Denied', 'InvalidAccessKeyId',
                                            'SignatureDoesNotMatch', 'ExpiredToken')):
         raise RuntimeError('The Copernicus Data Space refused the keys: they may have expired. Make new ones at '
                            'eodata-s3keysmanager.dataspace.copernicus.eu and update the secrets CDSE_S3_ACCESS_KEY '
@@ -373,7 +383,6 @@ def block(args):
                                  and mml.row(box[3], 12) <= y <= mml.row(box[1], 12))
             grids[12, x, y] = tile(12, x, y) if inside else np.full((SIZE, SIZE), OUTSIDE, np.uint8)
     for z in (11, 10):
-        shift = 12 - z
         for y in range(y10 << (z - 10), (y10 + 1) << (z - 10)):
             for x in range(x10 << (z - 10), (x10 + 1) << (z - 10)):
                 grids[z, x, y] = coarser([grids[z + 1, 2 * x + i, 2 * y + j] for j in (0, 1) for i in (0, 1)])
@@ -452,8 +461,9 @@ def tune(finland_tif=SOURCES / 'finland.tif', samples=12):
         raws = []
         for (e, n), core, truth in picked:
             pad = HALO * 10
-            near = [found[k] for k in ((e + i, n + j) for i in (-1, 0, 1) for j in (-1, 0, 1)) if k in found]
+            near = neighbours(found, e, n)
             raws.append((read(near, (core[0] - pad, core[1] - pad, core[2] + pad, core[3] + pad))[0], truth))
+    syke.close()
     print(f"Squares: {', '.join(f'E{e}N{n}' for (e, n), _, _ in picked)}\n")
     rows = []
     for radius in RADII:
@@ -494,7 +504,10 @@ if __name__ == '__main__':
         args = parser.parse_args()
         try:
             if args.command == 'fetch':
-                fetch(args.country, args.output, args.box and tuple(map(float, args.box.split(','))))
+                box = args.box and tuple(float(value) for value in args.box.split(','))
+                require(not box or len(box) == 4 and box[0] < box[2] and box[1] < box[3],
+                        'The box is west,south,east,north')
+                fetch(args.country, args.output, box)
             elif args.command == 'tune':
                 tune()
             else:
