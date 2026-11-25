@@ -440,7 +440,8 @@ The data is © OpenStreetMap contributors (ODbL), in OpenMapTiles' schema (CC BY
 ## Forest kind
 
 `forest-data.yml`, by hand when Syke or Copernicus publishes a new edition, builds the forest's kind for Polku #1360:
-coniferous, mixed and deciduous forest at zooms 10–12. The format is in
+coniferous, mixed and deciduous forest at zooms 10–12: about 93,400 tiles and 0.81 GB, about 1,760 cells; the
+fetches about 17 minutes at most (Norway's), the build about 23 (measured 2026-11-25). The format is in
 [tools/osm_data/README.md](../tools/osm_data/README.md#forest-kind).
 
 - **Sources:** Finland from Syke's CORINE Land Cover 2024 (20 m, anonymous download); Sweden, Norway and Estonia from
