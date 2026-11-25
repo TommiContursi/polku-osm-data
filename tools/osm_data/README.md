@@ -336,6 +336,11 @@ manifest, as `build` writes it:
 
 An element keeps only what its layer's WMS style draws (`dr_yksityistietieto`, `dr_paallystetty_tie` and the
 default style of `dr_nopeusrajoitus`), and `fetch` stops at a value the style doesn't draw, on the page it came in.
+
+The road layers have overview levels below zoom 11, each a dataset of its own, `<name>-<zoom>`, at the zooms where the
+layer's style draws (`LEVELS`): `paved-8`, `paved-9` and `paved-10` hold the state roads alone, `private-10` and
+`speed-10` every feature. A level's lines are simplified with Douglas–Peucker to half a pixel of its 512 px tiles, each
+line keeping its ends, and its `raw` and `source` are its dataset's. Below these zooms the styles draw nothing.
 Each zoom-11 tile is gzipped JSON, `{"schema": 1, "elements": [{"id": 104141443, "aadt": 10550, "lines":
 [[[23.62121, 60.813286], …]]}]}`: every feature whose extent touches the tile, whole, ordered by its `id`, the feature's
 ID in the WFS (a number, or for private roads the link's ID). `lines` holds its line strings in WGS84, rounded to six
@@ -343,8 +348,8 @@ decimal places, without heights.
 
 `<name>.jsonl.xz` holds the dataset's features as the WFS served them, every property and coordinates in full with
 heights, one GeoJSON feature per line in the order served. The same features give the same bytes. To build the release
-again without the WFS, save each of these files from the host, where it lies at its entry's `url` in the manifest,
-under its `path` in a folder, and run `digiroad.py build` on that folder.
+again without the WFS, `digiroad.py live FOLDER` saves the live release's files from the host into a new folder,
+checked by their SHA-256, and `digiroad.py build FOLDER` builds it; the workflow does both when `fetched` is `live`.
 
 On the host each dataset's `format` is `pmtiles-json-cells`, and its `url`, `bytes` and `sha256` are those of its
 index, `<name>.cells.json`, among the shared files (Cells). `files` lists the index in place of the archive, and each
@@ -355,7 +360,8 @@ A dataset's `source.timestamp` is the time of the newest single edit among its f
 Finnish time), not the data's date: most were edited earlier. The private roads have no edit times, so their `source`
 has no `timestamp`. The manifest's `source.timestamp` is the newest of the datasets'.
 `tools/fixtures/digiroad-<name>.jsonl.xz` are the WFS's answers around Tampere (23.70–23.80 E, 61.485–61.51 N; for
-private roads, which that box has none of, 61.46–61.485 N), `digiroad-<name>.pmtiles` their archives, and
+private roads, which that box has none of, 61.46–61.485 N), `digiroad-<name>.pmtiles` and
+`digiroad-<name>-<zoom>.pmtiles` their archives and levels, and
 `digiroad-traffic-cells/` the traffic archive's cut at a 4 KiB target.
 
 ## LIPAS

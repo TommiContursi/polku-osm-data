@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """A copy of four Digiroad layers: traffic volumes (the roads of 800 or more vehicles a day), paved roads, private roads
-and speed limits. Each is a zoom-11 PMTiles archive of JSON tiles beside its features as the WFS served them, all
-uploaded as one candidate in polku-digiroad beside polku-osm.
+and speed limits. Each is a zoom-11 PMTiles archive of JSON tiles beside its features as the WFS served them, and the
+road layers have simplified overview levels at the zooms below where their styles draw (LEVELS), all uploaded as one
+candidate in polku-digiroad beside polku-osm.
 
 The source is Väylävirasto's WFS, CC BY 4.0. Väylävirasto's updates to it ended on 2026-09-18,
 when Fintraffic took Digiroad over, so the copy is made by hand, and again only when a source with newer data exists.
 The fetch asks for one page at a time, with a pause between pages and one retry after a longer one."""
 
 from datetime import datetime
+import math
 from zoneinfo import ZoneInfo
 from pathlib import Path
 import sys
@@ -49,6 +51,12 @@ DATASETS = {
     'speed': ('digiroad:dr_nopeusrajoitus', None, 'id_pk',
               lambda p: {'limit': p['arvo']} if p.get('arvo') in SPEEDS else None),
 }
+# The overview levels below zoom 11: the zooms of 512 px tiles at which each layer's WMS style draws, by its
+# MaxScaleDenominator (WMS 1.1.1 GetStyles, 2026-11-25), and which features it draws there. The paved roads' state roads
+# show from 1:1.45M, about tile zoom 8, the others from 1:181k (zoom 11); private roads from 1:350k and speed limits from
+# 1:363k, about tile zoom 10. Below these zooms the styles draw nothing.
+LEVELS = {'paved': ((8, 9, 10), lambda e: e['state']), 'private': ((10,), None), 'speed': ((10,), None)}
+TOLERANCE = 0.5  # px of a 512 px tile: a level's lines are simplified to half a pixel, a device pixel on a phone
 ATTRIBUTION = '© Fintraffic / Digiroad, from Väylävirasto\'s open data, CC BY 4.0'
 LICENSE = 'CC BY 4.0'
 LICENSE_TEXT = f'''Traffic volumes, paved roads, private roads and speed limits from Digiroad, © Fintraffic, from the open
@@ -73,6 +81,32 @@ def element(name, feature):
     key = feature['id'].rpartition('.')[2]
     return {'id': int(key) if key.isdigit() else key, **kept,
             'lines': [[[round(p[0], 6), round(p[1], 6)] for p in line] for line in lines]}
+
+
+def overview(name, zoom, road):
+    """The road as the dataset's level at zoom holds it, or None where the style doesn't draw it there: each line
+    simplified with Douglas–Peucker to TOLERANCE in the zoom's pixels, keeping its ends."""
+    keep, scale, lines = LEVELS[name][1], 2 ** zoom * 512, []
+    if keep and not keep(road):
+        return None
+    for line in road['lines']:
+        xy = [((lon + 180) / 360 * scale, (1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * scale)
+              for lon, lat in line]
+        kept, spans = {0, len(line) - 1}, [(0, len(line) - 1)]
+        while spans:
+            a, b = spans.pop()
+            (ax, ay), (bx, by) = xy[a], xy[b]
+            length, far, at = math.hypot(bx - ax, by - ay), TOLERANCE, None
+            for i in range(a + 1, b):
+                px, py = xy[i]
+                d = abs((bx - ax) * (ay - py) - (by - ay) * (ax - px)) / length if length else math.hypot(px - ax, py - ay)
+                if d > far:
+                    far, at = d, i
+            if at is not None:
+                kept.add(at)
+                spans += [(a, at), (at, b)]
+        lines.append([line[i] for i in sorted(kept)])
+    return road | {'lines': lines}
 
 
 def extent(road):

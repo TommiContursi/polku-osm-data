@@ -343,7 +343,9 @@ again only when a source with newer data exists. The format is in
   checked as its page arrives and must come once, and each layer's count must equal the WFS's own. Each layer's
   features are written to an xz file as they arrive, as the WFS served them. The job keeps these files as an artifact
   for 7 days before it builds the tiles from them: with `fetched` set to that run's ID, a later run builds and uploads
-  from them without fetching again. From sample pages on 2026-11-23: about 530 pages in about 2.5 hours (a page of
+  from them without fetching again. With `fetched` set to `live`, it saves the live release's xz files from the host,
+  checked by their SHA-256, and builds from them, so the release is built again without the WFS: after a change to the
+  tiles, such as the road layers' overview levels at zooms 8–10. From sample pages on 2026-11-23: about 530 pages in about 2.5 hours (a page of
   private roads takes up to 32 s to answer), about 0.4 GB of zoom-11 tiles and 0.56 GB of xz files, and at most about
   4 GB of memory for the build. The release goes up as cells through `publish.py`, as the OSM data does, with the xz
   files whole: read back with its SHA-256, checked over HTTPS and named in `candidates/current.json`. A file or cell

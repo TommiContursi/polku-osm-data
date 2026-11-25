@@ -3,11 +3,13 @@
 its extent touches, beside LICENSE.txt and a manifest as the OSM data's, so publish.py uploads them all.
 
 A product is a module with LABEL, SOURCE, SRS, ZOOM, PAGE, PAUSE, BACK_OFF, FOLDER, BUDGET, ATTRIBUTION, LICENSE,
-LICENSE_TEXT, DATASETS ({name: (layer, filter or None, sort order, …)}) and these functions:
+LICENSE_TEXT, DATASETS ({name: (layer, filter or None, sort order, …)}), LEVELS ({name: (zooms below ZOOM, …)}: a
+dataset's overview levels, each a dataset of its own, <name>-<zoom>) and these functions:
 - element(name, feature): what its tiles keep of it, which stops the copy for a feature it doesn't expect;
 - extent(element): its box in WGS84, west, south, east and north;
 - rank(element): its place in a tile;
-- edited(properties): when it was last edited, as an aware datetime, or None."""
+- edited(properties): when it was last edited, as an aware datetime, or None;
+- overview(name, zoom, element): what a level's tiles keep of it, or None (with LEVELS only)."""
 
 import argparse
 from datetime import datetime, timezone
@@ -16,6 +18,7 @@ import hashlib
 import http.client
 import json
 import lzma
+import os
 from pathlib import Path
 import time
 import urllib.request
@@ -70,6 +73,18 @@ def fetch(product, name, directory, sleep=time.sleep):
     require(len(seen) == matched, f'{product.LABEL} gave {len(seen)} of {matched} {name} features')
 
 
+def live(product, directory):
+    """The live release's fetched features, <name>.jsonl.xz, saved from the host into directory and checked by their
+    SHA-256, so build makes the release again without the WFS."""
+    base = publish.product_url(publish.public_url(os.environ.get('OSM_PUBLIC_URL', '')), product.FOLDER)
+    files = {f['path']: f for f in publish.validate(json.loads(publish.get(base + '/current.json')), True)['files']}
+    for name in product.DATASETS:
+        entry = files.get(f'{name}.jsonl.xz')
+        require(entry, f'The live release has no {name}.jsonl.xz')
+        mml.download(f"{base}/{entry['url']}", entry, Path(directory) / entry['path'])
+        print(f"{product.LABEL} {name}: {entry['bytes']} bytes from the live release", flush=True)
+
+
 def union(boxes):
     """The box around boxes of west, south, east and north."""
     return [min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes)]
@@ -85,24 +100,16 @@ def build(product, directory, now):
         return {'path': path, 'bytes': (directory / path).stat().st_size,
                 'sha256': publish.digest_file(directory / path)}
 
-    for name, (layer, where, *_) in product.DATASETS.items():
-        tiles, extents, edited = {}, [], None
-        with lzma.open(directory / f'{name}.jsonl.xz') as raw:
-            for line in raw:
-                feature = json.loads(line)
-                element = product.element(name, feature)
-                when = product.edited(feature['properties'])
-                edited = max(edited, when) if edited and when else edited or when
-                extent = product.extent(element)
-                for x in range(mml.column(extent[0], zoom), mml.column(extent[2], zoom) + 1):
-                    for y in range(mml.row(extent[3], zoom), mml.row(extent[1], zoom) + 1):
-                        tiles.setdefault(zxy_to_tileid(zoom, x, y), []).append(element)
-                extents.append(extent)
+    def place(tiles, element, zoom):
+        extent = product.extent(element)
+        for x in range(mml.column(extent[0], zoom), mml.column(extent[2], zoom) + 1):
+            for y in range(mml.row(extent[3], zoom), mml.row(extent[1], zoom) + 1):
+                tiles.setdefault(zxy_to_tileid(zoom, x, y), []).append(element)
+        return extent
+
+    def write(name, zoom, tiles, extents, source, fetched):
         require(extents, f'No {name} features')
-        bounds = union(extents)
-        source = ({'url': product.SOURCE, 'layer': layer} | ({'filter': where} if where else {})
-                  | ({'timestamp': stamp(edited)} if edited else {}))
-        archive, fetched = f'{name}.pmtiles', f'{name}.jsonl.xz'
+        bounds, archive = union(extents), f'{name}.pmtiles'
         with (directory / archive).open('wb') as stream:
             writer = Writer(stream)
             for tile in sorted(tiles):
@@ -115,11 +122,31 @@ def build(product, directory, now):
                              'max_lon_e7': round(bounds[2] * 1e7), 'max_lat_e7': round(bounds[3] * 1e7)},
                             {'name': f'Polku {product.LABEL} {name}', 'format': 'json', 'schema': 1,
                              'attribution': product.ATTRIBUTION, 'license': product.LICENSE, 'source': source})
-        files[archive], files[fetched] = entry(archive), entry(fetched)
+        files[archive] = entry(archive)
         datasets[name] = {'format': 'pmtiles-json', 'schema': 1, 'zoom': zoom, 'url': archive,
                           'bytes': files[archive]['bytes'], 'sha256': files[archive]['sha256'], 'tiles': len(tiles),
                           'features': len(extents), 'source': source, 'raw': fetched}
         boxes.append(bounds)
+
+    for name, (layer, where, *_) in product.DATASETS.items():
+        tiles, extents, edited, fetched = {}, [], None, f'{name}.jsonl.xz'
+        levels = {z: ({}, []) for z in (product.LEVELS[name][0] if name in product.LEVELS else ())}
+        with lzma.open(directory / fetched) as raw:
+            for line in raw:
+                feature = json.loads(line)
+                element = product.element(name, feature)
+                when = product.edited(feature['properties'])
+                edited = max(edited, when) if edited and when else edited or when
+                extents.append(place(tiles, element, zoom))
+                for z, (level, kept) in levels.items():
+                    if small := product.overview(name, z, element):
+                        kept.append(place(level, small, z))
+        source = ({'url': product.SOURCE, 'layer': layer} | ({'filter': where} if where else {})
+                  | ({'timestamp': stamp(edited)} if edited else {}))
+        write(name, zoom, tiles, extents, source, fetched)
+        for z, (level, kept) in levels.items():
+            write(f'{name}-{z}', z, level, kept, source, fetched)
+        files[fetched] = entry(fetched)
     edits = [d['source']['timestamp'] for d in datasets.values() if 'timestamp' in d['source']]
     require(edits, f'{product.LABEL} gave no edit times')
     (directory / 'LICENSE.txt').write_text(product.LICENSE_TEXT, encoding='utf-8')
@@ -135,10 +162,12 @@ def build(product, directory, now):
 
 
 def main(product):
-    """The product's commands: fetch its layers, build the release, upload it as the candidate, or install its folder."""
+    """The product's commands: fetch its layers or save the live release's, build the release, upload it as the
+    candidate, or install its folder."""
     parser = argparse.ArgumentParser(description=product.__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('fetch', help='fetch the layers into a new folder').add_argument('output', type=Path)
+    commands.add_parser('live', help="save the live release's fetched features into a new folder").add_argument('output', type=Path)
     commands.add_parser('build', help='write the release in a folder of fetched features').add_argument('directory', type=Path)
     commands.add_parser('upload', help='upload the release as the candidate (in cells with OSM_CELLS=true)').add_argument('directory', type=Path)
     commands.add_parser('install-hosting')
@@ -148,6 +177,9 @@ def main(product):
             args.output.mkdir(parents=True)
             for name in product.DATASETS:
                 fetch(product, name, args.output)
+        elif args.command == 'live':
+            args.output.mkdir(parents=True)
+            live(product, args.output)
         elif args.command == 'build':
             manifest = build(product, args.directory, datetime.now(timezone.utc))
             print(json.dumps({'release': manifest['release'], 'datasets': manifest['datasets']}))

@@ -40,6 +40,7 @@ DATASETS = {str(t): (f'lipas:lipas_{t}_{layer}', None, 'id,reitti_id' if t in LI
 # what Polku reads of a feature (js/lipas.js, propsOf() and the tiles' feature IDs)
 KEEP = ('id', 'reitti_id', 'nimi_fi', 'nimi_se', 'lisatieto_fi', 'www', 'kunta_nimi_fi', 'reitin_pituus_km',
         'pintamateriaali', 'yleiso_wc')
+LEVELS = {}  # none: Polku reads its zoom-9 tiles alone
 ATTRIBUTION = '© LIPAS, University of Jyväskylä, CC BY 4.0'
 LICENSE = 'CC BY 4.0'
 LICENSE_TEXT = f'''Routes and sports places from LIPAS, the national database of sports facilities in Finland, © University of
