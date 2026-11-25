@@ -47,7 +47,7 @@ DATA = Path(__file__).resolve().parents[2] / 'data'
 COUNTRIES = ('finland', 'sweden', 'norway', 'estonia')  # in this order a pixel takes the first country that has it
 SOURCES = Path('forest-sources')  # where build finds each fetched country, <country>.tif and <country>.json
 FOLDER = 'polku-forest'
-BUDGET = 2 * 1024**3  # 0.81 GB, and a new edition beside it while it is a candidate
+BUDGET = 3 * 1024**3  # 0.81 GB a release: a new one beside the live release and its predecessor, 2.4 GB
 ZOOMS = (10, 11, 12)
 SIZE = 512
 NONE, CONIFEROUS, MIXED, DECIDUOUS, OUTSIDE = 0, 1, 2, 3, 255
@@ -248,12 +248,18 @@ def copernicus(country, out, box=None):
                 pad = HALO * 10
                 bounds = (core[0] - pad, core[1] - pad, core[2] + pad, core[3] + pad)
                 near = [found[k] for k in ((e + i, n + j) for i in (-1, 0, 1) for j in (-1, 0, 1)) if k in found]
-                raw, at = read(near, bounds)
-                inside = rasterize([local], raw.shape, transform=at, fill=0, default_value=1, dtype='uint8')
-                raw[inside == 0] = OUTSIDE
-                if (raw == OUTSIDE).all():
+                at = from_origin(bounds[0], bounds[3], 10, 10)
+                shape_px = ((bounds[3] - bounds[1]) // 10, (bounds[2] - bounds[0]) // 10)
+                inside = rasterize([local], shape_px, transform=at, fill=0, default_value=1, dtype='uint8')
+                if not inside[HALO:-HALO, HALO:-HALO].any():
                     continue
+                raw, got = read(near, bounds)
+                require(raw.shape == inside.shape and got == at, f'E{e}N{n} came back off the grid')
+                # the rule and the smoothing see the forest across the country's edge; only then is it cut there
                 classes = smooth(kinds(raw), 10)
+                classes[inside == 0] = OUTSIDE
+                if (classes == OUTSIDE).all():
+                    continue
                 window = from_bounds(*core, grid).round_offsets().round_lengths()
                 dst.write(classes[HALO:-HALO, HALO:-HALO], 1, window=window)
                 print(f'{country} E{e}N{n}', flush=True)

@@ -453,7 +453,8 @@ fetches about 17 minutes at most (Norway's), the build about 23 (measured 2026-1
   Forest Type has no mixed class: a pixel is mixed where neither kind has `LINE` % of the forest within `RADIUS`,
   tuned on Finland against Syke's (`forest.py tune`, printed in Finland's job).
 - **build** reads the four rasters, cuts the zoom-12 tiles, makes zooms 11 and 10 from them, and measures the cells.
-  **build** uploads nothing; **copy** then uploads the candidate in cells to `polku-forest/`, at most 2 GiB.
+  **build** uploads nothing; **copy** then uploads the candidate in cells to `polku-forest/`, at most 3 GiB: a new
+  edition beside the live release and its predecessor.
 - **install-hosting**, once: makes `polku-forest/` and puts a copy of `hosting.htaccess` in it.
 - A pull request that changes the job checks the keys and builds the border at Tornio; labelled `forest-build`, it
   runs fetch and build in full and uploads nothing.
