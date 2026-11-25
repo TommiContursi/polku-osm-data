@@ -79,14 +79,9 @@ def live(product, directory):
     base = publish.product_url(publish.public_url(os.environ.get('OSM_PUBLIC_URL', '')), product.FOLDER)
     files = {f['path']: f for f in publish.validate(json.loads(publish.get(base + '/current.json')), True)['files']}
     for name in product.DATASETS:
-        entry, digest = files.get(f'{name}.jsonl.xz'), hashlib.sha256()
+        entry = files.get(f'{name}.jsonl.xz')
         require(entry, f'The live release has no {name}.jsonl.xz')
-        request = urllib.request.Request(f"{base}/{entry['url']}", headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(request, timeout=300) as response, (Path(directory) / entry['path']).open('wb') as out:
-            while block := response.read(1 << 20):
-                digest.update(block)
-                out.write(block)
-        require(digest.hexdigest() == entry['sha256'], f"{entry['path']} differs from the live release's")
+        mml.download(f"{base}/{entry['url']}", entry, Path(directory) / entry['path'])
         print(f"{product.LABEL} {name}: {entry['bytes']} bytes from the live release", flush=True)
 
 

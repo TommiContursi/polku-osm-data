@@ -465,6 +465,42 @@ def public_bytes(url):
         return None
 
 
+def download(url, entry, path):
+    """A live release's file ({url, bytes, sha256}) from url into path, going on where a stalled download stopped, and
+    checked by its SHA-256 (Base.file, and wfs.py's live)."""
+    part = path.with_suffix('.part')
+    part.write_bytes(b'')
+    idle = 0  # tries in a row that got no further: a busy host slows a download of 8.5 GB, but it moves
+    while True:  # a stalled download goes on from where it stopped
+        have = part.stat().st_size
+        headers = {'User-Agent': AGENT} | ({'Range': f'bytes={have}-'} if have else {})
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=60) as response, \
+                    open(part, 'ab') as out:
+                require(response.status == (206 if have else 200), f"{entry['url']}: HTTP {response.status}")
+                shutil.copyfileobj(response, out, 1 << 20)
+            # A read in chunks ends quietly where the host closes early (http.client raises nothing)
+            if part.stat().st_size < entry['bytes']:
+                raise ConnectionError('cut short')
+            break
+        except (TimeoutError, ConnectionError, http.client.HTTPException, URLError) as error:
+            if isinstance(error, HTTPError):
+                error.close()
+                if error.code < 500 and error.code not in (408, 429):
+                    raise
+            if part.stat().st_size >= entry['bytes']:
+                break  # every byte came before the error: the check below says if they're right
+            idle = 0 if part.stat().st_size > have else idle + 1
+            if idle >= PATIENCE:
+                raise
+            wait = min(300, 15 * 2 ** idle)
+            print(f"{entry['url']}: {type(error).__name__} at {part.stat().st_size} bytes; going on in {wait} s", flush=True)
+            time.sleep(wait)
+    require(part.stat().st_size == entry['bytes'] and publish.digest_file(part) == entry['sha256'],
+            f"{entry['url']} differs from the live manifest ({part.stat().st_size} of {entry['bytes']} bytes)")
+    part.rename(path)
+
+
 class Base:
     """The live release an update goes on from, its pointer saved in directory: its tiles by id, read from its archive
     or its cells over HTTPS. Each file is checked against its SHA-256 and kept in directory for the next tile."""
@@ -495,37 +531,7 @@ class Base:
         """A file the pointer names ({url, bytes, sha256}, its url relative to the folder), downloaded once."""
         path = self.directory / (entry['sha256'] + posixpath.splitext(entry['url'])[1])
         if not path.exists():
-            part = path.with_suffix('.part')
-            part.write_bytes(b'')
-            idle = 0  # tries in a row that got no further: a busy host slows a download of 8.5 GB, but it moves
-            while True:  # a stalled download goes on from where it stopped
-                have = part.stat().st_size
-                headers = {'User-Agent': AGENT} | ({'Range': f'bytes={have}-'} if have else {})
-                try:
-                    with urllib.request.urlopen(urllib.request.Request(f"{self.url}/{entry['url']}", headers=headers),
-                                                timeout=60) as response, open(part, 'ab') as out:
-                        require(response.status == (206 if have else 200), f"{entry['url']}: HTTP {response.status}")
-                        shutil.copyfileobj(response, out, 1 << 20)
-                    # A read in chunks ends quietly where the host closes early (http.client raises nothing)
-                    if part.stat().st_size < entry['bytes']:
-                        raise ConnectionError('cut short')
-                    break
-                except (TimeoutError, ConnectionError, http.client.HTTPException, URLError) as error:
-                    if isinstance(error, HTTPError):
-                        error.close()
-                        if error.code < 500 and error.code not in (408, 429):
-                            raise
-                    if part.stat().st_size >= entry['bytes']:
-                        break  # every byte came before the error: the check below says if they're right
-                    idle = 0 if part.stat().st_size > have else idle + 1
-                    if idle >= PATIENCE:
-                        raise
-                    wait = min(300, 15 * 2 ** idle)
-                    print(f"{entry['url']}: {type(error).__name__} at {part.stat().st_size} bytes; going on in {wait} s", flush=True)
-                    time.sleep(wait)
-            require(part.stat().st_size == entry['bytes'] and publish.digest_file(part) == entry['sha256'],
-                    f"{entry['url']} differs from the live manifest ({part.stat().st_size} of {entry['bytes']} bytes)")
-            part.rename(path)
+            download(f"{self.url}/{entry['url']}", entry, path)
         return path
 
     def dated(self):

@@ -84,32 +84,29 @@ def element(name, feature):
 
 
 def overview(name, zoom, road):
-    """The road as the dataset's level at zoom holds it, or None where the style doesn't draw it there: its lines
-    simplified with Douglas–Peucker to TOLERANCE in the zoom's pixels, each line's ends kept."""
-    keep, scale = LEVELS[name][1], 2 ** zoom * 512
+    """The road as the dataset's level at zoom holds it, or None where the style doesn't draw it there: each line
+    simplified with Douglas–Peucker to TOLERANCE in the zoom's pixels, keeping its ends."""
+    keep, scale, lines = LEVELS[name][1], 2 ** zoom * 512, []
     if keep and not keep(road):
         return None
-    return road | {'lines': [simplify(line, [((lon + 180) / 360 * scale,
-                                               (1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * scale)
-                                              for lon, lat in line]) for line in road['lines']]}
-
-
-def simplify(line, xy):
-    """The points of line whose pixels xy Douglas–Peucker keeps at TOLERANCE."""
-    keep, spans = {0, len(line) - 1}, [(0, len(line) - 1)]
-    while spans:
-        a, b = spans.pop()
-        (ax, ay), (bx, by) = xy[a], xy[b]
-        length, far, at = math.hypot(bx - ax, by - ay), TOLERANCE, None
-        for i in range(a + 1, b):
-            px, py = xy[i]
-            d = abs((bx - ax) * (ay - py) - (by - ay) * (ax - px)) / length if length else math.hypot(px - ax, py - ay)
-            if d > far:
-                far, at = d, i
-        if at is not None:
-            keep.add(at)
-            spans += [(a, at), (at, b)]
-    return [line[i] for i in sorted(keep)]
+    for line in road['lines']:
+        xy = [((lon + 180) / 360 * scale, (1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * scale)
+              for lon, lat in line]
+        kept, spans = {0, len(line) - 1}, [(0, len(line) - 1)]
+        while spans:
+            a, b = spans.pop()
+            (ax, ay), (bx, by) = xy[a], xy[b]
+            length, far, at = math.hypot(bx - ax, by - ay), TOLERANCE, None
+            for i in range(a + 1, b):
+                px, py = xy[i]
+                d = abs((bx - ax) * (ay - py) - (by - ay) * (ax - px)) / length if length else math.hypot(px - ax, py - ay)
+                if d > far:
+                    far, at = d, i
+            if at is not None:
+                kept.add(at)
+                spans += [(a, at), (at, b)]
+        lines.append([line[i] for i in sorted(kept)])
+    return road | {'lines': lines}
 
 
 def extent(road):

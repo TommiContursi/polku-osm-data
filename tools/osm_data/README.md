@@ -360,8 +360,8 @@ A dataset's `source.timestamp` is the time of the newest single edit among its f
 Finnish time), not the data's date: most were edited earlier. The private roads have no edit times, so their `source`
 has no `timestamp`. The manifest's `source.timestamp` is the newest of the datasets'.
 `tools/fixtures/digiroad-<name>.jsonl.xz` are the WFS's answers around Tampere (23.70–23.80 E, 61.485–61.51 N; for
-private roads, which that box has none of, 61.46–61.485 N), `digiroad-<name>.pmtiles` their archives and their
-levels', and
+private roads, which that box has none of, 61.46–61.485 N), `digiroad-<name>.pmtiles` and
+`digiroad-<name>-<zoom>.pmtiles` their archives and levels, and
 `digiroad-traffic-cells/` the traffic archive's cut at a 4 KiB target.
 
 ## LIPAS

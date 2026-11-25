@@ -282,7 +282,7 @@ class DigiroadTests(unittest.TestCase):
             with patch.dict(host.files, {speed: host.files[speed] + b'x'}), redirect_stderr(io.StringIO()) as said, \
                     patch.object(sys, 'argv', ['digiroad.py', 'live', str(self.tmp / 'changed')]), self.assertRaises(SystemExit):
                 wfs.main(digiroad)
-            self.assertIn("speed.jsonl.xz differs from the live release's", said.getvalue())
+            self.assertIn('differs from the live manifest', said.getvalue())
             host.uploads.clear()
             wfs.build(digiroad, self.tmp / 'again', datetime(2026, 11, 24, tzinfo=timezone.utc))
             with patch.object(publish.maintenance, 'usage', return_value=digiroad.BUDGET - 4096):
