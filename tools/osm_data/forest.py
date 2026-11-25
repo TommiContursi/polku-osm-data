@@ -68,17 +68,19 @@ BROADLEAVED, CONIFER = 1, 2  # Forest Type's values; 0 is no forest, 255 outside
 RADIUS, LINE = 30, 85  # m and %: mixed unless one kind has LINE % of the forest within RADIUS (tune, 2026-11-25)
 
 PALETTE = bytes.fromhex('000000' 'bad4b4' 'd1e2be' 'e9f0c2')  # Trail's greens; Polku swaps them for each map
-CREDIT = '© Syke, © EU, Copernicus Land Monitoring Service'
+CREDIT = ("Source: Syke, CORINE Land Cover 2024 (modified); generated using European Union's Copernicus Land "
+          "Monitoring Service information (modified)")  # in every cell: a change renames them all
 LICENSE = '''The forest's kind, made by polku-osm-data from two sources, both modified: their forest classed into
-coniferous, mixed and deciduous, patches under half a hectare merged into their neighbours, and cut into tiles.
+coniferous, mixed and deciduous, patches under half a hectare merged into their neighbours, and cut into map tiles.
 
-Finland: CORINE Land Cover 2024 (CORINE maanpeite 2024), 20 m, by the Finnish Environment Institute (Syke),
+Finland: CORINE maanpeite 2024 (CORINE Land Cover 2024), 20 m. Source: Syke (Finnish Environment Institute).
 {syke}, last modified {syke_modified}. Licence: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/).
+Metadata: https://metatieto.ymparisto.fi/geonetwork/srv/api/records/%7B65682849-C05E-4E7C-9C1C-1C94378BB166%7D
 
-Sweden, Norway and Estonia: High Resolution Layer Forest Type 2024, 10 m (Copernicus Land Monitoring Service,
-{collection}). © European Union, Copernicus Land Monitoring Service {year}, European Environment Agency (EEA).
-Free, full and open access under the Copernicus data policy (Regulation (EU) No 1159/2013); the source must be named.
-Mixed forest is this build's: where neither kind has {line} % of the forest within {radius} m.
+Sweden, Norway and Estonia: High Resolution Layer Forest Type {year}, 10 m ({collection}).
+Generated using European Union's Copernicus Land Monitoring Service information, modified as above; mixed forest is
+this build's, where neither kind has {line} % of the forest within {radius} m. Free and open under the Copernicus Land
+Monitoring Service data policy (https://land.copernicus.eu/en/data-policy).
 '''
 
 
