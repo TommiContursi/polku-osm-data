@@ -1,13 +1,19 @@
 """The forest's kind: the mixed rule, the smoothing, the tiles' PNG and their coarser zooms, on small synthetic rasters."""
 
-import io
+import json
+from pathlib import Path
+import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import rasterio
 from rasterio.io import MemoryFile
+from rasterio.transform import from_origin
+from rasterio.warp import transform
+from pmtiles.reader import MmapSource, Reader, all_tiles
 
-from tools.osm_data import forest
+from tools.osm_data import forest, mml
 from tools.osm_data.forest import CONIFEROUS, DECIDUOUS, MIXED, NONE, OUTSIDE, SIZE
 
 
@@ -75,6 +81,41 @@ class ForestTests(unittest.TestCase):
         t = forest.tile_transform(12, 2315, 1144)
         self.assertAlmostEqual(t.a, 2 * 20037508.342789244 / 4096 / SIZE)
         self.assertAlmostEqual(t.c, -20037508.342789244 + 2315 * 2 * 20037508.342789244 / 4096)
+
+    def test_build_takes_finland_first_and_leaves_out_tiles_outside_every_country(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sources = Path(tmp) / 'sources'
+            sources.mkdir()
+            # Finland: 4 km of coniferous at Tornio (EPSG:3067, 20 m); Sweden: 20 km of deciduous around it (EPSG:3035)
+            write(sources / 'finland.tif', 3067, from_origin(366000, 7306000, 20, 20), CONIFEROUS, 200)
+            write(sources / 'sweden.tif', 3035, from_origin(4955000, 4820000, 10, 10), DECIDUOUS, 2000)
+            for country in ('finland', 'sweden'):
+                (sources / f'{country}.json').write_text(json.dumps({'url': country, 'timestamp': '2026-09-18T05:55:48Z'}))
+            box = (23.9, 65.6, 24.6, 66.0)
+            with patch.object(forest, 'SOURCES', sources):
+                manifest = forest.build(Path(tmp) / 'release', box)
+            self.assertEqual(manifest['zooms'], [10, 12])
+            self.assertEqual(sorted(manifest['datasets']), ['forest-10', 'forest-11', 'forest-12'])
+            with open(Path(tmp) / 'release' / 'forest-12.pmtiles', 'rb') as stream:
+                reader = Reader(MmapSource(stream))
+                self.assertEqual(reader.header()['tile_type'], forest.TileType.PNG)
+                tiles = dict(all_tiles(reader.get_bytes))
+            self.assertEqual(manifest['datasets']['forest-12']['tiles'], len(tiles))
+            kinds = set()
+            for data in tiles.values():
+                kinds.update(np.unique(decoded(data)[0]).tolist())
+            self.assertEqual(kinds, {NONE, CONIFEROUS, DECIDUOUS})
+            lon, lat = transform('EPSG:3067', 'EPSG:4326', [366000 + 2000], [7306000 - 2000])
+            middle = decoded(tiles[(12, mml.column(lon[0], 12), mml.row(lat[0], 12))])[0]
+            self.assertIn(CONIFEROUS, middle)  # Finland's, though Sweden's raster has deciduous there too
+            self.assertIn(DECIDUOUS, middle)
+            self.assertLess(len(tiles), (mml.column(box[2], 12) - mml.column(box[0], 12) + 1)
+                            * (mml.row(box[1], 12) - mml.row(box[3], 12) + 1))
+
+
+def write(path, epsg, transform, kind, size):
+    with rasterio.open(path, 'w', **forest.profile(f'EPSG:{epsg}', transform, size, size)) as out:
+        out.write(np.full((size, size), kind, np.uint8), 1)
 
 
 if __name__ == '__main__':

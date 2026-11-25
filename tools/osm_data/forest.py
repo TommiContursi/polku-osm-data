@@ -47,7 +47,7 @@ DATA = Path(__file__).resolve().parents[2] / 'data'
 COUNTRIES = ('finland', 'sweden', 'norway', 'estonia')  # in this order a pixel takes the first country that has it
 SOURCES = Path('forest-sources')  # where build finds each fetched country, <country>.tif and <country>.json
 FOLDER = 'polku-forest'
-BUDGET = 4 * 1024**3
+BUDGET = 2 * 1024**3  # 0.8 GB, and a new edition beside it while it is a candidate
 ZOOMS = (10, 11, 12)
 SIZE = 512
 NONE, CONIFEROUS, MIXED, DECIDUOUS, OUTSIDE = 0, 1, 2, 3, 255
@@ -336,6 +336,12 @@ def opened():
     return OPENED
 
 
+def use(sources):
+    """A worker reads the rasters in sources (its parent's SOURCES, where processes are spawned rather than forked)."""
+    global SOURCES
+    SOURCES = sources
+
+
 def tile(z, x, y):
     """Tile z/x/y's kinds from the countries' rasters: each pixel the first country's that has it."""
     out = np.full((SIZE, SIZE), OUTSIDE, np.uint8)
@@ -385,7 +391,7 @@ def build(output, box):
                           for y in range(mml.row(north, 10), mml.row(south, 10) + 1))
     OPENED.clear()  # each worker opens its own
     tiles = {z: {} for z in ZOOMS}
-    with Pool(os.cpu_count()) as pool:
+    with Pool(os.cpu_count(), initializer=use, initargs=(SOURCES,)) as pool:
         for i, done in enumerate(pool.imap_unordered(block, [(x, y, box) for x, y in sorted(blocks)]), 1):
             for (z, x, y), data in done.items():
                 tiles[z][zxy_to_tileid(z, x, y)] = data
