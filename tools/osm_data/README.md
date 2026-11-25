@@ -460,3 +460,15 @@ Its manifest's `source` names the build: `{"url": "https://btrfs.openfreemap.com
 "tilejson": "https://tiles.openfreemap.org/planet", "version": "20261122_124456_pt", "timestamp": …, "etag": …}`,
 `timestamp` being the archive's `Last-Modified`. `tools/fixtures/basemap-14.pmtiles` is one zoom-14 tile at
 Seitseminen (14/9260/4577), and `tools/fixtures/basemap-14-cells/` its cut at a 4 KiB target.
+
+## Forest kind
+
+`forest.py` builds the forest's kind (docs/OPERATIONS.md) as `forest-<z>.pmtiles` for zooms 10–12, laid out as the
+terrain's, in cells (PNG in their headers, no tile compression), with `LICENSE.txt`. A tile is a 512 px PNG of bit
+depth 2 and a palette of four entries: 0 no forest, 1 coniferous, 2 mixed, 3 deciduous. Its PLTE chunk follows IHDR,
+at byte 33 (12 bytes of colour, then its CRC), so a reader can swap the greens without decoding; a `tRNS` chunk makes
+index 0 transparent. A tile with any pixel in the four countries is there, one of no forest included; a tile wholly
+outside them is missing. A pixel takes Syke's kind where Syke's raster has data (Finland), and Forest Type's within
+the other countries' coverage polygons (`data/<country>-coverage.geojson`). Its manifest adds `kinds` and
+`tile_size`, and its `source` has each country's: Syke's `url`, `timestamp` (`Last-Modified`) and `etag`, and
+Forest Type's `collection`, `year`, `squares`, `radius` and `line`.

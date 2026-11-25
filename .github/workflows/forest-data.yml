@@ -1,0 +1,217 @@
+name: Polku forest kind
+run-name: Forest kind / ${{ github.event_name == 'workflow_dispatch' && inputs.operation || 'test' }}
+
+# The forest's kind at zooms 10-12, by hand when Syke or Copernicus publishes a new edition: each country fetched in a
+# job of its own, then the tiles built from all four and, for copy, uploaded as a candidate in cells. A pull request
+# that changes the job checks the Copernicus keys and builds the border at Tornio; labelled forest-build, it builds
+# everything and uploads nothing.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    paths: [tools/osm_data/forest.py, tools/osm_data/forest-requirements.txt, tools/osm_data/extract.py,
+            tools/osm_data/cells.py, .github/workflows/forest-data.yml]
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Install polku-forest and its .htaccess once, build and measure, or build and upload the candidate
+        type: choice
+        options: [install-hosting, build, copy]
+        default: build
+      box:
+        description: West,south,east,north in degrees; a small box tests the whole job
+        type: string
+        default: '4.0,54.5,31.6,71.3'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('forest-data-pr-{0}', github.event.pull_request.number) || 'forest-data' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  BOX: ${{ github.event_name == 'workflow_dispatch' && inputs.box || '4.0,54.5,31.6,71.3' }}
+
+jobs:
+  test:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      TORNIO: '23.95,65.75,24.35,65.95'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.14.3'
+      - name: Install pinned dependencies
+        run: python -m pip install --require-hashes -r tools/osm_data/forest-requirements.txt
+      - name: Unit tests
+        run: python -m unittest tools.osm_data.test_forest tools.osm_data.test_cells
+      - name: The Copernicus Data Space keys open a Forest Type square
+        env:
+          CDSE_S3_ACCESS_KEY: ${{ secrets.CDSE_S3_ACCESS_KEY }}
+          CDSE_S3_SECRET_KEY: ${{ secrets.CDSE_S3_SECRET_KEY }}
+        run: python tools/osm_data/forest.py check
+      - name: Fetch Finland at Tornio from Syke
+        run: |
+          mkdir forest-sources
+          python tools/osm_data/forest.py fetch finland forest-sources/finland.tif --box "$TORNIO"
+      - name: Fetch Sweden at Haparanda from the Copernicus Data Space
+        env:
+          CDSE_S3_ACCESS_KEY: ${{ secrets.CDSE_S3_ACCESS_KEY }}
+          CDSE_S3_SECRET_KEY: ${{ secrets.CDSE_S3_SECRET_KEY }}
+        run: python tools/osm_data/forest.py fetch sweden forest-sources/sweden.tif --box "$TORNIO"
+      - name: Build the border's tiles
+        run: |
+          python tools/osm_data/forest.py build release --box "$TORNIO"
+          ls -l release
+
+  fetch:
+    if: github.event_name == 'workflow_dispatch' && inputs.operation != 'install-hosting' || contains(github.event.pull_request.labels.*.name, 'forest-build')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 200
+    strategy:
+      fail-fast: true
+      matrix:
+        country: [finland, sweden, norway, estonia]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.14.3'
+      - name: Install pinned dependencies
+        run: python -m pip install --require-hashes -r tools/osm_data/forest-requirements.txt
+      - name: Fetch the country's kinds
+        env:
+          COUNTRY: ${{ matrix.country }}
+          # Syke's file needs no login: the keys go only to the Data Space's countries
+          CDSE_S3_ACCESS_KEY: ${{ matrix.country != 'finland' && secrets.CDSE_S3_ACCESS_KEY || '' }}
+          CDSE_S3_SECRET_KEY: ${{ matrix.country != 'finland' && secrets.CDSE_S3_SECRET_KEY || '' }}
+        run: |
+          df -h .
+          mkdir forest-sources
+          /usr/bin/time -v python tools/osm_data/forest.py fetch "$COUNTRY" "forest-sources/$COUNTRY.tif" --box "$BOX" 2> time.txt || { cat time.txt; exit 1; }
+          grep -E 'Elapsed|Maximum resident' time.txt
+          ls -l forest-sources
+          df -h .
+      - name: Tune the mixed rule against Syke
+        if: matrix.country == 'finland'
+        env:
+          CDSE_S3_ACCESS_KEY: ${{ secrets.CDSE_S3_ACCESS_KEY }}
+          CDSE_S3_SECRET_KEY: ${{ secrets.CDSE_S3_SECRET_KEY }}
+        shell: bash  # with pipefail, so a failed tune fails the step rather than tee's success
+        run: python tools/osm_data/forest.py tune | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: forest-${{ matrix.country }}
+          path: forest-sources/
+          compression-level: 0
+          retention-days: 3
+
+  build:
+    needs: fetch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.14.3'
+      - name: Install pinned dependencies
+        run: python -m pip install --require-hashes -r tools/osm_data/forest-requirements.txt
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53
+        with:
+          pattern: forest-*
+          path: forest-sources
+          merge-multiple: true
+      - name: Build the tiles and the release
+        run: |
+          df -h .
+          ls -l forest-sources
+          /usr/bin/time -v python tools/osm_data/forest.py build release --box "$BOX" 2> time.txt || { cat time.txt; exit 1; }
+          grep -E 'Elapsed|Maximum resident' time.txt
+          ls -l release
+          du -sb release
+          df -h .
+      - name: Measure the cells
+        shell: bash  # with pipefail
+        run: |
+          python - <<'EOF' | tee -a "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          from tools.osm_data import cells
+          for z in (10, 11, 12):
+              index = cells.index(Path(f'release/forest-{z}.pmtiles'))
+              total = sum(row[3] for row in index['cells'])
+              print(f"- zoom {z}: {len(index['cells'])} cells, {total:,} bytes, index {len(cells.encoded(index)):,} bytes")
+          print('- manifest:', json.dumps({k: v['tiles'] for k, v in json.loads(Path('release/manifest.json').read_text())['datasets'].items()}))
+          EOF
+      - if: github.event_name == 'workflow_dispatch' && inputs.operation == 'copy'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: forest-release
+          path: release/
+          compression-level: 0
+          retention-days: 3
+
+  host:
+    if: github.event_name == 'workflow_dispatch' && inputs.operation == 'install-hosting'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: osm-data-production
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.14.3'
+      - name: Install pinned dependencies
+        run: python -m pip install --require-hashes -r tools/osm_data/forest-requirements.txt -r tools/osm_data/sftp-requirements.txt
+      - name: Put polku-forest and its .htaccess in place once
+        env:
+          OSM_FTP_HOST: ${{ secrets.OSM_FTP_HOST }}
+          OSM_FTP_USER: ${{ secrets.OSM_FTP_USER }}
+          OSM_FTP_PASSWORD: ${{ secrets.OSM_FTP_PASSWORD }}
+          OSM_SFTP_HOST_KEY_SHA256: ${{ secrets.OSM_SFTP_HOST_KEY_SHA256 }}
+          OSM_FTP_ROOT: ${{ vars.OSM_FTP_ROOT }}
+          OSM_PUBLIC_URL: ${{ vars.OSM_PUBLIC_URL }}
+        run: python tools/osm_data/forest.py install-hosting
+
+  copy:
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.operation == 'copy'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: osm-data-production
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.14.3'
+      - name: Install pinned dependencies
+        run: python -m pip install --require-hashes -r tools/osm_data/forest-requirements.txt -r tools/osm_data/sftp-requirements.txt
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53
+        with:
+          name: forest-release
+          path: release
+      - name: Upload the release in cells and name the candidate
+        env:
+          OSM_ALLOW_PUBLISH: 'true'
+          OSM_CELLS: 'true'
+          OSM_FTP_HOST: ${{ secrets.OSM_FTP_HOST }}
+          OSM_FTP_USER: ${{ secrets.OSM_FTP_USER }}
+          OSM_FTP_PASSWORD: ${{ secrets.OSM_FTP_PASSWORD }}
+          OSM_SFTP_HOST_KEY_SHA256: ${{ secrets.OSM_SFTP_HOST_KEY_SHA256 }}
+          OSM_FTP_ROOT: ${{ vars.OSM_FTP_ROOT }}
+          OSM_PUBLIC_URL: ${{ vars.OSM_PUBLIC_URL }}
+        run: python tools/osm_data/forest.py upload release

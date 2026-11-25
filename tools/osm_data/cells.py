@@ -16,7 +16,8 @@ from pmtiles.writer import Writer
 from tools.osm_data.publish import require
 
 TARGET = 1 << 20
-KINDS = {(TileType.UNKNOWN, Compression.GZIP), (TileType.MVT, Compression.GZIP), (TileType.WEBP, Compression.NONE)}
+KINDS = {(TileType.UNKNOWN, Compression.GZIP), (TileType.MVT, Compression.GZIP), (TileType.WEBP, Compression.NONE),
+         (TileType.PNG, Compression.NONE)}
 KEPT = ('name', 'format', 'schema', 'attribution', 'license')  # the metadata that doesn't change from week to week
 
 
@@ -70,7 +71,7 @@ def archive(path):
         reader = Reader(get_bytes)
         header = reader.header()
         require(header['min_zoom'] == header['max_zoom'] and (header['tile_type'], header['tile_compression']) in KINDS,
-                f'{path} is not a one-zoom archive of gzipped JSON or MVT, or of WebP')
+                f'{path} is not a one-zoom archive of gzipped JSON or MVT, or of WebP or PNG')
         yield header, reader.metadata(), directory(get_bytes, header), get_bytes
 
 

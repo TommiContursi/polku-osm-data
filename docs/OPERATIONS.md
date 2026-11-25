@@ -228,12 +228,12 @@ anything.
 ## The host
 
 The data is served from `https://ducksoft.fi/polku-osm/`, `https://ducksoft.fi/polku-routing/`, `https://ducksoft.fi/polku-mml/`,
-`https://ducksoft.fi/polku-digiroad/`, `https://ducksoft.fi/polku-terrain/`, `https://ducksoft.fi/polku-basemap/` and
-`https://ducksoft.fi/polku-lipas/`.
+`https://ducksoft.fi/polku-digiroad/`, `https://ducksoft.fi/polku-terrain/`, `https://ducksoft.fi/polku-basemap/`,
+`https://ducksoft.fi/polku-lipas/` and `https://ducksoft.fi/polku-forest/`.
 Each folder has its own `.htaccess`: [`hosting.htaccess`](../tools/osm_data/hosting.htaccess),
 installed by hand, [`routing.htaccess`](../tools/osm_data/routing.htaccess) (Routing data,
 above), [`mml.htaccess`](../tools/osm_data/mml.htaccess) in `polku-mml/` (NLS background map, below) and a copy of
-`hosting.htaccess` in `polku-digiroad/` (Digiroad, below), `polku-terrain/` (Terrain, below), `polku-basemap/` (Base map, below) and `polku-lipas/` (LIPAS, below). They turn off listing and HTTP compression, set the MIME types, allow read-only CORS with
+`hosting.htaccess` in `polku-digiroad/` (Digiroad, below), `polku-terrain/` (Terrain, below), `polku-basemap/` (Base map, below), `polku-lipas/` (LIPAS, below) and `polku-forest/` (Forest kind, below). They turn off listing and HTTP compression, set the MIME types, allow read-only CORS with
 the Range headers exposed, cache releases as immutable and make `current.json` revalidate, which
 also covers `candidates/current.json`.
 
@@ -436,3 +436,28 @@ names: zooms 0–14 over the terrain's box, about 2.97 million tiles and 6.23 GB
 - **Promotion** is Polku's `basemap-promote.yml`: `basemap.py candidate`, `promote` and `restore`, as the terrain's.
 
 The data is © OpenStreetMap contributors (ODbL), in OpenMapTiles' schema (CC BY 4.0), in `LICENSE.txt`.
+
+## Forest kind
+
+`forest-data.yml`, by hand when Syke or Copernicus publishes a new edition, builds the forest's kind for Polku #1360:
+coniferous, mixed and deciduous forest at zooms 10–12: about 93,400 tiles and 0.81 GB, about 1,760 cells; the
+fetches about 17 minutes at most (Norway's), the build about 23 (measured 2026-11-25). The format is in
+[tools/osm_data/README.md](../tools/osm_data/README.md#forest-kind).
+
+- **Sources:** Finland from Syke's CORINE Land Cover 2024 (20 m, anonymous download); Sweden, Norway and Estonia from
+  the Copernicus Land Monitoring Service's Forest Type 2024 (10 m, 100 km squares of EPSG:3035) on the Copernicus
+  Data Space's S3, with the repository secrets `CDSE_S3_ACCESS_KEY` and `CDSE_S3_SECRET_KEY`. The keys expire on the
+  date set when they were made; a refused key fails the job with that said. Make new ones at
+  eodata-s3keysmanager.dataspace.copernicus.eu.
+- **fetch**, a job a country: the country's kinds in its source's grid, smoothed so no patch is under half a hectare.
+  Forest Type has no mixed class: a pixel is mixed where neither kind has `LINE` % of the forest within `RADIUS`,
+  tuned on Finland against Syke's (`forest.py tune`, printed in Finland's job).
+- **build** reads the four rasters, cuts the zoom-12 tiles, makes zooms 11 and 10 from them, and measures the cells.
+  **build** uploads nothing; **copy** then uploads the candidate in cells to `polku-forest/`, at most 3 GiB: a new
+  edition beside the live release and its predecessor.
+- **install-hosting**, once: makes `polku-forest/` and puts a copy of `hosting.htaccess` in it.
+- A pull request that changes the job checks the keys and builds the border at Tornio; labelled `forest-build`, it
+  runs fetch and build in full and uploads nothing.
+
+Syke's data is CC BY 4.0; Copernicus's is free and open under the Copernicus data policy, the source named. Both are
+modified, as `LICENSE.txt` says.
