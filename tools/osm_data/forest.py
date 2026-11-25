@@ -191,12 +191,14 @@ def overlaps(a, b):
 
 
 def s3():
-    """GDAL's settings for the Data Space's S3, from the keys in CDSE_S3_ACCESS_KEY and CDSE_S3_SECRET_KEY."""
+    """GDAL's settings for the Data Space's S3, from the keys in CDSE_S3_ACCESS_KEY and CDSE_S3_SECRET_KEY. rasterio
+    leaves AWS credentials to boto3, so GDAL reads them from the environment."""
     key, secret = os.environ.get('CDSE_S3_ACCESS_KEY'), os.environ.get('CDSE_S3_SECRET_KEY')
     require(key and secret, 'Set CDSE_S3_ACCESS_KEY and CDSE_S3_SECRET_KEY, the Copernicus Data Space keys')
-    return rasterio.Env(AWS_ACCESS_KEY_ID=key, AWS_SECRET_ACCESS_KEY=secret, AWS_S3_ENDPOINT=ENDPOINT,
-                        AWS_VIRTUAL_HOSTING='FALSE', AWS_HTTPS='YES', AWS_REGION='default',
-                        GDAL_DISABLE_READDIR_ON_OPEN='EMPTY_DIR', CPL_VSIL_CURL_ALLOWED_EXTENSIONS='.tif')
+    os.environ.update(AWS_ACCESS_KEY_ID=key, AWS_SECRET_ACCESS_KEY=secret, AWS_S3_ENDPOINT=ENDPOINT,
+                      AWS_VIRTUAL_HOSTING='FALSE', AWS_HTTPS='YES', AWS_REGION='default')
+    return rasterio.Env(GDAL_DISABLE_READDIR_ON_OPEN='EMPTY_DIR', CPL_VSIL_CURL_ALLOWED_EXTENSIONS='.tif',
+                        GDAL_HTTP_MAX_RETRY='4', GDAL_HTTP_RETRY_DELAY='30')
 
 
 def squares(box):
@@ -263,11 +265,18 @@ def read(paths, bounds):
     try:
         data, at = merge(paths, bounds=bounds, res=10, nodata=OUTSIDE, dtype='uint8')
     except RasterioIOError as error:
-        if '403' in str(error) or 'Access Denied' in str(error) or 'InvalidAccessKeyId' in str(error):
-            raise RuntimeError('The Copernicus Data Space refused the keys: they may have expired. '
-                               'Make new ones and update CDSE_S3_ACCESS_KEY and CDSE_S3_SECRET_KEY') from None
-        raise
+        refused(error)
     return data[0], at
+
+
+def refused(error):
+    """A read's error, said plainly when the Data Space refused the keys."""
+    if any(word in str(error) for word in ('403', 'AccessDenied', 'Access Denied', 'InvalidAccessKeyId',
+                                           'SignatureDoesNotMatch', 'ExpiredToken')):
+        raise RuntimeError('The Copernicus Data Space refused the keys: they may have expired. Make new ones at '
+                           'eodata-s3keysmanager.dataspace.copernicus.eu and update the secrets CDSE_S3_ACCESS_KEY '
+                           'and CDSE_S3_SECRET_KEY') from None
+    raise error
 
 
 def fetch(country, out, box=None):
@@ -289,9 +298,7 @@ def check():
                                   'dtype': src.dtypes[0], 'nodata': src.nodata, 'size': [src.width, src.height]}))
                 src.read(1, window=Window(0, 0, 256, 256))
         except RasterioIOError as error:
-            require('403' not in str(error) and 'Access Denied' not in str(error),
-                    'The Copernicus Data Space refused the keys: they may have expired')
-            raise
+            refused(error)
 
 
 def png(classes):
@@ -405,10 +412,56 @@ def build(output, box):
                             datetime.now(timezone.utc))
 
 
-def tune(samples):
-    """Forest Type's mixed rule against Syke's kinds over sample squares of Finland: for each radius and line, the
-    share of forest pixels both call forest where they agree, each kind's F1 and their mean, and each kind's share."""
-    raise NotImplementedError
+RADII, LINES = (10, 20, 30, 50, 75, 100), (60, 65, 70, 75, 80, 85)
+SAMPLE = 30_000  # m: the middle of a square compared
+
+
+def tune(finland_tif=SOURCES / 'finland.tif', samples=12):
+    """Forest Type's mixed rule against Syke's smoothed kinds (fetch finland) in the middle of sample squares across
+    Finland: for each radius and line, over the pixels both call forest, the share where they agree, each kind's F1
+    and their mean, and each kind's share. Printed as Markdown, best mean F1 first."""
+    syke = rasterio.open(finland_tif)
+    with s3():
+        found = squares(transform_bounds(syke.crs, 'EPSG:4326', *syke.bounds))
+        picked = []
+        for e, n in sorted(found, key=lambda k: (k[1], k[0])):
+            pad = (SQUARE - SAMPLE) // 2
+            core = (e * SQUARE + pad, n * SQUARE + pad, (e + 1) * SQUARE - pad, (n + 1) * SQUARE - pad)
+            truth = np.full((SAMPLE // 10, SAMPLE // 10), OUTSIDE, np.uint8)
+            reproject(rasterio.band(syke, 1), truth, src_nodata=OUTSIDE, dst_transform=from_origin(core[0], core[3], 10, 10),
+                      dst_crs='EPSG:3035', dst_nodata=OUTSIDE, resampling=Resampling.nearest)
+            if (truth != OUTSIDE).mean() >= 0.9:
+                picked.append(((e, n), core, truth))
+        step = max(1, len(picked) // samples)
+        picked = picked[::step][:samples]
+        require(picked, 'No square of Finland to compare')
+        raws = []
+        for (e, n), core, truth in picked:
+            pad = HALO * 10
+            near = [found[k] for k in ((e + i, n + j) for i in (-1, 0, 1) for j in (-1, 0, 1)) if k in found]
+            raws.append((read(near, (core[0] - pad, core[1] - pad, core[2] + pad, core[3] + pad))[0], truth))
+    print(f"Squares: {', '.join(f'E{e}N{n}' for (e, n), _, _ in picked)}\n")
+    rows = []
+    for radius in RADII:
+        for line in LINES:
+            confusion = np.zeros((3, 3), np.int64)
+            for raw, truth in raws:
+                ours = smooth(kinds(raw, radius, line), 10)[HALO:-HALO, HALO:-HALO]
+                both = (ours >= CONIFEROUS) & (ours <= DECIDUOUS) & (truth >= CONIFEROUS) & (truth <= DECIDUOUS)
+                confusion += np.bincount((truth[both] - 1) * 3 + ours[both] - 1, minlength=9).reshape(3, 3)
+            rows.append((radius, line, confusion))
+    syke_share = rows[0][2].sum(1) / rows[0][2].sum()
+    print('| Radius (m) | Line (%) | Agree | F1 conif. | F1 mixed | F1 decid. | Mean F1 | Conif. | Mixed | Decid. |')
+    print('|---|---|---|---|---|---|---|---|---|---|')
+    print(f'| Syke | | | | | | | {syke_share[0]:.0%} | {syke_share[1]:.0%} | {syke_share[2]:.0%} |')
+    scored = []
+    for radius, line, c in rows:
+        f1 = [2 * c[k, k] / max(1, c[k].sum() + c[:, k].sum()) for k in range(3)]
+        share = c.sum(0) / c.sum()
+        scored.append((sum(f1) / 3, radius, line, np.trace(c) / c.sum(), f1, share))
+    for mean, radius, line, agree, f1, share in sorted(scored, key=lambda s: -s[0]):
+        print(f'| {radius} | {line} | {agree:.1%} | {f1[0]:.2f} | {f1[1]:.2f} | {f1[2]:.2f} | {mean:.3f} | '
+              f'{share[0]:.0%} | {share[1]:.0%} | {share[2]:.0%} |')
 
 
 BOX = (4.0, 54.5, 31.6, 71.3)  # west, south, east, north: the four countries' coverage
@@ -429,7 +482,7 @@ if __name__ == '__main__':
             if args.command == 'fetch':
                 fetch(args.country, args.output, args.box and tuple(map(float, args.box.split(','))))
             elif args.command == 'tune':
-                tune(None)
+                tune()
             else:
                 check()
         except Exception as error:
