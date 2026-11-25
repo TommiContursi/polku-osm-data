@@ -53,7 +53,7 @@ jobs:
     if: inputs.operation == 'copy'
     runs-on: ubuntu-24.04
     # About 530 pages take about 2.5 hours with the 5 s pauses, and a page of private roads takes up to 32 s to answer.
-    # The build takes about 15 minutes, and uploading about 1 GB and reading it back up to an hour.
+    # The build takes about 10 minutes, and uploading about 1 GB and reading it back up to an hour.
     timeout-minutes: 300
     environment: osm-data-production
     steps:
