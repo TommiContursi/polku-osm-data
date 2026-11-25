@@ -79,6 +79,7 @@ class Host:
         self.connections = self.pointer_writes = self.channels = self.cells_sent = 0
         self.drop_at, self.dropped = set(), False  # the connection drops as the cell uploads counted here begin
         self.drop_once = set()  # and as a file of one of these names is first stored
+        self.idle, self.clock, self.heard = None, 0, None  # given idle, a connection quiet longer than idle s drops
         self.pointer_cache = 'no-cache'
         self.uploads = []
         self.unsafe = set()
@@ -97,7 +98,7 @@ class Host:
     def ftp(self, *args, **kwargs):
         host = self
         self.connections += 1
-        self.dropped = False
+        self.dropped, self.heard = False, None
         _, user, password, _fingerprint = args
         if self.denied_login:
             raise ftplib.error_perm(f'530 {user} {password}')
@@ -118,6 +119,9 @@ class Host:
             def prot_p(self):
                 self.protected = True
             def abs(self, path):
+                if host.idle is not None:  # (a request on any channel of the connection counts)
+                    host.dropped |= host.heard is not None and host.clock - host.heard > host.idle
+                    host.heard = host.clock
                 if host.dropped:  # as paramiko's closed channel answers each request after the drop
                     raise OSError('Socket is closed')
                 if not self.protected:
@@ -1589,6 +1593,26 @@ class CellsTests(unittest.TestCase):
         for entry in self.cells(hosted):
             self.assertEqual(hashlib.sha256(self.host.files[ROOT + '/' + publish.shared_path(entry)]).hexdigest(), entry['sha256'])
         self.assertFalse([d for d in self.host.dirs if '.upload-' in d], 'the stage became the release')
+
+    def test_a_long_cut_of_cells_the_host_holds_keeps_the_connection_from_going_idle(self):
+        first = self.publish(self.build('new-release', self.tiles))
+        index, = publish.indexes(first)
+        z, x, y = json.loads(self.host.files[ROOT + '/' + publish.place('new-release', index)])['cells'][-1][:3]
+        last = next(t for t in sorted(self.tiles) if (t[1] >> (14 - z), t[2] >> (14 - z)) == (x, y))
+        directory = self.build('next-release', self.tiles | {last: b'changed'}, '2026-11-27T00:00:00Z')
+        real = cells.cells
+
+        def slow(*args, **kwargs):  # each cell takes 30 s to cut, as a large archive's do; the host closes after 120 s
+            for item in real(*args, **kwargs):
+                self.host.clock += 30
+                yield item
+        self.host.idle = 120
+        with patch.object(cells, 'cells', slow), patch.object(publish.time, 'monotonic', lambda: self.host.clock), \
+                patch.object(publish.time, 'sleep') as sleep:
+            publish.upload(directory)
+        sleep.assert_not_called()
+        self.assertGreater(self.host.clock, 4 * self.host.idle, 'every cell before the changed one was cut first')
+        self.assertEqual(json.loads(self.host.files[ROOT + '/candidates/current.json'])['release'], 'next-release')
 
     def test_a_stage_made_just_before_the_connection_dropped_gets_its_record(self):
         directory = self.build('new-release', self.tiles)

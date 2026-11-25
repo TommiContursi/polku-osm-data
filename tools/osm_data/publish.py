@@ -47,6 +47,7 @@ SEARCH = 'search-gzt'  # a dataset whose url is a search index's root, which nam
 CHANNELS = 4
 BATCH = 64  # cells cut again from an archive, sent 4 at once in batches of 64: at most 64 MiB in memory
 RECONNECTS = 5  # times a dropped connection reconnects, after a pause that doubles from 30 s, up to 5 minutes
+QUIET = 60  # s: the host closes an idle connection: an SSH keepalive this often, and an SFTP request during a cut
 try:
     from paramiko import AuthenticationException, SSHException
 except ImportError:  # (the checks of this module that need no SFTP)
@@ -382,6 +383,7 @@ def open_sftp(host, user, password, expected_fingerprint):
         require(hmac.compare_digest(actual, expected_fingerprint),
                 'SFTP server host key differs from pinned fingerprint; stop and verify with the host')
         transport.auth_password(username=user, password=password)
+        transport.set_keepalive(QUIET)
         require(transport.is_authenticated(), 'SFTP authentication failed')
         client = paramiko.SFTPClient.from_transport(transport)
         require(client is not None, 'SFTP subsystem unavailable')
@@ -906,6 +908,7 @@ def upload_once(directory, raw, manifest, resume, folder, budget, again):
         at_once(ftp, here, send_shared)
         for where, _, _ in here:
             del send_cells[where]
+        quiet_since = time.monotonic()  # the last request on this connection
         for f in indexes(manifest):  # each archive cut again, the same way; only its missing cells go up
             if not f['path'].endswith(INDEX) or not any(
                     place(release, entry) in send_cells for entry in cells_of((directory / f['path']).read_bytes(), f)):
@@ -913,6 +916,9 @@ def upload_once(directory, raw, manifest, resume, folder, budget, again):
             from tools.osm_data import cells
             batch = []
             for _, data in cells.cells(directory / (f['path'].removesuffix(INDEX) + '.pmtiles')):
+                if time.monotonic() - quiet_since > QUIET:  # as each cell is cut: an SFTP request too, unknown which
+                    ftp.kind('.')                            # the host counts; a gap is QUIET and one cell's cut
+                    quiet_since = time.monotonic()
                 digest = hashlib.sha256(data).hexdigest()
                 entry = share({'path': digest + '.pmtiles', 'bytes': len(data), 'sha256': digest})
                 if send_cells.pop(place(release, entry), None) is None:
@@ -920,7 +926,7 @@ def upload_once(directory, raw, manifest, resume, folder, budget, again):
                 batch.append((place(release, entry), entry, partial(io.BytesIO, data)))
                 if len(batch) == BATCH:
                     at_once(ftp, batch, send_shared)
-                    batch = []
+                    batch, quiet_since = [], time.monotonic()  # (the channels' requests count: one connection)
             at_once(ftp, batch, send_shared)
         require(not send_cells, 'Indexed files missing: ' + ', '.join(sorted(send_cells)[:3]))
         verify_manifest(ftp, stage, raw)

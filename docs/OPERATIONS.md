@@ -114,6 +114,9 @@ don't accept the format.
 A connection that drops part way reconnects after 30 s, then 60 s, 120 s, 240 s and 300 s, and the
 upload goes on from its staging folder: a file already moved to `files/` isn't sent again. A host that
 refuses a connection is tried again the same way; a refused login isn't. A sixth drop stops the run.
+The host closes a connection left idle: going on, the upload cuts each archive again and passes the cells
+`files/` holds for up to an hour without sending. So an SSH keepalive goes every minute, and an SFTP
+request at least as often while it cuts.
 
 An interrupted upload is never started again from nothing. **inspect-existing**, with the
 build's run ID in **release**, reports the staged files' sizes without changing the host.
@@ -200,6 +203,8 @@ Learned from the first runs, 2026-11-22 to 24:
   files, and every upload's cells, go over several channels (#38).
 - **A connection can drop mid-run:** one reset after 4 hours and 6,752 cells ended a terrain upload.
   The upload now reconnects and goes on.
+- **The host closes an idle connection:** a resume that passed 40 minutes of cells already sent without a
+  request met it closed, again after each reconnect. A request now goes at least once a minute.
 - **One job writes to the host at a time** where it can. Downloads from it slow down and time out
   while uploads run (#40).
 
