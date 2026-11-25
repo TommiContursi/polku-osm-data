@@ -7,6 +7,7 @@ import gzip
 import io
 import json
 import lzma
+import math
 from pathlib import Path
 import shutil
 import sys
@@ -178,15 +179,25 @@ class DigiroadTests(unittest.TestCase):
                       elements['paved'])
         self.assertIn({'id': '1a-b:1', 'restrictions': 'unreported', 'lines': lines}, elements['private'])
         self.assertIn({'id': 101, 'limit': 60, 'lines': lines}, elements['speed'], "the feature's own ID, not Digiroad's id")
-        self.assertEqual(sorted(manifest['datasets']), ['paved', 'private', 'speed', 'traffic'])
+        self.assertEqual(sorted(manifest['datasets']), ['paved', 'paved-10', 'paved-8', 'paved-9', 'private', 'private-10',
+                                                        'speed', 'speed-10', 'traffic'])
+        for name, (zooms, _) in digiroad.LEVELS.items():
+            for z in zooms:
+                level = manifest['datasets'][f'{name}-{z}']
+                self.assertEqual(({z for z, _, _ in self.tiles(self.tmp / 'release' / level['url'])}, level['zoom'],
+                                  level['format'], level['raw']), ({z}, z, 'pmtiles-json', f'{name}.jsonl.xz'))
+        level = [e for t in self.tiles(self.tmp / 'release' / 'paved-8.pmtiles').values() for e in t['elements']]
+        self.assertEqual({e['id'] for e in level}, {100}, 'below zoom 11 the paved roads are the state roads alone')
+        self.assertEqual((manifest['datasets']['private-10']['features'], manifest['datasets']['speed-10']['features']),
+                         (2, 5), 'the private roads and speed limits all at zoom 10')
         files = {f['path']: f for f in manifest['files']}
-        for name, dataset in manifest['datasets'].items():
+        for name, dataset in ((name, manifest['datasets'][name]) for name in digiroad.DATASETS):
             self.assertEqual((dataset['format'], dataset['zoom'], dataset['features'], dataset['url'], dataset['raw']),
                              ('pmtiles-json', 11, len(self.wfs.features[digiroad.DATASETS[name][0]]),
                               f'{name}.pmtiles', f'{name}.jsonl.xz'))
             self.assertEqual(files[dataset['raw']]['bytes'], (self.tmp / 'release' / dataset['raw']).stat().st_size)
         self.assertEqual(manifest['datasets']['traffic']['source']['filter'], 'arvo>=800')
-        self.assertEqual({name: d['source'].get('timestamp') for name, d in manifest['datasets'].items()},
+        self.assertEqual({name: manifest['datasets'][name]['source'].get('timestamp') for name in digiroad.DATASETS},
                          {'traffic': '2022-07-08T09:00:00Z', 'paved': '2024-10-25T07:54:16Z', 'private': None,
                           'speed': '2015-10-15T13:00:45Z'}, "each layer's newest edit, in Finland's time; private roads have none")
         self.assertEqual(manifest['source']['timestamp'], '2024-10-25T07:54:16Z', 'the newest of them')
@@ -208,9 +219,22 @@ class DigiroadTests(unittest.TestCase):
             with self.subTest(name):
                 self.assertEqual(lzma.decompress((self.tmp / 'release' / f'{name}.jsonl.xz').read_bytes()),
                                  lzma.decompress((FIXTURES / f'digiroad-{name}.jsonl.xz').read_bytes()))
+        for name in manifest['datasets']:
+            with self.subTest(name):
                 self.assertEqual((self.tmp / 'release' / f'{name}.pmtiles').read_bytes(), (FIXTURES / f'digiroad-{name}.pmtiles').read_bytes())
         self.assertEqual({name: d['features'] for name, d in manifest['datasets'].items()},
-                         {'traffic': 89, 'paved': 2638, 'private': 5, 'speed': 2132})
+                         {'traffic': 89, 'paved': 2638, 'paved-8': 106, 'paved-9': 106, 'paved-10': 106, 'private': 5,
+                          'private-10': 5, 'speed': 2132, 'speed-10': 2132})
+
+    def test_a_level_keeps_what_its_style_draws_there_simplified_to_half_a_pixel(self):
+        px = 360 / 2 ** 10 / 512  # a pixel of a zoom-10 tile in longitude; in latitude, at 61.5° N, about half of it
+        dy = px * math.cos(math.radians(61.5))
+        line = [[23.7 + 10 * i * px, 61.5 + up * dy] for i, up in enumerate((0, 3, 0, 0.2, 0))]
+        road = {'id': 1, 'limit': 60, 'lines': [line, line[:2]]}
+        self.assertEqual(digiroad.overview('speed', 10, road), road | {'lines': [line[:3] + line[4:], line[:2]]},
+                         'a point off the line by 0.2 px goes, by 3 px stays, and every line keeps its ends')
+        self.assertIsNone(digiroad.overview('paved', 8, {'id': 2, 'surface': 'asphalt', 'state': False, 'lines': [line]}),
+                          'a paved road not the state\'s shows from zoom 11')
 
     def test_the_release_goes_up_in_cells_beside_polku_osm_with_the_features_as_served(self):
         self.fetch(self.tmp / 'release')
@@ -249,6 +273,16 @@ class DigiroadTests(unittest.TestCase):
                              json.loads((self.tmp / 'release' / 'manifest.json').read_bytes())['files'],
                              'the same release, built again from the copy alone')
             host.files[BASE + '/current.json'] = json.dumps(publish.current(manifest)).encode()  # as a promotion
+            with patch.object(sys, 'argv', ['digiroad.py', 'live', str(self.tmp / 'live')]):
+                wfs.main(digiroad)
+            self.assertEqual({p.name: p.read_bytes() for p in (self.tmp / 'live').iterdir()},
+                             {f'{name}.jsonl.xz': (self.tmp / 'release' / f'{name}.jsonl.xz').read_bytes()
+                              for name in digiroad.DATASETS}, "the live release's features, saved from the host")
+            speed = f"{BASE}/{publish.place(manifest['release'], files['speed.jsonl.xz'])}"
+            with patch.dict(host.files, {speed: host.files[speed] + b'x'}), redirect_stderr(io.StringIO()) as said, \
+                    patch.object(sys, 'argv', ['digiroad.py', 'live', str(self.tmp / 'changed')]), self.assertRaises(SystemExit):
+                wfs.main(digiroad)
+            self.assertIn("speed.jsonl.xz differs from the live release's", said.getvalue())
             host.uploads.clear()
             wfs.build(digiroad, self.tmp / 'again', datetime(2026, 11, 24, tzinfo=timezone.utc))
             with patch.object(publish.maintenance, 'usage', return_value=digiroad.BUDGET - 4096):

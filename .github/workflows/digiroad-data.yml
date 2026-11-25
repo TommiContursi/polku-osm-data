@@ -13,7 +13,7 @@ on:
         options: [install-hosting, copy]
         default: copy
       fetched:
-        description: An earlier copy run's ID, to build and upload from the features it fetched instead of fetching again
+        description: An earlier copy run's ID to build and upload from the features it fetched, or live for the live release's, instead of fetching again
         type: string
 
 permissions:
@@ -53,7 +53,7 @@ jobs:
     if: inputs.operation == 'copy'
     runs-on: ubuntu-24.04
     # About 530 pages take about 2.5 hours with the 5 s pauses, and a page of private roads takes up to 32 s to answer.
-    # The build takes about 10 minutes, and uploading about 1 GB and reading it back up to an hour.
+    # The build takes about 15 minutes, and uploading about 1 GB and reading it back up to an hour.
     timeout-minutes: 300
     environment: osm-data-production
     steps:
@@ -77,8 +77,13 @@ jobs:
           compression-level: 0
           retention-days: 7
           if-no-files-found: error
+      - name: The live release's features, from the host
+        if: inputs.fetched == 'live'
+        env:
+          OSM_PUBLIC_URL: ${{ vars.OSM_PUBLIC_URL }}
+        run: python tools/osm_data/digiroad.py live release
       - name: The features an earlier run fetched
-        if: inputs.fetched != ''
+        if: inputs.fetched != '' && inputs.fetched != 'live'
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53
         with:
           name: digiroad-features
