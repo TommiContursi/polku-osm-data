@@ -154,19 +154,26 @@ def release(output, remote, box, zooms, name, title, files, fields, now=None):
         print(f'Zoom {z}', flush=True)
         counts[z] = extract(remote, box, z, output / f'{name}-{z}.pmtiles',
                             {'name': f'{title}, zoom {z}', 'attribution': fields['attribution']})
+    return manifest(output, name, counts, files, fields, box, now)
+
+
+def manifest(output, name, counts, files, fields, box, now):
+    """The release's manifest in output, beside its archives `<name>-<z>.pmtiles` ({z: tiles}) and `files`
+    ({name: bytes}), with `fields` (source, attribution, licence) in it."""
+    zooms = sorted(counts)
     for path, body in files.items():
         (output / path).write_bytes(body)
     listed = [{'path': path, 'bytes': (output / path).stat().st_size, 'sha256': publish.digest_file(output / path)}
               for path in [*(f'{name}-{z}.pmtiles' for z in zooms), *files]]
-    manifest = {'schema': 1, 'release': now.strftime('%Y%m%dT%H%M%SZ'), 'built_at': stamp(now), **fields,
-                'zooms': [zooms[0], zooms[-1]], 'bounds': list(box),
-                'datasets': {f'{name}-{z}': {'url': f['path'], 'bytes': f['bytes'], 'sha256': f['sha256'], 'zoom': z,
-                                             'tiles': counts[z]} for z, f in zip(zooms, listed)},
-                'files': listed}
-    (output / 'manifest.json').write_bytes(json.dumps(publish.validate(manifest), sort_keys=True, separators=(',', ':')).encode())
-    print(json.dumps({'release': manifest['release'], 'tiles': sum(counts.values()),
+    result = {'schema': 1, 'release': now.strftime('%Y%m%dT%H%M%SZ'), 'built_at': stamp(now), **fields,
+              'zooms': [zooms[0], zooms[-1]], 'bounds': list(box),
+              'datasets': {f'{name}-{z}': {'url': f['path'], 'bytes': f['bytes'], 'sha256': f['sha256'], 'zoom': z,
+                                           'tiles': counts[z]} for z, f in zip(zooms, listed)},
+              'files': listed}
+    (output / 'manifest.json').write_bytes(json.dumps(publish.validate(result), sort_keys=True, separators=(',', ':')).encode())
+    print(json.dumps({'release': result['release'], 'tiles': sum(counts.values()),
                       'bytes': sum(f['bytes'] for f in listed[:len(counts)])}), flush=True)
-    return manifest
+    return result
 
 
 def main(doc, folder, budget, box, build):
