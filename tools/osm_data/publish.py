@@ -47,6 +47,7 @@ SEARCH = 'search-gzt'  # a dataset whose url is a search index's root, which nam
 CHANNELS = 4
 BATCH = 64  # cells cut again from an archive, sent 4 at once in batches of 64: at most 64 MiB in memory
 RECONNECTS = 5  # times a dropped connection reconnects, after a pause that doubles from 30 s, up to 5 minutes
+QUIET = 60  # seconds at most between requests while cells the host holds are cut again: it closes an idle connection
 try:
     from paramiko import AuthenticationException, SSHException
 except ImportError:  # (the checks of this module that need no SFTP)
@@ -906,6 +907,7 @@ def upload_once(directory, raw, manifest, resume, folder, budget, again):
         at_once(ftp, here, send_shared)
         for where, _, _ in here:
             del send_cells[where]
+        heard = time.monotonic()
         for f in indexes(manifest):  # each archive cut again, the same way; only its missing cells go up
             if not f['path'].endswith(INDEX) or not any(
                     place(release, entry) in send_cells for entry in cells_of((directory / f['path']).read_bytes(), f)):
@@ -913,6 +915,9 @@ def upload_once(directory, raw, manifest, resume, folder, budget, again):
             from tools.osm_data import cells
             batch = []
             for _, data in cells.cells(directory / (f['path'].removesuffix(INDEX) + '.pmtiles')):
+                if time.monotonic() - heard > QUIET:  # an SFTP request, which the host counts whatever SSH does
+                    ftp.kind('.')
+                    heard = time.monotonic()
                 digest = hashlib.sha256(data).hexdigest()
                 entry = share({'path': digest + '.pmtiles', 'bytes': len(data), 'sha256': digest})
                 if send_cells.pop(place(release, entry), None) is None:
@@ -920,7 +925,7 @@ def upload_once(directory, raw, manifest, resume, folder, budget, again):
                 batch.append((place(release, entry), entry, partial(io.BytesIO, data)))
                 if len(batch) == BATCH:
                     at_once(ftp, batch, send_shared)
-                    batch = []
+                    batch, heard = [], time.monotonic()
             at_once(ftp, batch, send_shared)
         require(not send_cells, 'Indexed files missing: ' + ', '.join(sorted(send_cells)[:3]))
         verify_manifest(ftp, stage, raw)
