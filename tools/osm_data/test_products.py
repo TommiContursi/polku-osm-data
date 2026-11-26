@@ -165,7 +165,7 @@ class ProductTests(unittest.TestCase):
         out, manifest = self.build(OSM.replace('  <way id="10">', nodes + way + '  <way id="10">'))
         self.assertEqual(manifest['datasets']['points']['zoom'], 12)
         els = {e['id']: e for e in self.tile(out, 'points', 12)}
-        self.assertEqual(sorted(els), [50, 51, 52, 53, 54, 55, 56, 59, 60, 61, 62, 63])
+        self.assertEqual(sorted(els), [50, 51, 52, 53, 54, 55, 56, 59, 60, 61, 63])  # no tree (62): Polku #1577
         self.assertEqual(els[52]['tags']['drinking_water'], 'yes')
         self.assertIn('center', els[60])  # a bunker drawn as a building: its point is its centre
         cut = cells.index(out / manifest['datasets']['points']['url'])  # goes up in cells as every product does
