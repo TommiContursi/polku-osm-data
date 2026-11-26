@@ -1,9 +1,12 @@
 name: Polku LIPAS
-run-name: LIPAS / ${{ inputs.operation }}
+run-name: LIPAS / ${{ inputs.operation || 'copy' }}
 
 # Copies LIPAS's routes and places of the types Polku shows into PMTiles beside the features as served, and uploads a
-# candidate in cells, by hand. Its tests run with the others in osm-data.yml.
+# candidate in cells, weekly on Wednesdays or by hand. Its tests run with the others in osm-data.yml.
 on:
+  schedule:
+    # Wednesday: Polku's lipas-promote.yml checks and promotes it at 07:47
+    - cron: '47 4 * * 3'
   workflow_dispatch:
     inputs:
       operation:
@@ -45,7 +48,7 @@ jobs:
         run: python tools/osm_data/lipas.py install-hosting
 
   copy:
-    if: inputs.operation == 'copy'
+    if: github.event_name == 'schedule' || inputs.operation == 'copy'
     runs-on: ubuntu-24.04
     # About 40 pages took 82 s on 2026-11-24 and the build 20 s; uploading about 70 MB and reading it back, minutes
     timeout-minutes: 60
