@@ -362,7 +362,7 @@ The data is CC BY 4.0: "© Fintraffic / Digiroad, from Väylävirasto's open dat
 
 ## LIPAS
 
-`lipas-data.yml`, by hand, copies LIPAS's routes and places of the 25
+`lipas-data.yml`, weekly on Wednesdays at 04:47 UTC or by hand, copies LIPAS's routes and places of the 25
 types Polku shows (its `LIPAS_TYPES`) from LIPAS's WFS, the same layers Polku reads when the copy can't answer. Counted
 on 2026-11-24: 66,057 features, 56,057 of them parts of routes. Landing places (205) had none, so they aren't copied
 and Polku asks LIPAS for them; a type with none stops the copy, as Digiroad's. The format is in
